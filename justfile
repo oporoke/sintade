@@ -6,5 +6,5 @@ test:
     cargo test --workspace
 
 deps-up:
-    docker compose up -d --wait minio mailpit
+    docker compose up -d --wait postgres minio mailpit
     docker compose run --rm minio-init
