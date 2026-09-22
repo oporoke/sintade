@@ -39,7 +39,7 @@ If a command in this list does not exist yet, the day that introduces it must ad
 ## Architecture rules (non-negotiable)
 
 1. **Modular monolith.** One crate per bounded context under `crates/`; binaries `bin/api`, `bin/worker`.
-2. **Layering.** L0 `core` → L1 `platform` → L2 `identity`, `tenancy` → L3 `catalog`, `billing` → L4 features → L5 binaries. A crate depends only on lower layers. Allowed L4 edges: `delivery→sharing`, `delivery→media`, `engagement→sharing` via traits. Everything else between L4 crates goes through outbox events.
+2. **Layering.** L0 `kernel` → L1 `platform` → L2 `identity`, `tenancy` → L3 `catalog`, `billing` → L4 features → L5 binaries. A crate depends only on lower layers. Allowed L4 edges: `delivery→sharing`, `delivery→media`, `engagement→sharing` via traits. Everything else between L4 crates goes through outbox events. (The L0 crate lives at `crates/kernel`, not `crates/core` — see [ADR-0003](docs/adr/0003-rename-core-crate-to-kernel.md): naming a crate `core` breaks macro-generated code that emits unqualified `core::` paths, e.g. `#[tokio::main]`.)
 3. **Crate shape.** `domain/` (no async, no sqlx, no I/O) · `app/` (service trait + impl, owns transactions) · `infra/` (sqlx, only this crate's tables) · `events.rs` · `lib.rs` exports service trait, DTOs, events only.
 4. **Media never touches the API process.** Browser → presigned PUT → MinIO → worker → MinIO → CDN.
 5. **Tenant isolation.** Every tenant-owned table has `workspace_id`; every query filters by it. Inaccessible private resources return `404`, not `403`. Every new route is added to the tenant-isolation test table.
