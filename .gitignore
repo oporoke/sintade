@@ -1,4 +1,2 @@
-fend/node_modules
-
-bend/target/
 /target
+.env
