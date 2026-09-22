@@ -1,28 +1,70 @@
-use axum::Router;
-use axum::extract::State;
-use axum::http::StatusCode;
-use axum::routing::get;
-use sqlx::PgPool;
+use std::time::Duration;
 
-pub fn build_router(pool: PgPool) -> Router {
+use axum::Router;
+use axum::extract::{DefaultBodyLimit, State};
+use axum::http::{HeaderValue, Method, StatusCode};
+use axum::routing::get;
+use kernel::AppError;
+use sqlx::PgPool;
+use tower_http::cors::CorsLayer;
+use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
+use tower_http::timeout::TimeoutLayer;
+use tower_http::trace::TraceLayer;
+
+use crate::error::ApiError;
+
+const REQUEST_ID_HEADER: &str = "x-request-id";
+const MAX_BODY_BYTES: usize = 1024 * 1024;
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub fn build_router(pool: PgPool, public_base_url: &str) -> Router {
+    let request_id_header = axum::http::HeaderName::from_static(REQUEST_ID_HEADER);
+    let cors = CorsLayer::new()
+        .allow_origin(
+            public_base_url
+                .parse::<HeaderValue>()
+                .expect("PUBLIC_BASE_URL must be a valid header value"),
+        )
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+        .allow_headers(tower_http::cors::Any);
+
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .fallback(not_found)
         .with_state(pool)
+        // axum's Router::layer wraps outward on each call (the *last* .layer() ends up
+        // outermost, seeing the request first) -- the reverse of tower::ServiceBuilder. This
+        // chain is written innermost-first so the request actually flows, outer to inner:
+        // BodyLimit -> Timeout -> Cors -> SetRequestId -> Trace -> PropagateRequestId -> routing.
+        .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
+        .layer(TraceLayer::new_for_http())
+        .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid))
+        .layer(cors)
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            REQUEST_TIMEOUT,
+        ))
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
 }
 
 async fn healthz() -> StatusCode {
     StatusCode::OK
 }
 
-async fn readyz(State(pool): State<PgPool>) -> StatusCode {
-    match sqlx::query!("SELECT 1 as one").fetch_one(&pool).await {
-        Ok(_) => StatusCode::OK,
-        Err(error) => {
+async fn readyz(State(pool): State<PgPool>) -> Result<StatusCode, ApiError> {
+    sqlx::query!("SELECT 1 as one")
+        .fetch_one(&pool)
+        .await
+        .map_err(|error| {
             tracing::error!(%error, "readyz db check failed");
-            StatusCode::SERVICE_UNAVAILABLE
-        }
-    }
+            ApiError::from(AppError::Internal("database unavailable".to_string()))
+        })?;
+    Ok(StatusCode::OK)
+}
+
+async fn not_found() -> ApiError {
+    ApiError::from(AppError::NotFound)
 }
 
 #[cfg(test)]
@@ -32,9 +74,11 @@ mod tests {
     use axum::http::Request;
     use tower::ServiceExt;
 
+    const TEST_ORIGIN: &str = "http://localhost:4200";
+
     #[sqlx::test]
     async fn healthz_returns_200(pool: PgPool) {
-        let app = build_router(pool);
+        let app = build_router(pool, TEST_ORIGIN);
         let response = app
             .oneshot(
                 Request::builder()
@@ -49,7 +93,7 @@ mod tests {
 
     #[sqlx::test]
     async fn readyz_returns_200_with_real_db_check(pool: PgPool) {
-        let app = build_router(pool);
+        let app = build_router(pool, TEST_ORIGIN);
         let response = app
             .oneshot(
                 Request::builder()
@@ -60,5 +104,40 @@ mod tests {
             .await
             .expect("router call succeeds");
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[sqlx::test]
+    async fn unknown_route_returns_problem_json_with_request_id(pool: PgPool) {
+        let app = build_router(pool, TEST_ORIGIN);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/nope")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .expect("content-type header present"),
+            "application/problem+json",
+        );
+        let request_id = response
+            .headers()
+            .get(REQUEST_ID_HEADER)
+            .expect("x-request-id header present");
+        assert!(!request_id.is_empty());
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("valid json body");
+        assert_eq!(json["status"], 404);
+        assert_eq!(json["title"], "Not Found");
     }
 }
