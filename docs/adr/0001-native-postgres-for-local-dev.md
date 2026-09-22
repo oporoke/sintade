@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — 2026-09-22
+Superseded by [ADR-0002](0002-postgres-back-to-compose.md) — 2026-09-22
 
 ## Context
 

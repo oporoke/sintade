@@ -13,7 +13,7 @@
 </div>
 
 > [!IMPORTANT]
-> **Repository status: in development (Day 2 of the [daily build plan](docs/plan/daily-build-plan.md)).** The Cargo workspace scaffold (`crates/core`, `crates/platform`, `bin/api`, `bin/worker`) exists and builds; local dependencies (MinIO, Mailpit via `compose.yml` + `just deps-up`; Postgres native, see [ADR-0001](docs/adr/0001-native-postgres-for-local-dev.md)) are up. No migrations, Dockerfiles, CI or application logic exist yet. This README is derived entirely from the *Sintade — Product & Architecture Document* (the design document). Every feature, endpoint, table, variable and procedure below is **planned**, not implemented, unless explicitly marked otherwise. Items that the design document does not settle are marked `TODO: Verify`.
+> **Repository status: in development (Day 2 of the [daily build plan](docs/plan/daily-build-plan.md)).** The Cargo workspace scaffold (`crates/core`, `crates/platform`, `bin/api`, `bin/worker`) exists and builds; local dependencies (Postgres, MinIO, Mailpit) run via `compose.yml` + `just deps-up`, matching the design document's documented setup. No migrations, Dockerfiles, CI or application logic exist yet. This README is derived entirely from the *Sintade — Product & Architecture Document* (the design document). Every feature, endpoint, table, variable and procedure below is **planned**, not implemented, unless explicitly marked otherwise. Items that the design document does not settle are marked `TODO: Verify`.
 >
 > When code lands, each section must be re-verified against the repository and its status markers updated. See `docs/plan/PROGRESS.md` for the current day and build log.
 
