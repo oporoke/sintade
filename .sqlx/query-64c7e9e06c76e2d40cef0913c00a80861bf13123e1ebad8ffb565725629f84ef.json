@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id, event_type, payload\n            FROM outbox_events\n            WHERE dispatched_at IS NULL\n            ORDER BY id\n            FOR UPDATE SKIP LOCKED\n            LIMIT 20\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "outbox_events",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "event_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox_events",
+            "name": "event_type"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "payload",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "outbox_events",
+            "name": "payload"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "64c7e9e06c76e2d40cef0913c00a80861bf13123e1ebad8ffb565725629f84ef"
+}
