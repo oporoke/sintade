@@ -1,0 +1,12 @@
+[package]
+name = "api"
+version = "0.1.0"
+edition.workspace = true
+
+[[bin]]
+name = "api"
+path = "src/main.rs"
+
+[dependencies]
+core = { path = "../../crates/core" }
+platform = { path = "../../crates/platform" }
