@@ -1821,7 +1821,10 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "aws-sdk-s3",
+ "kernel",
+ "rand",
  "reqwest",
+ "serde_json",
  "sqlx",
  "thiserror",
  "time",
@@ -2510,6 +2513,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "url",
+ "uuid",
  "webpki-roots",
 ]
 
@@ -2576,6 +2580,7 @@ dependencies = [
  "sqlx-core",
  "thiserror",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2610,6 +2615,7 @@ dependencies = [
  "stringprep",
  "thiserror",
  "tracing",
+ "uuid",
  "whoami",
 ]
 
@@ -2635,6 +2641,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -3312,8 +3319,14 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 name = "worker"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "kernel",
  "platform",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

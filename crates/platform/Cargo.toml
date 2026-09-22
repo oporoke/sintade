@@ -10,7 +10,10 @@ path = "src/lib.rs"
 [dependencies]
 async-trait = "0.1.92"
 aws-sdk-s3 = "1.149.0"
-sqlx = { version = "0.9.0", features = ["postgres", "runtime-tokio", "tls-rustls"] }
+kernel = { version = "0.1.0", path = "../kernel" }
+rand = "0.10.3"
+serde_json = "1.0.151"
+sqlx = { version = "0.9.0", features = ["postgres", "runtime-tokio", "tls-rustls", "uuid"] }
 thiserror = "2.0.20"
 time = "0.3.55"
 tracing = "0.1.44"
