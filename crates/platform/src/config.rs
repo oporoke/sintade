@@ -5,6 +5,10 @@ pub struct Config {
     pub database_url: String,
     pub rust_log: String,
     pub public_base_url: String,
+    pub s3_endpoint: String,
+    pub s3_bucket: String,
+    pub s3_access_key: String,
+    pub s3_secret_key: String,
 }
 
 impl Config {
@@ -13,6 +17,10 @@ impl Config {
             database_url: env_var("DATABASE_URL")?,
             rust_log: std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()),
             public_base_url: env_var("PUBLIC_BASE_URL")?,
+            s3_endpoint: env_var("S3_ENDPOINT")?,
+            s3_bucket: env_var("S3_BUCKET")?,
+            s3_access_key: env_var("S3_ACCESS_KEY")?,
+            s3_secret_key: env_var("S3_SECRET_KEY")?,
         })
     }
 }
