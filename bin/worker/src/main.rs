@@ -2,13 +2,17 @@ mod handler;
 mod handlers;
 mod relay;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use handler::{HandlerRegistry, JobCtx};
 use handlers::noop::NoopHandler;
-use platform::JobQueue;
+use handlers::send_email::SendEmailHandler;
+use platform::{JobQueue, Mailer, SmtpMailer};
 use relay::{OutboxRelay, SubscriberRegistry};
 use sqlx::PgPool;
+
+const FROM_ADDRESS: &str = "no-reply@sintade.app";
 
 const LOCK_DURATION: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -20,20 +24,26 @@ async fn main() -> anyhow::Result<()> {
     platform::init_telemetry(&config.rust_log);
 
     let pool = platform::connect(&config.database_url).await?;
+    let mailer: Arc<dyn Mailer> = Arc::new(SmtpMailer::new(&config.smtp_url, FROM_ADDRESS)?);
     let worker_id = format!("worker-{}", std::process::id());
     tracing::info!(worker_id, "worker started");
 
     tokio::try_join!(
-        run_job_loop(pool.clone(), worker_id),
+        run_job_loop(pool.clone(), worker_id, mailer),
         run_outbox_relay_loop(pool),
     )?;
     Ok(())
 }
 
-async fn run_job_loop(pool: PgPool, worker_id: String) -> anyhow::Result<()> {
+async fn run_job_loop(
+    pool: PgPool,
+    worker_id: String,
+    mailer: Arc<dyn Mailer>,
+) -> anyhow::Result<()> {
     let queue = JobQueue::new(pool);
     let mut registry = HandlerRegistry::new();
     registry.register(NoopHandler);
+    registry.register(SendEmailHandler::new(mailer));
 
     loop {
         match queue.claim_next(&worker_id, LOCK_DURATION).await? {
