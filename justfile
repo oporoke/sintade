@@ -17,3 +17,9 @@ db-migrate:
 
 api:
     cargo run -p api
+
+worker:
+    cargo run -p worker
+
+migration name:
+    sqlx migrate add {{name}}
