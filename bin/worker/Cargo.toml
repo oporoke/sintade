@@ -8,5 +8,5 @@ name = "worker"
 path = "src/main.rs"
 
 [dependencies]
-core = { path = "../../crates/core" }
+kernel = { path = "../../crates/kernel" }
 platform = { path = "../../crates/platform" }
