@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/platform",
+    "bin/api",
+    "bin/worker",
+]
+
+[workspace.package]
+edition = "2024"
