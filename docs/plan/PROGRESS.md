@@ -6,7 +6,13 @@
 
 ## Current milestone
 
-M1 — Foundation (Days 1–10)
+M2 — Identity (Days 11–20)
+
+## Milestones closed
+
+| Milestone | Days | Closed | Demo | Carry-over |
+| --- | --- | --- | --- | --- |
+| M1 — Foundation | 1–10 | 2026-09-24 | [docs/demos/M01-foundation.md](../demos/M01-foundation.md) | No staging VPS yet (`deploy-staging` CI job fully wired, gated on `vars.STAGING_HOST`); 4 informational `cargo audit` advisories in transitive deps, revisit at Day 14; per-kind job concurrency limiting unused until a 2nd job kind exists |
 
 ## Log
 

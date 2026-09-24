@@ -1080,9 +1080,9 @@ Rules: one row = one mergeable unit of work. `In progress` must name the branch 
 
 | Phase | Item | Epics | Status | Notes |
 | --- | --- | --- | --- | --- |
-| MVP | Cargo workspace, `core`, `platform` crates | 19 | Not started |  |
-| MVP | Docker Compose dev env + CI pipeline | 19 | Not started |  |
-| MVP | Angular shell: `ApiClient`, auth interceptor, `CapabilityService` | 20 | Not started |  |
+| MVP | Cargo workspace, `core`, `platform` crates | 19 | In progress | Merged Days 1–8 (`feat/day-001`..`008`). `core` renamed to `kernel`, see ADR-0003. `platform` has `Config`, `Clock`, `ObjectStore`+`S3ObjectStore`, `JobQueue`, `Outbox`+`listen`, `Mailer`+`SmtpMailer`. Not "Done" per this table's own rule (not yet deployed anywhere) |
+| MVP | Docker Compose dev env + CI pipeline | 19 | In progress | `compose.yml` (Days 2, follow-up) and `.github/workflows/ci.yml` (Day 10, PR #11) both exist and pass for real (watched actual GitHub Actions runs). `deploy-staging` is wired but has no VPS target yet — see `docs/plan/PROGRESS.md` |
+| MVP | Angular shell: `ApiClient`, auth interceptor, `CapabilityService` | 20 | In progress | Day 9 (`feat/day-009-angular-shell`): `ApiClient`, `CapabilityService`, theme tokens, routing all exist. Built an *error* interceptor, not an *auth* interceptor — auth doesn't exist until Identity (M2); this row's literal wording is ahead of where the plan actually introduces auth |
 | MVP | Identity: register, login, refresh rotation, logout | 12 | Not started |  |
 | MVP | Identity: email verification, password reset | 12 | Not started |  |
 | MVP | Personal workspace auto-created on signup | 13 | Not started |  |
@@ -1093,7 +1093,7 @@ Rules: one row = one mergeable unit of work. `In progress` must name the branch 
 | MVP | Ingest: recording, take, upload-session creation | 4 | Not started |  |
 | MVP | Ingest: presign, ack, status, finalize | 4 | Not started |  |
 | MVP | Client `Uploader`: streaming queue + retry | 3, 4 | Not started |  |
-| MVP | Worker binary, job queue, outbox relay | 5, 19 | Not started |  |
+| MVP | Worker binary, job queue, outbox relay | 5, 19 | In progress | Days 6–7 (`feat/day-006-job-queue`, `feat/day-007-outbox-relay`): `bin/worker` runs a real `SKIP LOCKED` poll loop with backoff/DLQ and an outbox relay with exactly-once in-process dispatch, both tested and live-demonstrated. No real job handlers/subscribers beyond `Noop`/`SendEmail` yet — `ProcessTake` etc. land with Processing (M5) |
 | MVP | `ProcessTake`: concat, ffprobe, MP4 fast-start, poster | 5 | Not started |  |
 | MVP | Recording state machine + "ready" email | 5, 15 | Not started |  |
 | MVP | Share links: private / link / public | 9 | Not started |  |

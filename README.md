@@ -1775,15 +1775,15 @@ Architectural limitations: single-node MinIO and single Postgres primary in MVP;
 
 ### Completed
 - Product and architecture design document.
+- **M1 — Foundation (Days 1–10, weeks 1–2).** Cargo workspace (`kernel`, `platform` with `ObjectStore`/`JobQueue`/`Outbox`/`Mailer` ports and MinIO/SMTP adapters), Docker Compose dev environment, GitHub Actions CI (fmt, clippy, sqlx check, tests, lint, Angular build, e2e across Chrome/Firefox/WebKit, dependency audit) and Docker images for api/worker/web, all merged and verified against real CI runs. Angular shell (`web/`) with a working `/debug` capability-matrix page. Demo: `docs/demos/M01-foundation.md`. **Staging auto-deploy is fully wired in CI but not yet live — no VPS is provisioned** (see `docs/plan/PROGRESS.md`).
 
 ### In Progress
-- `TODO: Verify` — no implementation work recorded yet.
+- M2 — Identity (Days 11–20, weeks 3–4): not started.
 
 ### Planned — MVP (weeks 1–14)
 
 | Week | Milestone |
 | --- | --- |
-| 1–2 | Foundation: workspace, `core`, `platform`, Angular shell, CI, Compose |
 | 3–4 | Identity + personal workspace |
 | 5–7 | Capture engine |
 | 7–8 | Ingest + streaming uploader |
@@ -1802,7 +1802,7 @@ AI summaries/chapters/translation; public API and integrations; viewer insights 
 
 ## 51. Frequently Asked Questions
 
-**How do I start the application?** `just deps-up && just db-migrate && just api`, `just worker`, `just web` (§18). Not runnable until the repository exists.
+**How do I start the application?** `just deps-up && just db-migrate && just api`, `just worker`, `just web` (§18). Runnable as of Day 10 — see `docs/demos/M01-foundation.md`.
 
 **How do I reset the local database?** `just reset` (drops DB and bucket). Never in production.
 
