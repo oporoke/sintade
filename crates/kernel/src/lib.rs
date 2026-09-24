@@ -3,7 +3,9 @@
 mod error;
 mod event;
 mod id;
+mod ids;
 
 pub use error::AppError;
-pub use event::{DomainEvent, EventEnvelope, Workspace, WorkspaceId};
+pub use event::{DomainEvent, EventEnvelope};
 pub use id::Id;
+pub use ids::{User, UserId, Workspace, WorkspaceId};

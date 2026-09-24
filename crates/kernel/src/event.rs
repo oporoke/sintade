@@ -2,10 +2,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::id::Id;
-
-pub struct Workspace;
-pub type WorkspaceId = Id<Workspace>;
+use crate::ids::WorkspaceId;
 
 pub trait DomainEvent: Serialize {
     const EVENT_TYPE: &'static str;

@@ -24,6 +24,11 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, title, detail) = match self.0 {
             AppError::NotFound => (StatusCode::NOT_FOUND, "Not Found", "not found".to_string()),
+            AppError::Validation(detail) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Unprocessable Entity",
+                detail,
+            ),
             AppError::Internal(detail) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Internal Server Error",
