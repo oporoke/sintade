@@ -31,21 +31,6 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
-      minio:
-        image: quay.io/minio/minio
-        env:
-          MINIO_ROOT_USER: minio
-          MINIO_ROOT_PASSWORD: minio-secret
-          MINIO_API_CORS_ALLOW_ORIGIN: http://localhost:4200
-        ports: ["9010:9000", "9011:9001"]
-        options: >-
-          --health-cmd "curl -f http://localhost:9000/minio/health/live"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-        # `services:` containers can't run a custom command, so MinIO starts with its default
-        # entrypoint here; the bucket is created by a separate step below instead of compose's
-        # minio-init job.
       mailpit:
         image: axllent/mailpit
         ports: ["1025:1025", "8025:8025"]
@@ -60,6 +45,20 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Start MinIO
+        # `services:` containers can't be given a command, and MinIO's image requires one
+        # (`server /data ...`) -- it just prints its help text and exits without it. Run it as
+        # a plain background container instead.
+        run: |
+          docker run -d --name minio --network host \
+            -e MINIO_ROOT_USER=minio \
+            -e MINIO_ROOT_PASSWORD=minio-secret \
+            -e MINIO_API_CORS_ALLOW_ORIGIN=http://localhost:4200 \
+            quay.io/minio/minio server /data --address :9010 --console-address :9011
+          for _ in $(seq 1 20); do
+            curl -sf http://localhost:9010/minio/health/live && break
+            sleep 1
+          done
       - name: Create MinIO bucket
         run: |
           docker run --rm --network host \
