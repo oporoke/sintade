@@ -8,4 +8,4 @@ mod ids;
 pub use error::AppError;
 pub use event::{DomainEvent, EventEnvelope};
 pub use id::Id;
-pub use ids::{User, UserId, Workspace, WorkspaceId};
+pub use ids::{Session, SessionId, User, UserId, Workspace, WorkspaceId};

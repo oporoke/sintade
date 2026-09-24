@@ -1,15 +1,11 @@
-use std::sync::Arc;
-
 use argon2::Argon2;
 use argon2::password_hash::PasswordHasher;
 use kernel::{UserId, WorkspaceId};
-use platform::{Clock, JobQueue};
-use rand::RngExt;
-use sha2::{Digest, Sha256};
-use sqlx::PgPool;
 use time::Duration as TimeDuration;
 use uuid::Uuid;
 
+use crate::app::service::IdentityService;
+use crate::app::token::{generate_random_hex_token, sha256_digest};
 use crate::domain::{Email, EmailError, Password, PasswordError};
 use crate::infra;
 
@@ -36,28 +32,7 @@ pub struct RegisterRequest {
     pub display_name: String,
 }
 
-pub struct IdentityService {
-    pool: PgPool,
-    queue: JobQueue,
-    clock: Arc<dyn Clock>,
-    public_base_url: String,
-}
-
 impl IdentityService {
-    pub fn new(
-        pool: PgPool,
-        queue: JobQueue,
-        clock: Arc<dyn Clock>,
-        public_base_url: String,
-    ) -> Self {
-        Self {
-            pool,
-            queue,
-            clock,
-            public_base_url,
-        }
-    }
-
     /// Registers a user and their personal workspace in one transaction (US-01), then enqueues
     /// a verification email. Deliberately returns the same `Ok(())` whether this was a fresh
     /// registration or the email was already taken -- no account enumeration (US-01).
@@ -84,8 +59,8 @@ impl IdentityService {
         infra::insert_personal_workspace(&mut tx, workspace_id, &workspace_name).await?;
         infra::insert_owner_membership(&mut tx, workspace_id, user_id).await?;
 
-        let raw_token = generate_token();
-        let token_hash = Sha256::digest(raw_token.as_bytes()).to_vec();
+        let raw_token = generate_random_hex_token();
+        let token_hash = sha256_digest(&raw_token);
         let expires_at = self.clock.now() + TimeDuration::hours(VERIFY_EMAIL_TTL_HOURS);
         infra::insert_email_token(
             &mut tx,
@@ -124,9 +99,4 @@ fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error>
     // random salt internally.
     let argon2 = Argon2::default();
     Ok(argon2.hash_password(password.as_bytes())?.to_string())
-}
-
-fn generate_token() -> String {
-    let bytes: [u8; 32] = rand::rng().random();
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

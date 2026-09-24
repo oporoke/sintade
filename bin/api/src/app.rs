@@ -14,7 +14,7 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::error::ApiError;
-use crate::routes::auth;
+use crate::routes::{auth, me};
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
 const MAX_BODY_BYTES: usize = 1024 * 1024;
@@ -43,6 +43,8 @@ pub fn build_router(pool: PgPool, identity: Arc<IdentityService>, public_base_ur
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/api/v1/auth/register", post(auth::register))
+        .route("/api/v1/auth/login", post(auth::login))
+        .route("/api/v1/me", get(me::me))
         .fallback(not_found)
         .with_state(state)
         // axum's Router::layer wraps outward on each call (the *last* .layer() ends up
@@ -87,6 +89,7 @@ pub(crate) mod tests {
     use tower::ServiceExt;
 
     const TEST_ORIGIN: &str = "http://localhost:4200";
+    const TEST_SESSION_SECRET: &[u8] = b"test-session-secret-at-least-32-bytes-long";
 
     pub(crate) fn test_identity(pool: PgPool) -> Arc<IdentityService> {
         let queue = platform::JobQueue::new(pool.clone());
@@ -95,6 +98,7 @@ pub(crate) mod tests {
             queue,
             Arc::new(platform::SystemClock),
             TEST_ORIGIN.to_string(),
+            TEST_SESSION_SECRET.to_vec(),
         ))
     }
 

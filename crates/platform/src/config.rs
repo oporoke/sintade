@@ -10,6 +10,7 @@ pub struct Config {
     pub s3_access_key: String,
     pub s3_secret_key: String,
     pub smtp_url: String,
+    pub session_secret: String,
 }
 
 impl Config {
@@ -23,6 +24,7 @@ impl Config {
             s3_access_key: env_var("S3_ACCESS_KEY")?,
             s3_secret_key: env_var("S3_SECRET_KEY")?,
             smtp_url: env_var("SMTP_URL")?,
+            session_secret: env_var("SESSION_SECRET")?,
         })
     }
 }

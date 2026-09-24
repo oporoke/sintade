@@ -29,6 +29,7 @@ impl IntoResponse for ApiError {
                 "Unprocessable Entity",
                 detail,
             ),
+            AppError::Unauthorized(detail) => (StatusCode::UNAUTHORIZED, "Unauthorized", detail),
             AppError::Internal(detail) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Internal Server Error",
