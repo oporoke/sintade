@@ -2,7 +2,7 @@
 
 ## Current day
 
-**Day 10** — CI: fmt, clippy, sqlx check, tests, lint, Angular build; images for api/worker/web; auto-deploy to staging (Milestone M1 demo day)
+**Day 10** — CI: fmt, clippy, sqlx check, tests, lint, Angular build; images for api/worker/web; auto-deploy to staging (Milestone M1 demo day) — verifying CI run before closing out
 
 ## Current milestone
 

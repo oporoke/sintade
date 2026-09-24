@@ -1,0 +1,18 @@
+services:
+  api:
+    image: ghcr.io/oporoke/sintade/api:${IMAGE_TAG:?}
+    env_file: /etc/sintade/env
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  worker:
+    image: ghcr.io/oporoke/sintade/worker:${IMAGE_TAG:?}
+    env_file: /etc/sintade/env
+    restart: unless-stopped
+
+  web:
+    image: ghcr.io/oporoke/sintade/web:${IMAGE_TAG:?}
+    ports:
+      - "80:80"
+    restart: unless-stopped

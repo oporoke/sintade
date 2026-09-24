@@ -1,5 +1,11 @@
 import { defineConfig, devices } from '@playwright/test';
 
+// Locally, this sandbox's network can't download Playwright's own Chromium build (see
+// docs/plan/PROGRESS.md), so local runs fall back to the system-installed Google Chrome via
+// CDP. CI installs Playwright's real browsers (`playwright install --with-deps`), so it uses
+// Playwright's own Chromium there instead.
+const chromiumChannel = process.env['CI'] ? undefined : 'chrome';
+
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: true,
@@ -13,12 +19,8 @@ export default defineConfig({
     baseURL: 'http://localhost:4200',
   },
   projects: [
-    // Uses the system-installed Google Chrome via CDP (no Playwright-managed binary download
-    // required). Firefox/WebKit need Playwright's own patched builds, which this sandbox's
-    // network could not download (see docs/plan/PROGRESS.md) -- kept here, commented out, for
-    // an environment that can fetch them.
-    { name: 'chromium', use: { ...devices['Desktop Chrome'], channel: 'chrome' } },
-    // { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
-    // { name: 'webkit', use: { ...devices['Desktop Safari'] } },
+    { name: 'chromium', use: { ...devices['Desktop Chrome'], channel: chromiumChannel } },
+    { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
+    { name: 'webkit', use: { ...devices['Desktop Safari'] } },
   ],
 });

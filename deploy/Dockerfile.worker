@@ -1,0 +1,11 @@
+FROM rust:slim AS builder
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+COPY . .
+ENV SQLX_OFFLINE=true
+RUN cargo build --release -p worker
+
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates ffmpeg && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/worker /usr/local/bin/worker
+ENTRYPOINT ["/usr/local/bin/worker"]
