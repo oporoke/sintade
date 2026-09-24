@@ -4,9 +4,11 @@ use std::time::Duration;
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderValue, Method, StatusCode};
+use axum::middleware;
 use axum::routing::{get, post};
 use identity::IdentityService;
 use kernel::AppError;
+use platform::{Clock, RateLimiter};
 use sqlx::PgPool;
 use tower_http::cors::CorsLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
@@ -15,6 +17,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::error::ApiError;
 use crate::routes::{auth, me, verify_email};
+use crate::security_headers::security_headers;
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
 const MAX_BODY_BYTES: usize = 1024 * 1024;
@@ -24,9 +27,17 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct AppState {
     pub pool: PgPool,
     pub identity: Arc<IdentityService>,
+    pub rate_limiter: Arc<RateLimiter>,
+    pub clock: Arc<dyn Clock>,
 }
 
-pub fn build_router(pool: PgPool, identity: Arc<IdentityService>, public_base_url: &str) -> Router {
+pub fn build_router(
+    pool: PgPool,
+    identity: Arc<IdentityService>,
+    rate_limiter: Arc<RateLimiter>,
+    clock: Arc<dyn Clock>,
+    public_base_url: &str,
+) -> Router {
     let request_id_header = axum::http::HeaderName::from_static(REQUEST_ID_HEADER);
     let cors = CorsLayer::new()
         .allow_origin(
@@ -37,7 +48,12 @@ pub fn build_router(pool: PgPool, identity: Arc<IdentityService>, public_base_ur
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
         .allow_headers(tower_http::cors::Any);
 
-    let state = AppState { pool, identity };
+    let state = AppState {
+        pool,
+        identity,
+        rate_limiter,
+        clock,
+    };
 
     Router::new()
         .route("/healthz", get(healthz))
@@ -58,10 +74,12 @@ pub fn build_router(pool: PgPool, identity: Arc<IdentityService>, public_base_ur
         // axum's Router::layer wraps outward on each call (the *last* .layer() ends up
         // outermost, seeing the request first) -- the reverse of tower::ServiceBuilder. This
         // chain is written innermost-first so the request actually flows, outer to inner:
-        // BodyLimit -> Timeout -> Cors -> SetRequestId -> Trace -> PropagateRequestId -> routing.
+        // BodyLimit -> Timeout -> Cors -> SecurityHeaders -> SetRequestId -> Trace ->
+        // PropagateRequestId -> routing.
         .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
         .layer(TraceLayer::new_for_http())
         .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid))
+        .layer(middleware::from_fn(security_headers))
         .layer(cors)
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -110,9 +128,32 @@ pub(crate) mod tests {
         ))
     }
 
+    pub(crate) fn test_rate_limiter(pool: PgPool) -> Arc<RateLimiter> {
+        Arc::new(RateLimiter::new(pool))
+    }
+
+    pub(crate) fn test_clock() -> Arc<dyn Clock> {
+        Arc::new(platform::SystemClock)
+    }
+
+    /// A clock frozen at a fixed instant, for tests (e.g. rate-limit window boundaries) that
+    /// would otherwise flake if wall-clock time happened to cross a window edge mid-test.
+    pub(crate) fn test_fixed_clock() -> Arc<dyn Clock> {
+        Arc::new(platform::FixedClock(
+            time::OffsetDateTime::from_unix_timestamp(1_800_000_000)
+                .expect("valid fixed timestamp"),
+        ))
+    }
+
     #[sqlx::test(migrations = "../../migrations")]
     async fn healthz_returns_200(pool: PgPool) {
-        let app = build_router(pool.clone(), test_identity(pool), TEST_ORIGIN);
+        let app = build_router(
+            pool.clone(),
+            test_identity(pool.clone()),
+            test_rate_limiter(pool.clone()),
+            test_clock(),
+            TEST_ORIGIN,
+        );
         let response = app
             .oneshot(
                 Request::builder()
@@ -127,7 +168,13 @@ pub(crate) mod tests {
 
     #[sqlx::test(migrations = "../../migrations")]
     async fn readyz_returns_200_with_real_db_check(pool: PgPool) {
-        let app = build_router(pool.clone(), test_identity(pool), TEST_ORIGIN);
+        let app = build_router(
+            pool.clone(),
+            test_identity(pool.clone()),
+            test_rate_limiter(pool.clone()),
+            test_clock(),
+            TEST_ORIGIN,
+        );
         let response = app
             .oneshot(
                 Request::builder()
@@ -142,7 +189,13 @@ pub(crate) mod tests {
 
     #[sqlx::test(migrations = "../../migrations")]
     async fn unknown_route_returns_problem_json_with_request_id(pool: PgPool) {
-        let app = build_router(pool.clone(), test_identity(pool), TEST_ORIGIN);
+        let app = build_router(
+            pool.clone(),
+            test_identity(pool.clone()),
+            test_rate_limiter(pool.clone()),
+            test_clock(),
+            TEST_ORIGIN,
+        );
         let response = app
             .oneshot(
                 Request::builder()

@@ -31,6 +31,12 @@ impl IntoResponse for ApiError {
             ),
             AppError::BadRequest(detail) => (StatusCode::BAD_REQUEST, "Bad Request", detail),
             AppError::Unauthorized(detail) => (StatusCode::UNAUTHORIZED, "Unauthorized", detail),
+            AppError::Forbidden(detail) => (StatusCode::FORBIDDEN, "Forbidden", detail),
+            AppError::RateLimited => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too Many Requests",
+                "too many requests, try again later".to_string(),
+            ),
             AppError::Internal(detail) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Internal Server Error",

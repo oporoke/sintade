@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO rate_limit_buckets (key, window_start, count)\n            VALUES ($1, $2, 1)\n            ON CONFLICT (key) DO UPDATE SET\n                count = CASE\n                    WHEN rate_limit_buckets.window_start = EXCLUDED.window_start\n                    THEN rate_limit_buckets.count + 1\n                    ELSE 1\n                END,\n                window_start = EXCLUDED.window_start\n            RETURNING count\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "rate_limit_buckets",
+            "name": "count"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "92780b15f4b5674de940f3ebe227d60c7e9c31e8bcdc2f294c303592a53a143c"
+}
