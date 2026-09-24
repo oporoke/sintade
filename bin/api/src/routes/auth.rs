@@ -4,7 +4,10 @@ use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::header::SET_COOKIE;
 use axum::response::AppendHeaders;
-use identity::{LoginError, LoginRequest, RefreshError, RegisterError, RegisterRequest};
+use identity::{
+    ForgotPasswordRequest, LoginError, LoginRequest, RefreshError, RegisterError, RegisterRequest,
+    ResetPasswordError, ResetPasswordRequest,
+};
 use kernel::AppError;
 use serde::{Deserialize, Serialize};
 
@@ -205,6 +208,88 @@ pub async fn logout(
         StatusCode::NO_CONTENT,
         AppendHeaders([(SET_COOKIE, clear_access), (SET_COOKIE, clear_refresh)]),
     ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ForgotPasswordBody {
+    pub email: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ForgotPasswordResponse {
+    pub message: &'static str,
+}
+
+/// Always `202` with the same message, whether or not the email exists (US-03) -- the identity
+/// service already enforces this at the service layer, this handler just can't turn it into a
+/// non-generic error either.
+#[tracing::instrument(skip_all)]
+pub async fn forgot_password(
+    State(state): State<AppState>,
+    Json(body): Json<ForgotPasswordBody>,
+) -> Result<(StatusCode, Json<ForgotPasswordResponse>), ApiError> {
+    state
+        .identity
+        .forgot_password(ForgotPasswordRequest { email: body.email })
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "forgot_password: database error");
+            ApiError::from(AppError::Internal("database unavailable".to_string()))
+        })?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(ForgotPasswordResponse {
+            message: "if that email exists, a reset link has been sent",
+        }),
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResetPasswordBody {
+    pub token: String,
+    pub password: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ResetPasswordResponse {
+    pub message: &'static str,
+}
+
+#[tracing::instrument(skip_all)]
+pub async fn reset_password(
+    State(state): State<AppState>,
+    Json(body): Json<ResetPasswordBody>,
+) -> Result<Json<ResetPasswordResponse>, ApiError> {
+    state
+        .identity
+        .reset_password(ResetPasswordRequest {
+            token: body.token,
+            password: body.password,
+        })
+        .await
+        .map_err(|error| {
+            let app_error = match error {
+                ResetPasswordError::InvalidToken => {
+                    AppError::BadRequest("invalid or expired reset token".to_string())
+                }
+                ResetPasswordError::InvalidPassword(source) => {
+                    AppError::Validation(source.to_string())
+                }
+                ResetPasswordError::Hash => {
+                    AppError::Internal("failed to hash password".to_string())
+                }
+                ResetPasswordError::Database(source) => {
+                    tracing::error!(error = %source, "reset_password: database error");
+                    AppError::Internal("database unavailable".to_string())
+                }
+            };
+            ApiError::from(app_error)
+        })?;
+
+    Ok(Json(ResetPasswordResponse {
+        message: "password reset",
+    }))
 }
 
 #[cfg(test)]
@@ -698,5 +783,229 @@ mod tests {
             .await
             .expect("router call succeeds");
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    /// Claims the next enqueued `SendEmail` job and pulls the `?token=...` value out of its
+    /// body link, standing in for "the user clicked the link in their inbox".
+    async fn claim_email_link_token(pool: &PgPool) -> String {
+        let queue = JobQueue::new(pool.clone());
+        let claimed = queue
+            .claim_next("test-worker", Duration::from_secs(30))
+            .await
+            .expect("claim succeeds")
+            .expect("a SendEmail job was enqueued");
+        assert_eq!(claimed.kind, "SendEmail");
+        queue.complete(claimed.id).await.expect("complete succeeds");
+
+        let body = claimed.payload["body"]
+            .as_str()
+            .expect("body field")
+            .to_string();
+        let (_, token) = body
+            .split_once("token=")
+            .expect("body contains a token link");
+        token.to_string()
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn forgot_password_with_unknown_email_returns_same_response_no_job_enqueued(
+        pool: PgPool,
+    ) {
+        let app = build_router(pool.clone(), test_identity(pool.clone()), TEST_ORIGIN);
+
+        let body = json!({"email": "no-such-account-day15@example.com"});
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/password/forgot")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        let queue = JobQueue::new(pool.clone());
+        let job = queue
+            .claim_next("test-worker", Duration::from_secs(30))
+            .await
+            .expect("claim succeeds");
+        assert!(
+            job.is_none(),
+            "no reset email is enqueued for an unknown address"
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn reset_password_flow_changes_password_revokes_sessions_and_is_single_use(pool: PgPool) {
+        let email = format!("day15-reset-{}@example.com", uuid::Uuid::now_v7());
+        let app = build_router(pool.clone(), test_identity(pool.clone()), TEST_ORIGIN);
+
+        // register, then log in so there's a live session to prove gets revoked
+        let (_, refresh_token) = register_and_login(&pool, &email).await;
+        // drain the verify-email job so it doesn't get mistaken for the reset job below
+        claim_email_link_token(&pool).await;
+
+        let forgot_body = json!({"email": email});
+        let forgot_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/password/forgot")
+                    .header("content-type", "application/json")
+                    .body(Body::from(forgot_body.to_string()))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        assert_eq!(forgot_response.status(), StatusCode::ACCEPTED);
+
+        let reset_token = claim_email_link_token(&pool).await;
+
+        let new_password = "a-brand-new-strong-password-77";
+        let reset_body = json!({"token": reset_token, "password": new_password});
+        let reset_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/password/reset")
+                    .header("content-type", "application/json")
+                    .body(Body::from(reset_body.to_string()))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        assert_eq!(reset_response.status(), StatusCode::OK);
+
+        // old session must be revoked -- refreshing with the pre-reset refresh cookie fails
+        let refresh_after_reset = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/refresh")
+                    .header("cookie", &refresh_token)
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        assert_eq!(
+            refresh_after_reset.status(),
+            StatusCode::UNAUTHORIZED,
+            "sessions are revoked on password reset"
+        );
+
+        // old password no longer works
+        let login_old = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"email": email, "password": "correct-horse-battery-staple-42"})
+                            .to_string(),
+                    ))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        assert_eq!(login_old.status(), StatusCode::UNAUTHORIZED);
+
+        // new password works
+        let login_new = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"email": email, "password": new_password}).to_string(),
+                    ))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        assert_eq!(login_new.status(), StatusCode::OK);
+
+        // the reset token is single-use
+        let replay = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/password/reset")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"token": reset_token, "password": "yet-another-password-88"})
+                            .to_string(),
+                    ))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn reset_password_with_short_password_returns_422(pool: PgPool) {
+        let email = format!("day15-reset-short-{}@example.com", uuid::Uuid::now_v7());
+        let app = build_router(pool.clone(), test_identity(pool.clone()), TEST_ORIGIN);
+        register_and_login(&pool, &email).await;
+        claim_email_link_token(&pool).await; // drain verify-email job
+
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/password/forgot")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({"email": email}).to_string()))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        let reset_token = claim_email_link_token(&pool).await;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/password/reset")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"token": reset_token, "password": "short1"}).to_string(),
+                    ))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn reset_password_with_garbage_token_returns_400(pool: PgPool) {
+        let app = build_router(pool.clone(), test_identity(pool), TEST_ORIGIN);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/password/reset")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"token": "not-a-real-token", "password": "a-fine-password-99"})
+                            .to_string(),
+                    ))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

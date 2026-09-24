@@ -27,4 +27,18 @@ impl IdentityService {
             session_secret,
         }
     }
+
+    /// Best-effort enqueue: logs and swallows failure rather than propagating it, matching
+    /// register's existing behavior -- an undeliverable notification email should never fail
+    /// the request that triggered it.
+    pub(super) async fn enqueue_email(&self, to: &str, subject: &str, body: &str) {
+        let payload = serde_json::json!({
+            "to": to,
+            "subject": subject,
+            "body": body,
+        });
+        if let Err(error) = self.queue.enqueue("SendEmail", payload).await {
+            tracing::error!(%error, "failed to enqueue email");
+        }
+    }
 }

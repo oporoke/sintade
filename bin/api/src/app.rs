@@ -14,7 +14,7 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::error::ApiError;
-use crate::routes::{auth, me};
+use crate::routes::{auth, me, verify_email};
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
 const MAX_BODY_BYTES: usize = 1024 * 1024;
@@ -46,6 +46,12 @@ pub fn build_router(pool: PgPool, identity: Arc<IdentityService>, public_base_ur
         .route("/api/v1/auth/login", post(auth::login))
         .route("/api/v1/auth/refresh", post(auth::refresh))
         .route("/api/v1/auth/logout", post(auth::logout))
+        .route(
+            "/api/v1/auth/verify-email",
+            post(verify_email::verify_email),
+        )
+        .route("/api/v1/auth/password/forgot", post(auth::forgot_password))
+        .route("/api/v1/auth/password/reset", post(auth::reset_password))
         .route("/api/v1/me", get(me::me))
         .fallback(not_found)
         .with_state(state)

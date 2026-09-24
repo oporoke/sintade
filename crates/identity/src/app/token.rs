@@ -102,6 +102,17 @@ pub fn sha256_digest(input: &str) -> Vec<u8> {
     Sha256::digest(input.as_bytes()).to_vec()
 }
 
+/// Argon2::default() is argon2id, m=19 MiB, t=2, p=1 -- exactly docs/design.md's spec
+/// ("argon2id, m=19 MiB, t=2, p=1 (OWASP baseline)"); hash_password() generates its own
+/// random salt internally.
+pub fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
+    use argon2::Argon2;
+    use argon2::password_hash::PasswordHasher;
+
+    let argon2 = Argon2::default();
+    Ok(argon2.hash_password(password.as_bytes())?.to_string())
+}
+
 impl crate::app::service::IdentityService {
     /// Verifies an access-cookie value against this service's `SESSION_SECRET` and clock.
     pub fn verify_access_cookie(&self, token: &str) -> Result<AccessClaims, AccessTokenError> {
