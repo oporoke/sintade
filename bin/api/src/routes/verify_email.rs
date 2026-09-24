@@ -56,7 +56,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::build_router;
-    use crate::app::tests::test_identity;
+    use crate::app::tests::{test_clock, test_identity, test_rate_limiter};
 
     const TEST_ORIGIN: &str = "http://localhost:4200";
 
@@ -86,7 +86,13 @@ mod tests {
 
     #[sqlx::test(migrations = "../../migrations")]
     async fn verify_email_with_garbage_token_returns_400(pool: PgPool) {
-        let app = build_router(pool.clone(), test_identity(pool), TEST_ORIGIN);
+        let app = build_router(
+            pool.clone(),
+            test_identity(pool.clone()),
+            test_rate_limiter(pool.clone()),
+            test_clock(),
+            TEST_ORIGIN,
+        );
 
         let body = json!({"token": "not-a-real-token"});
         let response = app
@@ -106,7 +112,13 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn verify_email_with_real_token_marks_user_verified_and_is_single_use(pool: PgPool) {
         let email = format!("day15-verify-{}@example.com", uuid::Uuid::now_v7());
-        let app = build_router(pool.clone(), test_identity(pool.clone()), TEST_ORIGIN);
+        let app = build_router(
+            pool.clone(),
+            test_identity(pool.clone()),
+            test_rate_limiter(pool.clone()),
+            test_clock(),
+            TEST_ORIGIN,
+        );
 
         let register_body = json!({
             "email": email,

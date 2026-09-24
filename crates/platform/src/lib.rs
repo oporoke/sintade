@@ -9,6 +9,7 @@ mod mailer;
 mod notify;
 mod object_store;
 mod outbox;
+mod rate_limit;
 mod telemetry;
 
 pub use clock::{Clock, FixedClock, SystemClock};
@@ -20,4 +21,5 @@ pub use mailer::{EmailMessage, Mailer, MailerError, SmtpMailer};
 pub use notify::listen;
 pub use object_store::{ObjectMeta, ObjectStore, S3ObjectStore, StorageError};
 pub use outbox::{NOTIFY_CHANNEL, Outbox, OutboxError};
+pub use rate_limit::RateLimiter;
 pub use telemetry::init as init_telemetry;

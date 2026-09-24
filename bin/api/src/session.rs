@@ -71,11 +71,15 @@ pub fn clear_cookie_header(name: &str, path: &str) -> String {
 /// `/auth/logout`, which key off the refresh cookie rather than the (possibly already expired)
 /// access cookie, so a `SessionClaims` extractor isn't the right fit for them.
 pub fn refresh_token_from_headers(headers: &HeaderMap) -> Option<&str> {
-    let cookie_header = headers.get(COOKIE)?.to_str().ok()?;
-    read_cookie(cookie_header, REFRESH_COOKIE_NAME)
+    cookie_from_headers(headers, REFRESH_COOKIE_NAME)
 }
 
-fn read_cookie<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
+pub fn cookie_from_headers<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    let cookie_header = headers.get(COOKIE)?.to_str().ok()?;
+    read_cookie(cookie_header, name)
+}
+
+pub(crate) fn read_cookie<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
     cookie_header.split(';').find_map(|pair| {
         let pair = pair.trim();
         let (key, value) = pair.split_once('=')?;

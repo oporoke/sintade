@@ -46,14 +46,20 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::build_router;
-    use crate::app::tests::test_identity;
+    use crate::app::tests::{test_clock, test_identity, test_rate_limiter};
 
     const TEST_ORIGIN: &str = "http://localhost:4200";
 
     /// Registers a user via the real HTTP handler, then returns the two `Set-Cookie` values
     /// (bare `name=value`, attributes stripped) from a successful login.
     async fn register_and_login(pool: &PgPool, email: &str) -> (String, String) {
-        let app = build_router(pool.clone(), test_identity(pool.clone()), TEST_ORIGIN);
+        let app = build_router(
+            pool.clone(),
+            test_identity(pool.clone()),
+            test_rate_limiter(pool.clone()),
+            test_clock(),
+            TEST_ORIGIN,
+        );
 
         let register_body = json!({
             "email": email,
@@ -100,7 +106,7 @@ mod tests {
                 raw.split_once(';').map_or(raw, |(kv, _)| kv).to_string()
             })
             .collect();
-        assert_eq!(set_cookies.len(), 2, "login sets exactly two cookies");
+        assert_eq!(set_cookies.len(), 3, "login sets exactly three cookies");
 
         let access = set_cookies
             .iter()
@@ -121,7 +127,13 @@ mod tests {
         let email = format!("day13-{}@example.com", uuid::Uuid::now_v7());
         let (access_cookie, refresh_cookie) = register_and_login(&pool, &email).await;
 
-        let app = build_router(pool.clone(), test_identity(pool), TEST_ORIGIN);
+        let app = build_router(
+            pool.clone(),
+            test_identity(pool.clone()),
+            test_rate_limiter(pool.clone()),
+            test_clock(),
+            TEST_ORIGIN,
+        );
         let response = app
             .oneshot(
                 Request::builder()
@@ -150,7 +162,13 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn login_with_wrong_password_returns_401(pool: PgPool) {
         let email = format!("day13-badpw-{}@example.com", uuid::Uuid::now_v7());
-        let app = build_router(pool.clone(), test_identity(pool.clone()), TEST_ORIGIN);
+        let app = build_router(
+            pool.clone(),
+            test_identity(pool.clone()),
+            test_rate_limiter(pool.clone()),
+            test_clock(),
+            TEST_ORIGIN,
+        );
 
         let register_body = json!({
             "email": email,
@@ -186,7 +204,13 @@ mod tests {
 
     #[sqlx::test(migrations = "../../migrations")]
     async fn login_with_unknown_email_returns_401(pool: PgPool) {
-        let app = build_router(pool.clone(), test_identity(pool), TEST_ORIGIN);
+        let app = build_router(
+            pool.clone(),
+            test_identity(pool.clone()),
+            test_rate_limiter(pool.clone()),
+            test_clock(),
+            TEST_ORIGIN,
+        );
 
         let login_body = json!({
             "email": "no-such-account@example.com",
@@ -208,7 +232,13 @@ mod tests {
 
     #[sqlx::test(migrations = "../../migrations")]
     async fn me_without_cookie_returns_401(pool: PgPool) {
-        let app = build_router(pool.clone(), test_identity(pool), TEST_ORIGIN);
+        let app = build_router(
+            pool.clone(),
+            test_identity(pool.clone()),
+            test_rate_limiter(pool.clone()),
+            test_clock(),
+            TEST_ORIGIN,
+        );
         let response = app
             .oneshot(
                 Request::builder()
@@ -235,7 +265,13 @@ mod tests {
             chars.into_iter().collect::<String>()
         };
 
-        let app = build_router(pool.clone(), test_identity(pool), TEST_ORIGIN);
+        let app = build_router(
+            pool.clone(),
+            test_identity(pool.clone()),
+            test_rate_limiter(pool.clone()),
+            test_clock(),
+            TEST_ORIGIN,
+        );
         let response = app
             .oneshot(
                 Request::builder()
