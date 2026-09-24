@@ -9,7 +9,9 @@ path = "src/lib.rs"
 
 [dependencies]
 argon2 = "0.6.0"
+base64 = "0.23.1"
 email_address = "0.2.9"
+hmac = "0.13.0"
 kernel = { version = "0.1.0", path = "../kernel" }
 platform = { version = "0.1.0", path = "../platform" }
 rand = "0.10.3"

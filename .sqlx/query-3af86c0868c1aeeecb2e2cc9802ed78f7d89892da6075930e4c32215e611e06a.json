@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT w.id\n        FROM workspaces w\n        JOIN memberships m ON m.workspace_id = w.id\n        WHERE m.user_id = $1 AND w.is_personal = true\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3af86c0868c1aeeecb2e2cc9802ed78f7d89892da6075930e4c32215e611e06a"
+}

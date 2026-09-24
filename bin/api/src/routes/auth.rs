@@ -1,12 +1,15 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use identity::{RegisterError, RegisterRequest};
+use axum::http::header::SET_COOKIE;
+use axum::response::AppendHeaders;
+use identity::{LoginError, LoginRequest, RegisterError, RegisterRequest};
 use kernel::AppError;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::error::ApiError;
+use crate::session::{ACCESS_COOKIE_NAME, REFRESH_COOKIE_NAME, set_cookie_header};
 
 #[derive(Debug, Deserialize)]
 pub struct RegisterBody {
@@ -50,6 +53,66 @@ pub async fn register(
         StatusCode::CREATED,
         Json(RegisterResponse {
             message: "if the details are valid, a verification email has been sent",
+        }),
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LoginBody {
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LoginResponse {
+    pub message: &'static str,
+}
+
+type LoginCookies = AppendHeaders<[(axum::http::HeaderName, String); 2]>;
+
+#[tracing::instrument(skip_all)]
+pub async fn login(
+    State(state): State<AppState>,
+    Json(body): Json<LoginBody>,
+) -> Result<(StatusCode, LoginCookies, Json<LoginResponse>), ApiError> {
+    let session = state
+        .identity
+        .login(LoginRequest {
+            email: body.email,
+            password: body.password,
+        })
+        .await
+        .map_err(|error| {
+            let app_error = match error {
+                LoginError::InvalidCredentials => {
+                    AppError::Unauthorized("invalid email or password".to_string())
+                }
+                LoginError::Database(source) => {
+                    tracing::error!(error = %source, "login: database error");
+                    AppError::Internal("database unavailable".to_string())
+                }
+            };
+            ApiError::from(app_error)
+        })?;
+
+    let access_cookie = set_cookie_header(
+        ACCESS_COOKIE_NAME,
+        &session.access_token,
+        session.access_ttl.whole_seconds(),
+        "/",
+    );
+    let refresh_cookie = set_cookie_header(
+        REFRESH_COOKIE_NAME,
+        &session.refresh_token,
+        session.refresh_ttl.whole_seconds(),
+        "/api/v1/auth",
+    );
+
+    Ok((
+        StatusCode::OK,
+        AppendHeaders([(SET_COOKIE, access_cookie), (SET_COOKIE, refresh_cookie)]),
+        Json(LoginResponse {
+            message: "logged in",
         }),
     ))
 }

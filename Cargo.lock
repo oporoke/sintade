@@ -1503,7 +1503,9 @@ name = "identity"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "base64 0.23.1",
  "email_address",
+ "hmac 0.13.0",
  "kernel",
  "platform",
  "rand",

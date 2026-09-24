@@ -14,6 +14,7 @@ env:
   PUBLIC_BASE_URL: http://localhost:4200
   SMTP_URL: smtp://localhost:1025
   RUST_LOG: info
+  SESSION_SECRET: ggY3SFec8ZtPVVs8WQ64Bb5p9Tqjtm5G00QZf/ti68/nJgXHvhjf4CdMRoENm9o00AvKCujCpmwsYXEQgQZnVw==
 
 jobs:
   backend:
