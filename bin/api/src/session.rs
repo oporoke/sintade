@@ -1,4 +1,5 @@
 use axum::extract::FromRequestParts;
+use axum::http::HeaderMap;
 use axum::http::header::COOKIE;
 use axum::http::request::Parts;
 use identity::AccessTokenError;
@@ -59,6 +60,19 @@ impl FromRequestParts<AppState> for SessionClaims {
 /// so this doesn't need relaxing for local dev.
 pub fn set_cookie_header(name: &str, value: &str, max_age_secs: i64, path: &str) -> String {
     format!("{name}={value}; Path={path}; Max-Age={max_age_secs}; HttpOnly; Secure; SameSite=Lax")
+}
+
+/// A `Set-Cookie` header value that immediately expires a cookie (`Max-Age=0`), for logout.
+pub fn clear_cookie_header(name: &str, path: &str) -> String {
+    format!("{name}=; Path={path}; Max-Age=0; HttpOnly; Secure; SameSite=Lax")
+}
+
+/// Reads the refresh cookie straight from request headers -- used by `/auth/refresh` and
+/// `/auth/logout`, which key off the refresh cookie rather than the (possibly already expired)
+/// access cookie, so a `SessionClaims` extractor isn't the right fit for them.
+pub fn refresh_token_from_headers(headers: &HeaderMap) -> Option<&str> {
+    let cookie_header = headers.get(COOKIE)?.to_str().ok()?;
+    read_cookie(cookie_header, REFRESH_COOKIE_NAME)
 }
 
 fn read_cookie<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
