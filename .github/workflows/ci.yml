@@ -65,12 +65,12 @@ jobs:
             --entrypoint mc \
             -e MC_HOST_local=http://minio:minio-secret@localhost:9010 \
             quay.io/minio/minio mb --ignore-existing local/sintade-dev
-      - run: cargo fmt --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
       - uses: taiki-e/install-action@v2
         with:
           tool: sqlx-cli
       - run: sqlx migrate run
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo sqlx prepare --check --workspace
       - run: cargo test --workspace
 
