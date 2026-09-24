@@ -1,9 +1,11 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderValue, Method, StatusCode};
-use axum::routing::get;
+use axum::routing::{get, post};
+use identity::IdentityService;
 use kernel::AppError;
 use sqlx::PgPool;
 use tower_http::cors::CorsLayer;
@@ -12,12 +14,19 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::error::ApiError;
+use crate::routes::auth;
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn build_router(pool: PgPool, public_base_url: &str) -> Router {
+#[derive(Clone)]
+pub struct AppState {
+    pub pool: PgPool,
+    pub identity: Arc<IdentityService>,
+}
+
+pub fn build_router(pool: PgPool, identity: Arc<IdentityService>, public_base_url: &str) -> Router {
     let request_id_header = axum::http::HeaderName::from_static(REQUEST_ID_HEADER);
     let cors = CorsLayer::new()
         .allow_origin(
@@ -28,11 +37,14 @@ pub fn build_router(pool: PgPool, public_base_url: &str) -> Router {
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
         .allow_headers(tower_http::cors::Any);
 
+    let state = AppState { pool, identity };
+
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .route("/api/v1/auth/register", post(auth::register))
         .fallback(not_found)
-        .with_state(pool)
+        .with_state(state)
         // axum's Router::layer wraps outward on each call (the *last* .layer() ends up
         // outermost, seeing the request first) -- the reverse of tower::ServiceBuilder. This
         // chain is written innermost-first so the request actually flows, outer to inner:
@@ -52,9 +64,9 @@ async fn healthz() -> StatusCode {
     StatusCode::OK
 }
 
-async fn readyz(State(pool): State<PgPool>) -> Result<StatusCode, ApiError> {
+async fn readyz(State(state): State<AppState>) -> Result<StatusCode, ApiError> {
     sqlx::query!("SELECT 1 as one")
-        .fetch_one(&pool)
+        .fetch_one(&state.pool)
         .await
         .map_err(|error| {
             tracing::error!(%error, "readyz db check failed");
@@ -68,7 +80,7 @@ async fn not_found() -> ApiError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
@@ -76,9 +88,19 @@ mod tests {
 
     const TEST_ORIGIN: &str = "http://localhost:4200";
 
-    #[sqlx::test]
+    pub(crate) fn test_identity(pool: PgPool) -> Arc<IdentityService> {
+        let queue = platform::JobQueue::new(pool.clone());
+        Arc::new(IdentityService::new(
+            pool,
+            queue,
+            Arc::new(platform::SystemClock),
+            TEST_ORIGIN.to_string(),
+        ))
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
     async fn healthz_returns_200(pool: PgPool) {
-        let app = build_router(pool, TEST_ORIGIN);
+        let app = build_router(pool.clone(), test_identity(pool), TEST_ORIGIN);
         let response = app
             .oneshot(
                 Request::builder()
@@ -91,9 +113,9 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    #[sqlx::test]
+    #[sqlx::test(migrations = "../../migrations")]
     async fn readyz_returns_200_with_real_db_check(pool: PgPool) {
-        let app = build_router(pool, TEST_ORIGIN);
+        let app = build_router(pool.clone(), test_identity(pool), TEST_ORIGIN);
         let response = app
             .oneshot(
                 Request::builder()
@@ -106,9 +128,9 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    #[sqlx::test]
+    #[sqlx::test(migrations = "../../migrations")]
     async fn unknown_route_returns_problem_json_with_request_id(pool: PgPool) {
-        let app = build_router(pool, TEST_ORIGIN);
+        let app = build_router(pool.clone(), test_identity(pool), TEST_ORIGIN);
         let response = app
             .oneshot(
                 Request::builder()

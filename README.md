@@ -13,7 +13,7 @@
 </div>
 
 > [!IMPORTANT]
-> **Repository status: in development (Day 11 of the [daily build plan](docs/plan/daily-build-plan.md), M2 — Identity; M1 Foundation complete).** The Cargo workspace (`crates/kernel`, `crates/platform`, `crates/identity`, `bin/api`, `bin/worker`) exists and builds; local dependencies (Postgres, MinIO, Mailpit) run via `compose.yml` + `just deps-up`; the API serves `/healthz` and `/readyz` on `:8080` with RFC 9457 problem+json error responses; `platform` provides `ObjectStore`, a `SKIP LOCKED` job queue with a dead-letter queue, a transactional outbox relay, and `Mailer`; an Angular shell (`web/`) exists with a `/debug` capability-matrix page, verified cross-browser in CI; GitHub Actions CI is green and builds/pushes Docker images for api/worker/web on merge to `main` (no staging VPS exists yet — see `docs/plan/PROGRESS.md`). `crates/identity` now has validated `Email` and `Password` domain types (length + breached-password-list checks) — no register/login endpoints yet, those start Day 12. This README is derived entirely from the *Sintade — Product & Architecture Document* (the design document). Every feature, endpoint, table, variable and procedure below is **planned**, not implemented, unless explicitly marked otherwise. Items that the design document does not settle are marked `TODO: Verify`.
+> **Repository status: in development (Day 13 of the [daily build plan](docs/plan/daily-build-plan.md), M2 — Identity; M1 Foundation complete).** The Cargo workspace (`crates/kernel`, `crates/platform`, `crates/identity`, `bin/api`, `bin/worker`) exists and builds; local dependencies (Postgres, MinIO, Mailpit) run via `compose.yml` + `just deps-up`; the API serves `/healthz` and `/readyz` on `:8080` with RFC 9457 problem+json error responses; `platform` provides `ObjectStore`, a `SKIP LOCKED` job queue with a dead-letter queue, a transactional outbox relay, and `Mailer`; an Angular shell (`web/`) exists with a `/debug` capability-matrix page, verified cross-browser in CI; GitHub Actions CI is green and builds/pushes Docker images for api/worker/web on merge to `main` (no staging VPS exists yet — see `docs/plan/PROGRESS.md`). `crates/identity` now implements `POST /api/v1/auth/register` (argon2id, personal workspace created in the same transaction, verification email queued) — login/sessions start Day 13. This README is derived entirely from the *Sintade — Product & Architecture Document* (the design document). Every feature, endpoint, table, variable and procedure below is **planned**, not implemented, unless explicitly marked otherwise. Items that the design document does not settle are marked `TODO: Verify`.
 >
 > When code lands, each section must be re-verified against the repository and its status markers updated. See `docs/plan/PROGRESS.md` for the current day and build log.
 
@@ -711,11 +711,11 @@ sqlx, forward-only, one concern per file, module-prefixed (e.g. `20260921_1200_i
 > [!NOTE]
 > All endpoints are **planned**. Request/response schemas beyond those in the design document are `TODO: Verify` and will be generated from the OpenAPI spec (utoipa) once implemented. Base path: `/api/v1`.
 
-### Identity — 📋 MVP
+### Identity — 🟡 MVP (register done)
 
 | Method | Path | Auth | Description | Notable statuses |
 | --- | --- | --- | --- | --- |
-| POST | `/auth/register` | None | Create user + personal workspace; send verification email | 201, 422, 429 |
+| POST | `/auth/register` | None | Create user + personal workspace; send verification email | 201, 422, 429 (rate limiting deferred to Day 16) |
 | POST | `/auth/login` | None | Issue access + refresh cookies | 200, 401, 429 |
 | POST | `/auth/refresh` | Refresh cookie | Rotate refresh token | 200, 401 |
 | POST | `/auth/logout` | Session | Revoke session | 204 |
@@ -1778,7 +1778,7 @@ Architectural limitations: single-node MinIO and single Postgres primary in MVP;
 - **M1 — Foundation (Days 1–10, weeks 1–2).** Cargo workspace (`kernel`, `platform` with `ObjectStore`/`JobQueue`/`Outbox`/`Mailer` ports and MinIO/SMTP adapters), Docker Compose dev environment, GitHub Actions CI (fmt, clippy, sqlx check, tests, lint, Angular build, e2e across Chrome/Firefox/WebKit, dependency audit) and Docker images for api/worker/web, all merged and verified against real CI runs. Angular shell (`web/`) with a working `/debug` capability-matrix page. Demo: `docs/demos/M01-foundation.md`. **Staging auto-deploy is fully wired in CI but not yet live — no VPS is provisioned** (see `docs/plan/PROGRESS.md`).
 
 ### In Progress
-- M2 — Identity (Days 11–20, weeks 3–4): not started.
+- M2 — Identity (Days 11–20, weeks 3–4): in progress — `Email`/`Password` domain types and `POST /auth/register` done (Days 11–12); login/sessions/`/me` next (Day 13).
 
 ### Planned — MVP (weeks 1–14)
 
