@@ -1,0 +1,12 @@
+FROM rust:slim AS builder
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+COPY . .
+ENV SQLX_OFFLINE=true
+RUN cargo build --release -p api
+
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/api /usr/local/bin/api
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/api"]
