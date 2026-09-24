@@ -1,15 +1,19 @@
 use axum::Json;
 use axum::extract::State;
+use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::header::SET_COOKIE;
 use axum::response::AppendHeaders;
-use identity::{LoginError, LoginRequest, RegisterError, RegisterRequest};
+use identity::{LoginError, LoginRequest, RefreshError, RegisterError, RegisterRequest};
 use kernel::AppError;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::error::ApiError;
-use crate::session::{ACCESS_COOKIE_NAME, REFRESH_COOKIE_NAME, set_cookie_header};
+use crate::session::{
+    ACCESS_COOKIE_NAME, REFRESH_COOKIE_NAME, clear_cookie_header, refresh_token_from_headers,
+    set_cookie_header,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct RegisterBody {
@@ -114,6 +118,92 @@ pub async fn login(
         Json(LoginResponse {
             message: "logged in",
         }),
+    ))
+}
+
+#[derive(Debug, Serialize)]
+pub struct RefreshResponse {
+    pub message: &'static str,
+}
+
+/// Keys off the refresh cookie, not `SessionClaims` -- a still-valid refresh token should be
+/// usable to get a new access cookie even after the old access cookie has already expired,
+/// which is the whole point of having a separate, longer-lived refresh token (US-02).
+#[tracing::instrument(skip_all)]
+pub async fn refresh(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<(StatusCode, LoginCookies, Json<RefreshResponse>), ApiError> {
+    let raw_refresh_token = refresh_token_from_headers(&headers).ok_or_else(|| {
+        ApiError::from(AppError::Unauthorized("missing refresh cookie".to_string()))
+    })?;
+
+    let result = state
+        .identity
+        .refresh(raw_refresh_token)
+        .await
+        .map_err(|error| {
+            let app_error = match error {
+                RefreshError::InvalidToken | RefreshError::ReuseDetected => {
+                    AppError::Unauthorized("invalid or expired refresh token".to_string())
+                }
+                RefreshError::Database(source) => {
+                    tracing::error!(error = %source, "refresh: database error");
+                    AppError::Internal("database unavailable".to_string())
+                }
+            };
+            ApiError::from(app_error)
+        })?;
+
+    let access_cookie = set_cookie_header(
+        ACCESS_COOKIE_NAME,
+        &result.access_token,
+        result.access_ttl.whole_seconds(),
+        "/",
+    );
+    let refresh_cookie = set_cookie_header(
+        REFRESH_COOKIE_NAME,
+        &result.refresh_token,
+        result.refresh_ttl.whole_seconds(),
+        "/api/v1/auth",
+    );
+
+    Ok((
+        StatusCode::OK,
+        AppendHeaders([(SET_COOKIE, access_cookie), (SET_COOKIE, refresh_cookie)]),
+        Json(RefreshResponse {
+            message: "session refreshed",
+        }),
+    ))
+}
+
+type LogoutCookies = AppendHeaders<[(axum::http::HeaderName, String); 2]>;
+
+/// Idempotent and keyed off the refresh cookie (see `IdentityService::logout`): logging out with
+/// no cookie, an already-revoked cookie, or a garbage cookie all just clear client cookies and
+/// return `204`, matching the anti-enumeration style used elsewhere in this module.
+#[tracing::instrument(skip_all)]
+pub async fn logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<(StatusCode, LogoutCookies), ApiError> {
+    if let Some(raw_refresh_token) = refresh_token_from_headers(&headers) {
+        state
+            .identity
+            .logout(raw_refresh_token)
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, "logout: database error");
+                ApiError::from(AppError::Internal("database unavailable".to_string()))
+            })?;
+    }
+
+    let clear_access = clear_cookie_header(ACCESS_COOKIE_NAME, "/");
+    let clear_refresh = clear_cookie_header(REFRESH_COOKIE_NAME, "/api/v1/auth");
+
+    Ok((
+        StatusCode::NO_CONTENT,
+        AppendHeaders([(SET_COOKIE, clear_access), (SET_COOKIE, clear_refresh)]),
     ))
 }
 
@@ -357,5 +447,256 @@ mod tests {
             .await
             .expect("router call succeeds");
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    /// Registers a user via the real HTTP handler, then returns the two `Set-Cookie` values
+    /// (bare `name=value`, attributes stripped) from a successful login.
+    async fn register_and_login(pool: &PgPool, email: &str) -> (String, String) {
+        let app = build_router(pool.clone(), test_identity(pool.clone()), TEST_ORIGIN);
+
+        let register_body = json!({
+            "email": email,
+            "password": "correct-horse-battery-staple-42",
+            "display_name": "Refresh Route Tester",
+        });
+        let register_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/register")
+                    .header("content-type", "application/json")
+                    .body(Body::from(register_body.to_string()))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        assert_eq!(register_response.status(), StatusCode::CREATED);
+
+        let login_body = json!({"email": email, "password": "correct-horse-battery-staple-42"});
+        let login_response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(login_body.to_string()))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        assert_eq!(login_response.status(), StatusCode::OK);
+
+        let set_cookies: Vec<String> = login_response
+            .headers()
+            .get_all(axum::http::header::SET_COOKIE)
+            .iter()
+            .map(|value| {
+                let raw = value.to_str().expect("valid header string");
+                raw.split_once(';').map_or(raw, |(kv, _)| kv).to_string()
+            })
+            .collect();
+
+        let access = set_cookies
+            .iter()
+            .find(|c| c.starts_with("sintade_session="))
+            .expect("access cookie present")
+            .clone();
+        let refresh = set_cookies
+            .iter()
+            .find(|c| c.starts_with("sintade_refresh="))
+            .expect("refresh cookie present")
+            .clone();
+
+        (access, refresh)
+    }
+
+    fn set_cookies_from(response: &axum::http::Response<Body>) -> (String, String) {
+        let set_cookies: Vec<String> = response
+            .headers()
+            .get_all(axum::http::header::SET_COOKIE)
+            .iter()
+            .map(|value| {
+                let raw = value.to_str().expect("valid header string");
+                raw.split_once(';').map_or(raw, |(kv, _)| kv).to_string()
+            })
+            .collect();
+        let access = set_cookies
+            .iter()
+            .find(|c| c.starts_with("sintade_session="))
+            .expect("access cookie present")
+            .clone();
+        let refresh = set_cookies
+            .iter()
+            .find(|c| c.starts_with("sintade_refresh="))
+            .expect("refresh cookie present")
+            .clone();
+        (access, refresh)
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn refresh_rotates_and_replaying_old_token_revokes_family(pool: PgPool) {
+        let email = format!("day14-{}@example.com", uuid::Uuid::now_v7());
+        let (_, refresh_a) = register_and_login(&pool, &email).await;
+        let app = build_router(pool.clone(), test_identity(pool.clone()), TEST_ORIGIN);
+
+        // first refresh: rotates A -> B, succeeds
+        let first_refresh = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/refresh")
+                    .header("cookie", &refresh_a)
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        assert_eq!(first_refresh.status(), StatusCode::OK);
+        let (_, refresh_b) = set_cookies_from(&first_refresh);
+        assert_ne!(refresh_a, refresh_b, "rotation issues a new refresh token");
+
+        // replaying the retired token A is reuse -- must fail and nuke the whole family
+        let replay = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/refresh")
+                    .header("cookie", &refresh_a)
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        assert_eq!(
+            replay.status(),
+            StatusCode::UNAUTHORIZED,
+            "replaying a rotated-away refresh token is rejected"
+        );
+
+        // B was the legitimate, still-unused token from the first rotation -- reuse detection
+        // must have revoked it too, not just A
+        let after_family_revoked = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/refresh")
+                    .header("cookie", &refresh_b)
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        assert_eq!(
+            after_family_revoked.status(),
+            StatusCode::UNAUTHORIZED,
+            "replaying an old token revokes the whole family, including its other member"
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn refresh_with_missing_cookie_returns_401(pool: PgPool) {
+        let app = build_router(pool.clone(), test_identity(pool), TEST_ORIGIN);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/refresh")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn refresh_with_garbage_token_returns_401(pool: PgPool) {
+        let app = build_router(pool.clone(), test_identity(pool), TEST_ORIGIN);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/refresh")
+                    .header("cookie", "sintade_refresh=not-a-real-token")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn logout_revokes_session_and_subsequent_refresh_fails(pool: PgPool) {
+        let email = format!("day14-logout-{}@example.com", uuid::Uuid::now_v7());
+        let (_, refresh_token) = register_and_login(&pool, &email).await;
+        let app = build_router(pool.clone(), test_identity(pool.clone()), TEST_ORIGIN);
+
+        let logout_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/logout")
+                    .header("cookie", &refresh_token)
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        assert_eq!(logout_response.status(), StatusCode::NO_CONTENT);
+
+        let clear_cookies: Vec<String> = logout_response
+            .headers()
+            .get_all(axum::http::header::SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().expect("valid header string").to_string())
+            .collect();
+        assert!(
+            clear_cookies
+                .iter()
+                .any(|c| c.starts_with("sintade_session=;"))
+        );
+        assert!(
+            clear_cookies
+                .iter()
+                .any(|c| c.starts_with("sintade_refresh=;"))
+        );
+
+        let refresh_after_logout = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/refresh")
+                    .header("cookie", &refresh_token)
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        assert_eq!(
+            refresh_after_logout.status(),
+            StatusCode::UNAUTHORIZED,
+            "the revoked session can no longer be refreshed"
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn logout_without_cookie_returns_204(pool: PgPool) {
+        let app = build_router(pool.clone(), test_identity(pool), TEST_ORIGIN);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/logout")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 }

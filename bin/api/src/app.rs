@@ -44,6 +44,8 @@ pub fn build_router(pool: PgPool, identity: Arc<IdentityService>, public_base_ur
         .route("/readyz", get(readyz))
         .route("/api/v1/auth/register", post(auth::register))
         .route("/api/v1/auth/login", post(auth::login))
+        .route("/api/v1/auth/refresh", post(auth::refresh))
+        .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/me", get(me::me))
         .fallback(not_found)
         .with_state(state)

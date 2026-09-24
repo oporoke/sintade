@@ -146,6 +146,89 @@ pub async fn insert_session(
     Ok(())
 }
 
+pub struct SessionRecord {
+    pub id: SessionId,
+    pub user_id: UserId,
+    pub family_id: Uuid,
+    pub revoked_at: Option<OffsetDateTime>,
+    pub expires_at: OffsetDateTime,
+}
+
+/// Locks the row (`FOR UPDATE`) so two concurrent refreshes of the same token can't both see
+/// it as un-rotated -- caller must run this inside a transaction for the lock to hold.
+pub async fn find_session_by_refresh_hash_for_update(
+    conn: &mut PgConnection,
+    refresh_hash: &[u8],
+) -> Result<Option<SessionRecord>, sqlx::Error> {
+    sqlx::query!(
+        r#"
+        SELECT id, user_id, family_id, revoked_at, expires_at
+        FROM sessions
+        WHERE refresh_hash = $1
+        FOR UPDATE
+        "#,
+        refresh_hash,
+    )
+    .fetch_optional(&mut *conn)
+    .await
+    .map(|row| {
+        row.map(|row| SessionRecord {
+            id: SessionId::from_uuid(row.id),
+            user_id: UserId::from_uuid(row.user_id),
+            family_id: row.family_id,
+            revoked_at: row.revoked_at,
+            expires_at: row.expires_at,
+        })
+    })
+}
+
+pub async fn revoke_session(
+    executor: impl PgExecutor<'_>,
+    id: SessionId,
+    revoked_at: OffsetDateTime,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE sessions SET revoked_at = $2 WHERE id = $1",
+        id.into_uuid(),
+        revoked_at,
+    )
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Revokes every currently-active session in a family -- the family-wide response to detecting
+/// a rotated-away refresh token being replayed.
+pub async fn revoke_family(
+    executor: impl PgExecutor<'_>,
+    family_id: Uuid,
+    revoked_at: OffsetDateTime,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE sessions SET revoked_at = $2 WHERE family_id = $1 AND revoked_at IS NULL",
+        family_id,
+        revoked_at,
+    )
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+pub async fn revoke_session_by_refresh_hash(
+    executor: impl PgExecutor<'_>,
+    refresh_hash: &[u8],
+    revoked_at: OffsetDateTime,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE sessions SET revoked_at = $2 WHERE refresh_hash = $1 AND revoked_at IS NULL",
+        refresh_hash,
+        revoked_at,
+    )
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
 pub struct UserRecord {
     pub id: UserId,
     pub email: String,
