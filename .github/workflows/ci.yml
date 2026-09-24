@@ -62,8 +62,9 @@ jobs:
       - name: Create MinIO bucket
         run: |
           docker run --rm --network host \
+            --entrypoint mc \
             -e MC_HOST_local=http://minio:minio-secret@localhost:9010 \
-            quay.io/minio/minio mc mb --ignore-existing local/sintade-dev
+            quay.io/minio/minio mb --ignore-existing local/sintade-dev
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - uses: taiki-e/install-action@v2
