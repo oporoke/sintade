@@ -1,11 +1,9 @@
-use argon2::Argon2;
-use argon2::password_hash::PasswordHasher;
 use kernel::{UserId, WorkspaceId};
 use time::Duration as TimeDuration;
 use uuid::Uuid;
 
 use crate::app::service::IdentityService;
-use crate::app::token::{generate_random_hex_token, sha256_digest};
+use crate::app::token::{generate_random_hex_token, hash_password, sha256_digest};
 use crate::domain::{Email, EmailError, Password, PasswordError};
 use crate::infra;
 
@@ -63,7 +61,7 @@ impl IdentityService {
         let token_hash = sha256_digest(&raw_token);
         let expires_at = self.clock.now() + TimeDuration::hours(VERIFY_EMAIL_TTL_HOURS);
         infra::insert_email_token(
-            &mut tx,
+            &mut *tx,
             Uuid::now_v7(),
             user_id,
             &token_hash,
@@ -74,29 +72,14 @@ impl IdentityService {
 
         tx.commit().await?;
 
-        self.enqueue_verification_email(email.as_str(), &raw_token)
-            .await;
+        let link = format!("{}/verify-email?token={raw_token}", self.public_base_url);
+        self.enqueue_email(
+            email.as_str(),
+            "Verify your Sintade account",
+            &format!("Click to verify your email: {link}"),
+        )
+        .await;
 
         Ok(())
     }
-
-    async fn enqueue_verification_email(&self, to: &str, raw_token: &str) {
-        let link = format!("{}/verify-email?token={raw_token}", self.public_base_url);
-        let payload = serde_json::json!({
-            "to": to,
-            "subject": "Verify your Sintade account",
-            "body": format!("Click to verify your email: {link}"),
-        });
-        if let Err(error) = self.queue.enqueue("SendEmail", payload).await {
-            tracing::error!(%error, "failed to enqueue verification email");
-        }
-    }
-}
-
-fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
-    // Argon2::default() is argon2id, m=19 MiB, t=2, p=1 -- exactly docs/design.md's spec
-    // ("argon2id, m=19 MiB, t=2, p=1 (OWASP baseline)"); hash_password() generates its own
-    // random salt internally.
-    let argon2 = Argon2::default();
-    Ok(argon2.hash_password(password.as_bytes())?.to_string())
 }

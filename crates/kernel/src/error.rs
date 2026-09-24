@@ -7,6 +7,9 @@ pub enum AppError {
     Validation(String),
 
     #[error("{0}")]
+    BadRequest(String),
+
+    #[error("{0}")]
     Unauthorized(String),
 
     #[error("internal error: {0}")]

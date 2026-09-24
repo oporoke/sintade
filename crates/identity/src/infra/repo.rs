@@ -294,7 +294,7 @@ pub async fn list_user_workspaces(
 
 #[allow(clippy::too_many_arguments)]
 pub async fn insert_email_token(
-    conn: &mut PgConnection,
+    executor: impl PgExecutor<'_>,
     id: Uuid,
     user_id: UserId,
     token_hash: &[u8],
@@ -309,7 +309,109 @@ pub async fn insert_email_token(
         purpose,
         expires_at,
     )
-    .execute(&mut *conn)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+pub async fn find_user_id_by_email(
+    executor: impl PgExecutor<'_>,
+    email: &str,
+) -> Result<Option<UserId>, sqlx::Error> {
+    sqlx::query_scalar!("SELECT id FROM users WHERE email = $1", email)
+        .fetch_optional(executor)
+        .await
+        .map(|maybe_id| maybe_id.map(UserId::from_uuid))
+}
+
+pub struct EmailTokenRecord {
+    pub id: Uuid,
+    pub user_id: UserId,
+}
+
+/// Locks the row (`FOR UPDATE`) so two concurrent uses of the same token can't both see it as
+/// unused -- caller must run this inside a transaction for the lock to hold.
+pub async fn find_valid_email_token_for_update(
+    conn: &mut PgConnection,
+    token_hash: &[u8],
+    purpose: &str,
+    now: OffsetDateTime,
+) -> Result<Option<EmailTokenRecord>, sqlx::Error> {
+    sqlx::query!(
+        r#"
+        SELECT id, user_id
+        FROM email_tokens
+        WHERE token_hash = $1 AND purpose = $2 AND used_at IS NULL AND expires_at > $3
+        FOR UPDATE
+        "#,
+        token_hash,
+        purpose,
+        now,
+    )
+    .fetch_optional(&mut *conn)
+    .await
+    .map(|row| {
+        row.map(|row| EmailTokenRecord {
+            id: row.id,
+            user_id: UserId::from_uuid(row.user_id),
+        })
+    })
+}
+
+pub async fn mark_email_token_used(
+    executor: impl PgExecutor<'_>,
+    id: Uuid,
+    used_at: OffsetDateTime,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE email_tokens SET used_at = $2 WHERE id = $1",
+        id,
+        used_at,
+    )
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+pub async fn mark_email_verified(
+    executor: impl PgExecutor<'_>,
+    user_id: UserId,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE users SET email_verified = true WHERE id = $1",
+        user_id.into_uuid(),
+    )
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+pub async fn update_password_hash(
+    executor: impl PgExecutor<'_>,
+    user_id: UserId,
+    password_hash: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE credentials SET password_hash = $2 WHERE user_id = $1",
+        user_id.into_uuid(),
+        password_hash,
+    )
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+pub async fn revoke_all_sessions_for_user(
+    executor: impl PgExecutor<'_>,
+    user_id: UserId,
+    revoked_at: OffsetDateTime,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE sessions SET revoked_at = $2 WHERE user_id = $1 AND revoked_at IS NULL",
+        user_id.into_uuid(),
+        revoked_at,
+    )
+    .execute(executor)
     .await?;
     Ok(())
 }
