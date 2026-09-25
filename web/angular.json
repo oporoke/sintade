@@ -24,6 +24,7 @@
             "browser": "src/main.ts",
             "tsConfig": "tsconfig.app.json",
             "inlineStyleLanguage": "scss",
+            "polyfills": ["@angular/localize/init"],
             "assets": [
               {
                 "glob": "**/*",
@@ -65,6 +66,10 @@
             "development": {
               "buildTarget": "web:build:development"
             }
+          },
+          "options": {
+            "ssl": true,
+            "proxyConfig": "proxy.conf.json"
           },
           "defaultConfiguration": "development"
         },

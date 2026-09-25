@@ -39,6 +39,10 @@ pub fn build_router(
     public_base_url: &str,
 ) -> Router {
     let request_id_header = axum::http::HeaderName::from_static(REQUEST_ID_HEADER);
+    // `allow_credentials(true)` is required for the browser to send/receive cookies on
+    // cross-origin requests (the SPA on :4200 talking to the API on :8080 in dev) -- the CORS
+    // spec forbids combining credentials with a wildcard origin or header list, so both must be
+    // an explicit, non-`Any` list once this is on.
     let cors = CorsLayer::new()
         .allow_origin(
             public_base_url
@@ -46,7 +50,11 @@ pub fn build_router(
                 .expect("PUBLIC_BASE_URL must be a valid header value"),
         )
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
-        .allow_headers(tower_http::cors::Any);
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderName::from_static("x-csrf-token"),
+        ])
+        .allow_credentials(true);
 
     let state = AppState {
         pool,

@@ -1245,7 +1245,7 @@ just db-migrate       # sqlx migrate run
 just seed             # demo user demo@local.test / demo-password-123 + sample recording
 just api              # cargo run -p api      -> http://localhost:8080
 just worker           # cargo run -p worker
-just web              # cd web && npm ci && npm start -> http://localhost:4200
+just web              # cd web && npm ci && npm start -> https://localhost:4200 (self-signed; proxies /api to :8080, ADR-0006)
 ```
 
 Verify: log in as the demo user, record 10 s, stop, and the recording plays within a few seconds. Emails appear in Mailpit at `http://localhost:8025`; stored objects at MinIO console `http://localhost:9001`.
@@ -1258,7 +1258,7 @@ Verify: log in as the demo user, record 10 s, stop, and the recording plays with
 | `S3_ENDPOINT` | `http://localhost:9000` | MinIO locally and in production |
 | `S3_BUCKET` | `sintade-dev` | Private bucket |
 | `S3_ACCESS_KEY`, `S3_SECRET_KEY` | `minio` / `minio-secret` | Never committed |
-| `PUBLIC_BASE_URL` | `http://localhost:4200` | Used in links and emails |
+| `PUBLIC_BASE_URL` | `https://localhost:4200` | Used in links and emails |
 | `SESSION_SECRET` | 64 random bytes, base64 | Signs cookies |
 | `DATA_ENC_KEY` | 32 random bytes, base64 | AES-256-GCM for TOTP secrets |
 | `SMTP_URL` | `smtp://localhost:1025` | Mailpit locally |
