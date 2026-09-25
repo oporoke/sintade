@@ -328,3 +328,18 @@ pub async fn revoke_all_sessions_for_user(
     .await?;
     Ok(())
 }
+
+pub async fn update_display_name(
+    executor: impl PgExecutor<'_>,
+    user_id: UserId,
+    display_name: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE users SET display_name = $2 WHERE id = $1",
+        user_id.into_uuid(),
+        display_name,
+    )
+    .execute(executor)
+    .await?;
+    Ok(())
+}

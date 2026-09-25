@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
-import { Router } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 
 import { AuthService } from '../../core/auth.service';
 
@@ -10,11 +10,13 @@ import { AuthService } from '../../core/auth.service';
 @Component({
   selector: 'app-home-page',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [RouterLink],
   template: `
     <h1 i18n>Welcome</h1>
     @if (authService.currentUser(); as me) {
       <p data-testid="home-user-email">{{ me.user.email }}</p>
     }
+    <p><a routerLink="/settings/profile" data-testid="home-profile-link" i18n>Profile settings</a></p>
     <button type="button" (click)="logout()" data-testid="home-logout" i18n>Log out</button>
   `,
 })

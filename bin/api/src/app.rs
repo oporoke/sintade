@@ -102,10 +102,27 @@ pub(crate) fn build_router_from(
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
 }
 
+#[utoipa::path(
+    get,
+    path = "/healthz",
+    tag = "health",
+    responses(
+        (status = 200, description = "Liveness"),
+    )
+)]
 pub(crate) async fn healthz() -> StatusCode {
     StatusCode::OK
 }
 
+#[utoipa::path(
+    get,
+    path = "/readyz",
+    tag = "health",
+    responses(
+        (status = 200, description = "Readiness: the database answers"),
+        (status = 500, description = "Database unavailable", body = crate::error::Problem, content_type = "application/problem+json"),
+    )
+)]
 pub(crate) async fn readyz(State(state): State<AppState>) -> Result<StatusCode, ApiError> {
     sqlx::query!("SELECT 1 as one")
         .fetch_one(&state.pool)

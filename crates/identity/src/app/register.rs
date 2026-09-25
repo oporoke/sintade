@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::app::service::IdentityService;
 use crate::app::token::{generate_random_hex_token, hash_password, sha256_digest};
-use crate::domain::{Email, EmailError, Password, PasswordError};
+use crate::domain::{DisplayName, DisplayNameError, Email, EmailError, Password, PasswordError};
 use crate::infra;
 
 const VERIFY_EMAIL_TTL_HOURS: i64 = 24;
@@ -16,6 +16,9 @@ pub enum RegisterError {
 
     #[error(transparent)]
     InvalidPassword(#[from] PasswordError),
+
+    #[error(transparent)]
+    InvalidDisplayName(#[from] DisplayNameError),
 
     #[error("failed to hash password")]
     Hash,
@@ -38,6 +41,7 @@ impl IdentityService {
     pub async fn register(&self, request: RegisterRequest) -> Result<(), RegisterError> {
         let email = Email::parse(&request.email)?;
         let password = Password::parse(&request.password)?;
+        let display_name = DisplayName::parse(&request.display_name)?;
 
         let mut tx = self.pool.begin().await?;
 
@@ -49,10 +53,10 @@ impl IdentityService {
         let password_hash = hash_password(password.as_str()).map_err(|_| RegisterError::Hash)?;
 
         let user_id = UserId::new_v7();
-        infra::insert_user(&mut tx, user_id, email.as_str(), &request.display_name).await?;
+        infra::insert_user(&mut tx, user_id, email.as_str(), display_name.as_str()).await?;
         infra::insert_credential(&mut tx, user_id, &password_hash).await?;
 
-        let workspace_name = format!("{}'s workspace", request.display_name);
+        let workspace_name = format!("{}'s workspace", display_name.as_str());
         self.workspaces
             .create_personal_workspace(&mut tx, user_id, &workspace_name)
             .await?;

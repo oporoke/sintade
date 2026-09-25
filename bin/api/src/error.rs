@@ -3,6 +3,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use kernel::AppError;
 use serde::Serialize;
+use utoipa::ToSchema;
 
 pub struct ApiError(pub AppError);
 
@@ -12,8 +13,9 @@ impl From<AppError> for ApiError {
     }
 }
 
-#[derive(Serialize)]
-struct Problem {
+/// RFC 9457 problem details, the body of every error response.
+#[derive(Serialize, ToSchema)]
+pub struct Problem {
     r#type: &'static str,
     title: &'static str,
     status: u16,
