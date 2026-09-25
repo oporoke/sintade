@@ -5,18 +5,18 @@ use axum::Router;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderValue, Method, StatusCode};
 use axum::middleware;
-use axum::routing::{get, post};
 use identity::IdentityService;
 use kernel::AppError;
 use platform::{Clock, RateLimiter};
 use sqlx::PgPool;
+use tenancy::TenancyService;
 use tower_http::cors::CorsLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::error::ApiError;
-use crate::routes::{auth, me, verify_email};
+use crate::routes::{self, Route};
 use crate::security_headers::security_headers;
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -27,6 +27,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct AppState {
     pub pool: PgPool,
     pub identity: Arc<IdentityService>,
+    pub tenancy: Arc<TenancyService>,
     pub rate_limiter: Arc<RateLimiter>,
     pub clock: Arc<dyn Clock>,
 }
@@ -34,8 +35,29 @@ pub struct AppState {
 pub fn build_router(
     pool: PgPool,
     identity: Arc<IdentityService>,
+    tenancy: Arc<TenancyService>,
     rate_limiter: Arc<RateLimiter>,
     clock: Arc<dyn Clock>,
+    public_base_url: &str,
+) -> Router {
+    build_router_from(
+        routes::table(),
+        AppState {
+            pool,
+            identity,
+            tenancy,
+            rate_limiter,
+            clock,
+        },
+        public_base_url,
+    )
+}
+
+/// Mounts `table` -- `routes::table()` in production; the tenant-isolation harness adds its
+/// test-only probe route on top.
+pub(crate) fn build_router_from(
+    table: Vec<Route>,
+    state: AppState,
     public_base_url: &str,
 ) -> Router {
     let request_id_header = axum::http::HeaderName::from_static(REQUEST_ID_HEADER);
@@ -56,27 +78,11 @@ pub fn build_router(
         ])
         .allow_credentials(true);
 
-    let state = AppState {
-        pool,
-        identity,
-        rate_limiter,
-        clock,
-    };
-
-    Router::new()
-        .route("/healthz", get(healthz))
-        .route("/readyz", get(readyz))
-        .route("/api/v1/auth/register", post(auth::register))
-        .route("/api/v1/auth/login", post(auth::login))
-        .route("/api/v1/auth/refresh", post(auth::refresh))
-        .route("/api/v1/auth/logout", post(auth::logout))
-        .route(
-            "/api/v1/auth/verify-email",
-            post(verify_email::verify_email),
-        )
-        .route("/api/v1/auth/password/forgot", post(auth::forgot_password))
-        .route("/api/v1/auth/password/reset", post(auth::reset_password))
-        .route("/api/v1/me", get(me::me))
+    table
+        .into_iter()
+        .fold(Router::new(), |router, route| {
+            router.route(route.path, route.handler)
+        })
         .fallback(not_found)
         .with_state(state)
         // axum's Router::layer wraps outward on each call (the *last* .layer() ends up
@@ -96,11 +102,11 @@ pub fn build_router(
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
 }
 
-async fn healthz() -> StatusCode {
+pub(crate) async fn healthz() -> StatusCode {
     StatusCode::OK
 }
 
-async fn readyz(State(state): State<AppState>) -> Result<StatusCode, ApiError> {
+pub(crate) async fn readyz(State(state): State<AppState>) -> Result<StatusCode, ApiError> {
     sqlx::query!("SELECT 1 as one")
         .fetch_one(&state.pool)
         .await
@@ -128,12 +134,17 @@ pub(crate) mod tests {
     pub(crate) fn test_identity(pool: PgPool) -> Arc<IdentityService> {
         let queue = platform::JobQueue::new(pool.clone());
         Arc::new(IdentityService::new(
-            pool,
+            pool.clone(),
             queue,
             Arc::new(platform::SystemClock),
             TEST_ORIGIN.to_string(),
             TEST_SESSION_SECRET.to_vec(),
+            test_tenancy(pool),
         ))
+    }
+
+    pub(crate) fn test_tenancy(pool: PgPool) -> Arc<TenancyService> {
+        Arc::new(TenancyService::new(pool))
     }
 
     pub(crate) fn test_rate_limiter(pool: PgPool) -> Arc<RateLimiter> {
@@ -158,6 +169,7 @@ pub(crate) mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -179,6 +191,7 @@ pub(crate) mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -200,6 +213,7 @@ pub(crate) mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,

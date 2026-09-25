@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::extract::State;
-use kernel::{AppError, WorkspaceId};
+use kernel::{AppError, Role, WorkspaceId};
 use serde::Serialize;
 
 use crate::app::AppState;
@@ -8,20 +8,30 @@ use crate::error::ApiError;
 use crate::session::SessionClaims;
 
 #[derive(Debug, Serialize)]
+pub struct MeWorkspace {
+    pub id: WorkspaceId,
+    pub name: String,
+    pub role: Role,
+    pub is_personal: bool,
+}
+
+#[derive(Debug, Serialize)]
 pub struct MeResponse {
-    #[serde(flatten)]
-    pub view: identity::MeView,
+    pub user: identity::MeUser,
+    pub workspaces: Vec<MeWorkspace>,
     /// The workspace the session's access cookie was issued for -- lets the client pick the
     /// right entry out of `workspaces` as "current" without guessing.
     pub current_workspace_id: WorkspaceId,
 }
 
+/// Composes the user (from `identity`) with their memberships (from `tenancy`). `Session`
+/// access, not `Workspace`: it lists the caller's own memberships, not one workspace's data.
 #[tracing::instrument(skip_all)]
 pub async fn me(
     State(state): State<AppState>,
     claims: SessionClaims,
 ) -> Result<Json<MeResponse>, ApiError> {
-    let view = state
+    let user = state
         .identity
         .me(claims.user_id)
         .await
@@ -31,8 +41,22 @@ pub async fn me(
         })?
         .ok_or_else(|| ApiError::from(AppError::Unauthorized("session invalid".to_string())))?;
 
+    let workspaces = state
+        .tenancy
+        .list_memberships(claims.user_id)
+        .await?
+        .into_iter()
+        .map(|membership| MeWorkspace {
+            id: membership.workspace_id,
+            name: membership.name,
+            role: membership.role,
+            is_personal: membership.is_personal,
+        })
+        .collect();
+
     Ok(Json(MeResponse {
-        view,
+        user,
+        workspaces,
         current_workspace_id: claims.workspace_id,
     }))
 }
@@ -46,7 +70,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::build_router;
-    use crate::app::tests::{test_clock, test_identity, test_rate_limiter};
+    use crate::app::tests::{test_clock, test_identity, test_rate_limiter, test_tenancy};
 
     const TEST_ORIGIN: &str = "http://localhost:4200";
 
@@ -56,6 +80,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -130,6 +155,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -165,6 +191,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -207,6 +234,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -235,6 +263,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -268,6 +297,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,

@@ -58,7 +58,9 @@ impl IdentityService {
 
         infra::revoke_session(&mut *tx, session.id, now).await?;
 
-        let workspace_id = infra::personal_workspace_id_for_user(&mut *tx, session.user_id)
+        let workspace_id = self
+            .workspaces
+            .personal_workspace_for(&mut tx, session.user_id)
             .await?
             .ok_or(RefreshError::InvalidToken)?;
 

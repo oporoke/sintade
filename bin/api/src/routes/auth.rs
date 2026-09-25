@@ -396,7 +396,9 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::build_router;
-    use crate::app::tests::{test_clock, test_fixed_clock, test_identity, test_rate_limiter};
+    use crate::app::tests::{
+        test_clock, test_fixed_clock, test_identity, test_rate_limiter, test_tenancy,
+    };
 
     const TEST_ORIGIN: &str = "http://localhost:4200";
     const FROM_ADDRESS: &str = "no-reply@sintade.app";
@@ -468,6 +470,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -546,6 +549,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -620,6 +624,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -657,6 +662,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -777,6 +783,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -849,6 +856,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -871,6 +879,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -900,6 +909,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -927,6 +937,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -988,6 +999,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -1034,6 +1046,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -1070,6 +1083,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -1192,6 +1206,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -1233,6 +1248,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -1263,6 +1279,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_fixed_clock(),
             TEST_ORIGIN,
@@ -1329,6 +1346,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_fixed_clock(),
             TEST_ORIGIN,
@@ -1371,6 +1389,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_fixed_clock(),
             TEST_ORIGIN,
@@ -1423,6 +1442,7 @@ mod tests {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
             test_rate_limiter(pool),
             test_clock(),
             TEST_ORIGIN,

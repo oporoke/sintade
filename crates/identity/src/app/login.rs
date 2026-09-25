@@ -60,7 +60,10 @@ impl IdentityService {
             return Err(LoginError::InvalidCredentials);
         }
 
-        let workspace_id = infra::personal_workspace_id_for_user(&self.pool, credential.user_id)
+        let mut conn = self.pool.acquire().await?;
+        let workspace_id = self
+            .workspaces
+            .personal_workspace_for(&mut conn, credential.user_id)
             .await?
             .ok_or(LoginError::InvalidCredentials)?;
 

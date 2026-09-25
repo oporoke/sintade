@@ -1,4 +1,4 @@
-use kernel::{SessionId, UserId, WorkspaceId};
+use kernel::{SessionId, UserId};
 use sqlx::{PgConnection, PgExecutor};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -45,38 +45,6 @@ pub async fn insert_credential(
     Ok(())
 }
 
-/// `workspaces`/`memberships` are owned by the not-yet-existing `tenancy` module -- see
-/// ADR-0004. Remove this once `tenancy` exists (Day 18) and call its service instead.
-pub async fn insert_personal_workspace(
-    conn: &mut PgConnection,
-    id: WorkspaceId,
-    name: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query!(
-        "INSERT INTO workspaces (id, name, is_personal) VALUES ($1, $2, true)",
-        id.into_uuid(),
-        name,
-    )
-    .execute(&mut *conn)
-    .await?;
-    Ok(())
-}
-
-pub async fn insert_owner_membership(
-    conn: &mut PgConnection,
-    workspace_id: WorkspaceId,
-    user_id: UserId,
-) -> Result<(), sqlx::Error> {
-    sqlx::query!(
-        "INSERT INTO memberships (workspace_id, user_id, role) VALUES ($1, $2, 'owner')",
-        workspace_id.into_uuid(),
-        user_id.into_uuid(),
-    )
-    .execute(&mut *conn)
-    .await?;
-    Ok(())
-}
-
 pub struct CredentialRecord {
     pub user_id: UserId,
     pub password_hash: String,
@@ -103,25 +71,6 @@ pub async fn find_credential_by_email(
             password_hash: row.password_hash,
         })
     })
-}
-
-/// See ADR-0004: `workspaces`/`memberships` are owned by the not-yet-existing `tenancy` module.
-pub async fn personal_workspace_id_for_user(
-    executor: impl PgExecutor<'_>,
-    user_id: UserId,
-) -> Result<Option<WorkspaceId>, sqlx::Error> {
-    sqlx::query_scalar!(
-        r#"
-        SELECT w.id
-        FROM workspaces w
-        JOIN memberships m ON m.workspace_id = w.id
-        WHERE m.user_id = $1 AND w.is_personal = true
-        "#,
-        user_id.into_uuid(),
-    )
-    .fetch_optional(executor)
-    .await
-    .map(|maybe_id| maybe_id.map(WorkspaceId::from_uuid))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -253,42 +202,6 @@ pub async fn find_user(
             display_name: row.display_name,
             email_verified: row.email_verified,
         })
-    })
-}
-
-pub struct WorkspaceMembershipRecord {
-    pub id: WorkspaceId,
-    pub name: String,
-    pub role: String,
-    pub is_personal: bool,
-}
-
-/// See ADR-0004: `workspaces`/`memberships` are owned by the not-yet-existing `tenancy` module.
-pub async fn list_user_workspaces(
-    executor: impl PgExecutor<'_>,
-    user_id: UserId,
-) -> Result<Vec<WorkspaceMembershipRecord>, sqlx::Error> {
-    sqlx::query!(
-        r#"
-        SELECT w.id, w.name, w.is_personal, m.role::text as "role!"
-        FROM workspaces w
-        JOIN memberships m ON m.workspace_id = w.id
-        WHERE m.user_id = $1
-        ORDER BY w.created_at
-        "#,
-        user_id.into_uuid(),
-    )
-    .fetch_all(executor)
-    .await
-    .map(|rows| {
-        rows.into_iter()
-            .map(|row| WorkspaceMembershipRecord {
-                id: WorkspaceId::from_uuid(row.id),
-                name: row.name,
-                role: row.role,
-                is_personal: row.is_personal,
-            })
-            .collect()
     })
 }
 

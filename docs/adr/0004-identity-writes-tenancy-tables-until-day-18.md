@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — 2026-09-24
+Superseded by [ADR-0007](0007-tenancy-crate-and-workspace-directory-port.md) — 2026-09-25 (accepted 2026-09-24)
 
 ## Context
 

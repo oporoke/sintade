@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT 1 as one FROM workspaces WHERE id = $1 AND is_personal = true",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "one",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "b27b3352ccaf689fcebcdb2c5744c62bb693f0a50f45d30f44aace66ff72103c"
+}
