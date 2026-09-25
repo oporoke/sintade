@@ -11,11 +11,14 @@ use identity::{
     ResetPasswordError, ResetPasswordRequest,
 };
 use kernel::AppError;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use utoipa::ToSchema;
 
 use crate::app::AppState;
 use crate::csrf::{CSRF_COOKIE_NAME, generate_csrf_token, verify_csrf};
-use crate::error::ApiError;
+use crate::error::{ApiError, Problem};
+use crate::routes::MessageResponse;
+use crate::session::SessionClaims;
 use crate::session::{
     ACCESS_COOKIE_NAME, REFRESH_COOKIE_NAME, clear_cookie_header, refresh_token_from_headers,
     set_cookie_header,
@@ -39,24 +42,30 @@ fn client_ip(headers: &HeaderMap) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct RegisterBody {
     pub email: String,
     pub password: String,
     pub display_name: String,
 }
 
-#[derive(Debug, Serialize)]
-pub struct RegisterResponse {
-    pub message: &'static str,
-}
-
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/register",
+    tag = "auth",
+    request_body = RegisterBody,
+    responses(
+        (status = 201, description = "Accepted; a verification email is sent if the details are valid", body = MessageResponse),
+        (status = 422, description = "Invalid email, password or display name", body = Problem, content_type = "application/problem+json"),
+        (status = 429, description = "Signup rate limit hit", body = Problem, content_type = "application/problem+json"),
+    )
+)]
 #[tracing::instrument(skip_all)]
 pub async fn register(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<RegisterBody>,
-) -> Result<(StatusCode, Json<RegisterResponse>), ApiError> {
+) -> Result<(StatusCode, Json<MessageResponse>), ApiError> {
     let key = format!("signup:{}", client_ip(&headers));
     let allowed = state
         .rate_limiter
@@ -87,6 +96,9 @@ pub async fn register(
             let app_error = match error {
                 RegisterError::InvalidEmail(source) => AppError::Validation(source.to_string()),
                 RegisterError::InvalidPassword(source) => AppError::Validation(source.to_string()),
+                RegisterError::InvalidDisplayName(source) => {
+                    AppError::Validation(source.to_string())
+                }
                 RegisterError::Hash => AppError::Internal("failed to hash password".to_string()),
                 RegisterError::Database(source) => {
                     tracing::error!(error = %source, "register: database error");
@@ -98,31 +110,37 @@ pub async fn register(
 
     Ok((
         StatusCode::CREATED,
-        Json(RegisterResponse {
+        Json(MessageResponse {
             message: "if the details are valid, a verification email has been sent",
         }),
     ))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct LoginBody {
     pub email: String,
     pub password: String,
 }
 
-#[derive(Debug, Serialize)]
-pub struct LoginResponse {
-    pub message: &'static str,
-}
-
 type SessionCookies = AppendHeaders<[(axum::http::HeaderName, String); 3]>;
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/login",
+    tag = "auth",
+    request_body = LoginBody,
+    responses(
+        (status = 200, description = "Logged in; sets session, refresh and CSRF cookies", body = MessageResponse),
+        (status = 401, description = "Invalid email or password", body = Problem, content_type = "application/problem+json"),
+        (status = 429, description = "Login rate limit hit", body = Problem, content_type = "application/problem+json"),
+    )
+)]
 #[tracing::instrument(skip_all)]
 pub async fn login(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<LoginBody>,
-) -> Result<(StatusCode, SessionCookies, Json<LoginResponse>), ApiError> {
+) -> Result<(StatusCode, SessionCookies, Json<MessageResponse>), ApiError> {
     let key = format!(
         "login:{}:{}",
         client_ip(&headers),
@@ -191,15 +209,10 @@ pub async fn login(
             (SET_COOKIE, refresh_cookie),
             (SET_COOKIE, csrf_cookie),
         ]),
-        Json(LoginResponse {
+        Json(MessageResponse {
             message: "logged in",
         }),
     ))
-}
-
-#[derive(Debug, Serialize)]
-pub struct RefreshResponse {
-    pub message: &'static str,
 }
 
 /// Keys off the refresh cookie, not `SessionClaims` -- a still-valid refresh token should be
@@ -207,11 +220,21 @@ pub struct RefreshResponse {
 /// which is the whole point of having a separate, longer-lived refresh token (US-02). Acts
 /// purely on an ambient cookie, so it's one of the two routes that need the CSRF double-submit
 /// check (see `crate::csrf`).
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/refresh",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Rotated; sets new session, refresh and CSRF cookies", body = MessageResponse),
+        (status = 401, description = "Missing, invalid or reused refresh token", body = Problem, content_type = "application/problem+json"),
+        (status = 403, description = "Missing or mismatched CSRF token", body = Problem, content_type = "application/problem+json"),
+    )
+)]
 #[tracing::instrument(skip_all)]
 pub async fn refresh(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<(StatusCode, SessionCookies, Json<RefreshResponse>), ApiError> {
+) -> Result<(StatusCode, SessionCookies, Json<MessageResponse>), ApiError> {
     let raw_refresh_token = refresh_token_from_headers(&headers).ok_or_else(|| {
         ApiError::from(AppError::Unauthorized("missing refresh cookie".to_string()))
     })?;
@@ -259,7 +282,7 @@ pub async fn refresh(
             (SET_COOKIE, refresh_cookie),
             (SET_COOKIE, csrf_cookie),
         ]),
-        Json(RefreshResponse {
+        Json(MessageResponse {
             message: "session refreshed",
         }),
     ))
@@ -271,6 +294,15 @@ type LogoutCookies = AppendHeaders<[(axum::http::HeaderName, String); 3]>;
 /// no cookie, an already-revoked cookie, or a garbage cookie all just clear client cookies and
 /// return `204`, matching the anti-enumeration style used elsewhere in this module. Also acts on
 /// an ambient cookie, so it needs the CSRF double-submit check too.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/logout",
+    tag = "auth",
+    responses(
+        (status = 204, description = "Session revoked (idempotent); cookies cleared"),
+        (status = 403, description = "Missing or mismatched CSRF token", body = Problem, content_type = "application/problem+json"),
+    )
+)]
 #[tracing::instrument(skip_all)]
 pub async fn logout(
     State(state): State<AppState>,
@@ -288,38 +320,74 @@ pub async fn logout(
             })?;
     }
 
-    let clear_access = clear_cookie_header(ACCESS_COOKIE_NAME, "/");
-    let clear_refresh = clear_cookie_header(REFRESH_COOKIE_NAME, "/api/v1/auth");
-    let clear_csrf = clear_cookie_header(CSRF_COOKIE_NAME, "/");
-
-    Ok((
-        StatusCode::NO_CONTENT,
-        AppendHeaders([
-            (SET_COOKIE, clear_access),
-            (SET_COOKIE, clear_refresh),
-            (SET_COOKIE, clear_csrf),
-        ]),
-    ))
+    Ok((StatusCode::NO_CONTENT, clear_session_cookies()))
 }
 
-#[derive(Debug, Deserialize)]
+fn clear_session_cookies() -> LogoutCookies {
+    AppendHeaders([
+        (SET_COOKIE, clear_cookie_header(ACCESS_COOKIE_NAME, "/")),
+        (
+            SET_COOKIE,
+            clear_cookie_header(REFRESH_COOKIE_NAME, "/api/v1/auth"),
+        ),
+        (SET_COOKIE, clear_cookie_header(CSRF_COOKIE_NAME, "/")),
+    ])
+}
+
+/// "Log out everywhere": revokes every refresh session for the caller and clears this
+/// browser's cookies. Needs a live session (it acts on the user, not one refresh token) and
+/// the CSRF check. Other devices' access cookies lapse within `ACCESS_TOKEN_TTL` (15 min).
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/logout-all",
+    tag = "auth",
+    responses(
+        (status = 204, description = "Every session revoked; cookies cleared"),
+        (status = 401, description = "No valid session", body = Problem, content_type = "application/problem+json"),
+        (status = 403, description = "Missing or mismatched CSRF token", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+#[tracing::instrument(skip_all)]
+pub async fn logout_all(
+    State(state): State<AppState>,
+    claims: SessionClaims,
+    headers: HeaderMap,
+) -> Result<(StatusCode, LogoutCookies), ApiError> {
+    verify_csrf(&headers)?;
+    state
+        .identity
+        .logout_all(claims.user_id)
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "logout_all: database error");
+            ApiError::from(AppError::Internal("database unavailable".to_string()))
+        })?;
+
+    Ok((StatusCode::NO_CONTENT, clear_session_cookies()))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ForgotPasswordBody {
     pub email: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ForgotPasswordResponse {
-    pub message: &'static str,
 }
 
 /// Always `202` with the same message, whether or not the email exists (US-03) -- the identity
 /// service already enforces this at the service layer, this handler just can't turn it into a
 /// non-generic error either.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/password/forgot",
+    tag = "auth",
+    request_body = ForgotPasswordBody,
+    responses(
+        (status = 202, description = "Same response whether or not the email exists", body = MessageResponse),
+    )
+)]
 #[tracing::instrument(skip_all)]
 pub async fn forgot_password(
     State(state): State<AppState>,
     Json(body): Json<ForgotPasswordBody>,
-) -> Result<(StatusCode, Json<ForgotPasswordResponse>), ApiError> {
+) -> Result<(StatusCode, Json<MessageResponse>), ApiError> {
     state
         .identity
         .forgot_password(ForgotPasswordRequest { email: body.email })
@@ -331,28 +399,34 @@ pub async fn forgot_password(
 
     Ok((
         StatusCode::ACCEPTED,
-        Json(ForgotPasswordResponse {
+        Json(MessageResponse {
             message: "if that email exists, a reset link has been sent",
         }),
     ))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ResetPasswordBody {
     pub token: String,
     pub password: String,
 }
 
-#[derive(Debug, Serialize)]
-pub struct ResetPasswordResponse {
-    pub message: &'static str,
-}
-
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/password/reset",
+    tag = "auth",
+    request_body = ResetPasswordBody,
+    responses(
+        (status = 200, description = "Password changed; all sessions revoked", body = MessageResponse),
+        (status = 400, description = "Invalid or expired reset token", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "Password too weak", body = Problem, content_type = "application/problem+json"),
+    )
+)]
 #[tracing::instrument(skip_all)]
 pub async fn reset_password(
     State(state): State<AppState>,
     Json(body): Json<ResetPasswordBody>,
-) -> Result<Json<ResetPasswordResponse>, ApiError> {
+) -> Result<Json<MessageResponse>, ApiError> {
     state
         .identity
         .reset_password(ResetPasswordRequest {
@@ -379,7 +453,7 @@ pub async fn reset_password(
             ApiError::from(app_error)
         })?;
 
-    Ok(Json(ResetPasswordResponse {
+    Ok(Json(MessageResponse {
         message: "password reset",
     }))
 }
@@ -653,6 +727,7 @@ mod tests {
     /// successful login, plus the bare CSRF token value for the `X-CSRF-Token` header
     /// double-submit tests need to send alongside the `csrf` cookie.
     struct LoginCookieJar {
+        access: String,
         refresh: String,
         csrf: String,
         csrf_value: String,
@@ -711,12 +786,11 @@ mod tests {
             })
             .collect();
 
-        assert!(
-            set_cookies
-                .iter()
-                .any(|c| c.starts_with("sintade_session=")),
-            "access cookie present"
-        );
+        let access = set_cookies
+            .iter()
+            .find(|c| c.starts_with("sintade_session="))
+            .expect("access cookie present")
+            .clone();
         let refresh = set_cookies
             .iter()
             .find(|c| c.starts_with("sintade_refresh="))
@@ -733,6 +807,7 @@ mod tests {
             .to_string();
 
         LoginCookieJar {
+            access,
             refresh,
             csrf,
             csrf_value,
@@ -749,12 +824,11 @@ mod tests {
                 raw.split_once(';').map_or(raw, |(kv, _)| kv).to_string()
             })
             .collect();
-        assert!(
-            set_cookies
-                .iter()
-                .any(|c| c.starts_with("sintade_session=")),
-            "access cookie present"
-        );
+        let access = set_cookies
+            .iter()
+            .find(|c| c.starts_with("sintade_session="))
+            .expect("access cookie present")
+            .clone();
         let refresh = set_cookies
             .iter()
             .find(|c| c.starts_with("sintade_refresh="))
@@ -770,6 +844,7 @@ mod tests {
             .expect("csrf cookie has expected prefix")
             .to_string();
         LoginCookieJar {
+            access,
             refresh,
             csrf,
             csrf_value,
@@ -992,6 +1067,162 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             "the revoked session can no longer be refreshed"
         );
+    }
+
+    async fn send(
+        pool: &PgPool,
+        method: &str,
+        uri: &str,
+        cookie: String,
+        csrf: Option<&str>,
+        body: Option<serde_json::Value>,
+    ) -> axum::http::Response<Body> {
+        let app = build_router(
+            pool.clone(),
+            test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
+            test_rate_limiter(pool.clone()),
+            test_clock(),
+            TEST_ORIGIN,
+        );
+        let mut request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("cookie", cookie);
+        if let Some(csrf) = csrf {
+            request = request.header("x-csrf-token", csrf);
+        }
+        let body = match body {
+            Some(json) => {
+                request = request.header("content-type", "application/json");
+                Body::from(json.to_string())
+            }
+            None => Body::empty(),
+        };
+        app.oneshot(request.body(body).expect("valid request"))
+            .await
+            .expect("router call succeeds")
+    }
+
+    fn all_cookies(jar: &LoginCookieJar) -> String {
+        format!("{}; {}; {}", jar.access, jar.refresh, jar.csrf)
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn logout_all_revokes_every_session_of_the_user(pool: PgPool) {
+        let email = format!("day19-logout-all-{}@example.com", uuid::Uuid::now_v7());
+        let laptop = register_and_login(&pool, &email).await;
+        // Registering again is an anonymous no-op; the second login is a second device.
+        let phone = register_and_login(&pool, &email).await;
+
+        let response = send(
+            &pool,
+            "POST",
+            "/api/v1/auth/logout-all",
+            all_cookies(&laptop),
+            Some(&laptop.csrf_value),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(
+            response
+                .headers()
+                .get_all(axum::http::header::SET_COOKIE)
+                .iter()
+                .any(|c| c.to_str().is_ok_and(|c| c.starts_with("sintade_refresh=;"))),
+            "this browser's refresh cookie is cleared"
+        );
+
+        for (device, jar) in [("laptop", &laptop), ("phone", &phone)] {
+            let refresh = send(
+                &pool,
+                "POST",
+                "/api/v1/auth/refresh",
+                format!("{}; {}", jar.refresh, jar.csrf),
+                Some(&jar.csrf_value),
+                None,
+            )
+            .await;
+            assert_eq!(
+                refresh.status(),
+                StatusCode::UNAUTHORIZED,
+                "{device}'s session must be revoked"
+            );
+        }
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn logout_all_without_csrf_header_returns_403(pool: PgPool) {
+        let email = format!("day19-logout-all-csrf-{}@example.com", uuid::Uuid::now_v7());
+        let jar = register_and_login(&pool, &email).await;
+        let response = send(
+            &pool,
+            "POST",
+            "/api/v1/auth/logout-all",
+            all_cookies(&jar),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn update_me_changes_the_display_name(pool: PgPool) {
+        let email = format!("day19-profile-{}@example.com", uuid::Uuid::now_v7());
+        let jar = register_and_login(&pool, &email).await;
+
+        let response = send(
+            &pool,
+            "PATCH",
+            "/api/v1/me",
+            all_cookies(&jar),
+            Some(&jar.csrf_value),
+            Some(json!({"display_name": "  Renamed Tester  "})),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let user: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(user["display_name"], "Renamed Tester");
+
+        let me = send(&pool, "GET", "/api/v1/me", all_cookies(&jar), None, None).await;
+        let body = axum::body::to_bytes(me.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let me: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(me["user"]["display_name"], "Renamed Tester");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn update_me_rejects_blank_and_missing_csrf(pool: PgPool) {
+        let email = format!("day19-profile-bad-{}@example.com", uuid::Uuid::now_v7());
+        let jar = register_and_login(&pool, &email).await;
+
+        let blank = send(
+            &pool,
+            "PATCH",
+            "/api/v1/me",
+            all_cookies(&jar),
+            Some(&jar.csrf_value),
+            Some(json!({"display_name": "   "})),
+        )
+        .await;
+        assert_eq!(blank.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let no_csrf = send(
+            &pool,
+            "PATCH",
+            "/api/v1/me",
+            all_cookies(&jar),
+            None,
+            Some(json!({"display_name": "Sneaky"})),
+        )
+        .await;
+        assert_eq!(no_csrf.status(), StatusCode::FORBIDDEN);
     }
 
     #[sqlx::test(migrations = "../../migrations")]

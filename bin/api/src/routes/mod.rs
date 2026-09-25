@@ -5,8 +5,16 @@ pub mod verify_email;
 use axum::handler::Handler;
 use axum::http::Method;
 use axum::routing::{MethodFilter, MethodRouter, on};
+use serde::Serialize;
+use utoipa::ToSchema;
 
 use crate::app::{AppState, healthz, readyz};
+
+/// The body of every endpoint that only reports an outcome.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MessageResponse {
+    pub message: &'static str,
+}
 
 /// Who may call a route. Every route must pick one -- the tenant-isolation harness
 /// (`crate::tenant_isolation`) generates its test cases from this, so a route cannot be added
@@ -78,6 +86,12 @@ pub fn table() -> Vec<Route> {
         Route::new(Method::POST, "/api/v1/auth/logout", Public, auth::logout),
         Route::new(
             Method::POST,
+            "/api/v1/auth/logout-all",
+            Session,
+            auth::logout_all,
+        ),
+        Route::new(
+            Method::POST,
             "/api/v1/auth/verify-email",
             Public,
             verify_email::verify_email,
@@ -95,5 +109,6 @@ pub fn table() -> Vec<Route> {
             auth::reset_password,
         ),
         Route::new(Method::GET, "/api/v1/me", Session, me::me),
+        Route::new(Method::PATCH, "/api/v1/me", Session, me::update_me),
     ]
 }

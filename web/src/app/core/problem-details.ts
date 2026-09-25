@@ -1,10 +1,7 @@
-/** RFC 9457 problem+json shape returned by the API on error (see bin/api/src/error.rs). */
-export interface ProblemDetails {
-  type: string;
-  title: string;
-  status: number;
-  detail: string;
-}
+import { Problem } from './auth.models';
+
+/** RFC 9457 problem+json shape returned by the API on error (generated from bin/api/src/error.rs). */
+export type ProblemDetails = Problem;
 
 export function isProblemDetails(value: unknown): value is ProblemDetails {
   return (

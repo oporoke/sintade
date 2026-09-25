@@ -1,31 +1,87 @@
 use axum::Json;
 use axum::extract::State;
-use kernel::{AppError, Role, WorkspaceId};
-use serde::Serialize;
+use axum::http::HeaderMap;
+use identity::{UpdateProfileError, UpdateProfileRequest};
+use kernel::{AppError, Role, UserId, WorkspaceId};
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::app::AppState;
-use crate::error::ApiError;
+use crate::csrf::verify_csrf;
+use crate::error::{ApiError, Problem};
 use crate::session::SessionClaims;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MeUser {
+    #[schema(value_type = uuid::Uuid)]
+    pub id: UserId,
+    pub email: String,
+    pub display_name: String,
+    pub email_verified: bool,
+}
+
+impl From<identity::MeUser> for MeUser {
+    fn from(user: identity::MeUser) -> Self {
+        Self {
+            id: user.id,
+            email: user.email,
+            display_name: user.display_name,
+            email_verified: user.email_verified,
+        }
+    }
+}
+
+/// Mirrors `kernel::Role` for the OpenAPI schema (kernel stays free of API concerns).
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberRole {
+    Owner,
+    Admin,
+    Member,
+    Viewer,
+}
+
+impl From<Role> for MemberRole {
+    fn from(role: Role) -> Self {
+        match role {
+            Role::Owner => Self::Owner,
+            Role::Admin => Self::Admin,
+            Role::Member => Self::Member,
+            Role::Viewer => Self::Viewer,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
 pub struct MeWorkspace {
+    #[schema(value_type = uuid::Uuid)]
     pub id: WorkspaceId,
     pub name: String,
-    pub role: Role,
+    pub role: MemberRole,
     pub is_personal: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct MeResponse {
-    pub user: identity::MeUser,
+    pub user: MeUser,
     pub workspaces: Vec<MeWorkspace>,
     /// The workspace the session's access cookie was issued for -- lets the client pick the
     /// right entry out of `workspaces` as "current" without guessing.
+    #[schema(value_type = uuid::Uuid)]
     pub current_workspace_id: WorkspaceId,
 }
 
 /// Composes the user (from `identity`) with their memberships (from `tenancy`). `Session`
 /// access, not `Workspace`: it lists the caller's own memberships, not one workspace's data.
+#[utoipa::path(
+    get,
+    path = "/api/v1/me",
+    tag = "me",
+    responses(
+        (status = 200, description = "The current user and their workspaces", body = MeResponse),
+        (status = 401, description = "No valid session", body = Problem, content_type = "application/problem+json"),
+    )
+)]
 #[tracing::instrument(skip_all)]
 pub async fn me(
     State(state): State<AppState>,
@@ -49,16 +105,69 @@ pub async fn me(
         .map(|membership| MeWorkspace {
             id: membership.workspace_id,
             name: membership.name,
-            role: membership.role,
+            role: membership.role.into(),
             is_personal: membership.is_personal,
         })
         .collect();
 
     Ok(Json(MeResponse {
-        user,
+        user: user.into(),
         workspaces,
         current_workspace_id: claims.workspace_id,
     }))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateProfileBody {
+    pub display_name: String,
+}
+
+/// Profile settings. Acts on the ambient session cookie, so it takes the CSRF double-submit
+/// check like `/auth/refresh` and `/auth/logout`.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/me",
+    tag = "me",
+    request_body = UpdateProfileBody,
+    responses(
+        (status = 200, description = "Profile updated", body = MeUser),
+        (status = 401, description = "No valid session", body = Problem, content_type = "application/problem+json"),
+        (status = 403, description = "Missing or mismatched CSRF token", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "Invalid display name", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+#[tracing::instrument(skip_all)]
+pub async fn update_me(
+    State(state): State<AppState>,
+    claims: SessionClaims,
+    headers: HeaderMap,
+    Json(body): Json<UpdateProfileBody>,
+) -> Result<Json<MeUser>, ApiError> {
+    verify_csrf(&headers)?;
+    let user = state
+        .identity
+        .update_profile(
+            claims.user_id,
+            UpdateProfileRequest {
+                display_name: body.display_name,
+            },
+        )
+        .await
+        .map_err(|error| {
+            ApiError::from(match error {
+                UpdateProfileError::InvalidDisplayName(source) => {
+                    AppError::Validation(source.to_string())
+                }
+                UpdateProfileError::NotFound => {
+                    AppError::Unauthorized("session invalid".to_string())
+                }
+                UpdateProfileError::Database(source) => {
+                    tracing::error!(error = %source, "update_me: database error");
+                    AppError::Internal("database unavailable".to_string())
+                }
+            })
+        })?;
+    Ok(Json(user.into()))
 }
 
 #[cfg(test)]

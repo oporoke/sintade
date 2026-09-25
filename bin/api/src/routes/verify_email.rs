@@ -2,26 +2,33 @@ use axum::Json;
 use axum::extract::State;
 use identity::VerifyEmailError;
 use kernel::AppError;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use utoipa::ToSchema;
 
 use crate::app::AppState;
-use crate::error::ApiError;
+use crate::error::{ApiError, Problem};
+use crate::routes::MessageResponse;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct VerifyEmailBody {
     pub token: String,
 }
 
-#[derive(Debug, Serialize)]
-pub struct VerifyEmailResponse {
-    pub message: &'static str,
-}
-
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/verify-email",
+    tag = "auth",
+    request_body = VerifyEmailBody,
+    responses(
+        (status = 200, description = "Email verified", body = MessageResponse),
+        (status = 400, description = "Invalid or expired verification token", body = Problem, content_type = "application/problem+json"),
+    )
+)]
 #[tracing::instrument(skip_all)]
 pub async fn verify_email(
     State(state): State<AppState>,
     Json(body): Json<VerifyEmailBody>,
-) -> Result<Json<VerifyEmailResponse>, ApiError> {
+) -> Result<Json<MessageResponse>, ApiError> {
     state
         .identity
         .verify_email(&body.token)
@@ -39,7 +46,7 @@ pub async fn verify_email(
             ApiError::from(app_error)
         })?;
 
-    Ok(Json(VerifyEmailResponse {
+    Ok(Json(MessageResponse {
         message: "email verified",
     }))
 }

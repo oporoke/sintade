@@ -1,25 +1,21 @@
-/** Mirrors bin/api/src/routes/auth.rs and routes/me.rs response/request bodies. */
+import { components } from '../api/schema';
 
-export interface MeUser {
-  id: string;
-  email: string;
-  display_name: string;
-  email_verified: boolean;
-}
+/**
+ * Aliases over the DTOs generated from the API's OpenAPI contract (`just openapi`:
+ * docs/api/openapi.json -> src/app/api/schema.ts). Never hand-edit shapes here; change the Rust
+ * DTO and regenerate, and the compiler flags every affected call site.
+ */
+type Schemas = components['schemas'];
 
-export interface MeWorkspace {
-  id: string;
-  name: string;
-  role: string;
-  is_personal: boolean;
-}
-
-export interface MeResponse {
-  user: MeUser;
-  workspaces: MeWorkspace[];
-  current_workspace_id: string;
-}
-
-export interface MessageResponse {
-  message: string;
-}
+export type MeUser = Schemas['MeUser'];
+export type MeWorkspace = Schemas['MeWorkspace'];
+export type MeResponse = Schemas['MeResponse'];
+export type MemberRole = Schemas['MemberRole'];
+export type MessageResponse = Schemas['MessageResponse'];
+export type Problem = Schemas['Problem'];
+export type RegisterBody = Schemas['RegisterBody'];
+export type LoginBody = Schemas['LoginBody'];
+export type VerifyEmailBody = Schemas['VerifyEmailBody'];
+export type ForgotPasswordBody = Schemas['ForgotPasswordBody'];
+export type ResetPasswordBody = Schemas['ResetPasswordBody'];
+export type UpdateProfileBody = Schemas['UpdateProfileBody'];

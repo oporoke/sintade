@@ -18,8 +18,7 @@ export const routes: Routes = [
   },
   {
     path: 'verify-email',
-    loadComponent: () =>
-      import('./feature/auth/verify-email-page').then((m) => m.VerifyEmailPage),
+    loadComponent: () => import('./feature/auth/verify-email-page').then((m) => m.VerifyEmailPage),
   },
   {
     path: 'forgot-password',
@@ -35,5 +34,10 @@ export const routes: Routes = [
     path: 'home',
     canActivate: [authGuard],
     loadComponent: () => import('./feature/home/home-page').then((m) => m.HomePage),
+  },
+  {
+    path: 'settings/profile',
+    canActivate: [authGuard],
+    loadComponent: () => import('./feature/settings/profile-page').then((m) => m.ProfilePage),
   },
 ];

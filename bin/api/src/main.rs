@@ -1,6 +1,7 @@
 mod app;
 mod csrf;
 mod error;
+mod openapi;
 mod routes;
 mod security_headers;
 mod session;
@@ -12,6 +13,13 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // `api openapi` prints the contract and exits -- no config, database or network needed.
+    if std::env::args().nth(1).as_deref() == Some("openapi") {
+        use utoipa::OpenApi;
+        println!("{}", openapi::ApiDoc::openapi().to_pretty_json()?);
+        return Ok(());
+    }
+
     let config = platform::Config::load()?;
     platform::init_telemetry(&config.rust_log);
 

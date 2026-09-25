@@ -746,8 +746,10 @@ REST under `/api/v1`, JSON bodies, cookie session for the SPA, bearer API keys f
 | POST | `/auth/login` | identity | MVP | Issue session + refresh cookies |
 | POST | `/auth/refresh` | identity | MVP | Rotate refresh token |
 | POST | `/auth/logout` | identity | MVP | Revoke session |
+| POST | `/auth/logout-all` | identity | MVP | Revoke every session of the user (log out everywhere) |
 | POST | `/auth/verify-email`, `/auth/password/forgot`, `/auth/password/reset` | identity | MVP | Token flows |
 | GET | `/me` | identity | MVP | Current user + workspaces |
+| PATCH | `/me` | identity | MVP | Profile settings (display name) |
 | POST | `/recordings` | catalog + ingest | MVP | Create recording + take + upload session |
 | POST | `/takes/{id}/chunks/{idx}/url` | ingest | MVP | Presigned PUT for one chunk |
 | POST | `/takes/{id}/chunks/{idx}/ack` | ingest | MVP | Confirm chunk: size + SHA-256 |
