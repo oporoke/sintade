@@ -11,18 +11,18 @@ export class ApiClient {
   private readonly http = inject(HttpClient);
 
   get<T>(path: string): Observable<T> {
-    return this.http.get<T>(`${API_BASE_URL}${path}`);
+    return this.http.get<T>(`${API_BASE_URL}${path}`, { withCredentials: true });
   }
 
   post<T>(path: string, body: unknown): Observable<T> {
-    return this.http.post<T>(`${API_BASE_URL}${path}`, body);
+    return this.http.post<T>(`${API_BASE_URL}${path}`, body, { withCredentials: true });
   }
 
   put<T>(path: string, body: unknown): Observable<T> {
-    return this.http.put<T>(`${API_BASE_URL}${path}`, body);
+    return this.http.put<T>(`${API_BASE_URL}${path}`, body, { withCredentials: true });
   }
 
   delete<T>(path: string): Observable<T> {
-    return this.http.delete<T>(`${API_BASE_URL}${path}`);
+    return this.http.delete<T>(`${API_BASE_URL}${path}`, { withCredentials: true });
   }
 }

@@ -9,12 +9,23 @@ const chromiumChannel = process.env['CI'] ? undefined : 'chrome';
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: true,
-  webServer: {
-    command: 'npm run start -- --port 4200',
-    url: 'http://localhost:4200',
-    reuseExistingServer: true,
-    timeout: 60_000,
-  },
+  webServer: [
+    {
+      command: 'npm run start -- --port 4200',
+      url: 'http://localhost:4200',
+      reuseExistingServer: true,
+      timeout: 60_000,
+    },
+    // Day 17's signup-to-login e2e test needs the real API (and a running `worker` -- started
+    // as a separate CI step, since it has no HTTP endpoint for Playwright to poll for
+    // readiness). Requires `just deps-up` + `just db-migrate` already done, same as `just test`.
+    {
+      command: 'cd .. && cargo run -p api',
+      url: 'http://localhost:8080/healthz',
+      reuseExistingServer: true,
+      timeout: 120_000,
+    },
+  ],
   use: {
     baseURL: 'http://localhost:4200',
   },
