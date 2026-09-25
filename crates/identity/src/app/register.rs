@@ -1,4 +1,4 @@
-use kernel::{UserId, WorkspaceId};
+use kernel::UserId;
 use time::Duration as TimeDuration;
 use uuid::Uuid;
 
@@ -52,10 +52,10 @@ impl IdentityService {
         infra::insert_user(&mut tx, user_id, email.as_str(), &request.display_name).await?;
         infra::insert_credential(&mut tx, user_id, &password_hash).await?;
 
-        let workspace_id = WorkspaceId::new_v7();
         let workspace_name = format!("{}'s workspace", request.display_name);
-        infra::insert_personal_workspace(&mut tx, workspace_id, &workspace_name).await?;
-        infra::insert_owner_membership(&mut tx, workspace_id, user_id).await?;
+        self.workspaces
+            .create_personal_workspace(&mut tx, user_id, &workspace_name)
+            .await?;
 
         let raw_token = generate_random_hex_token();
         let token_hash = sha256_digest(&raw_token);

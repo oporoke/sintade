@@ -55,9 +55,9 @@ impl FromRequestParts<AppState> for SessionClaims {
     }
 }
 
-/// Builds a `Set-Cookie` header value. `HttpOnly; Secure; SameSite=Lax` per US-02 -- `Secure`
-/// cookies are still sent by browsers over `http://localhost` (treated as a secure context),
-/// so this doesn't need relaxing for local dev.
+/// Builds a `Set-Cookie` header value. `HttpOnly; Secure; SameSite=Lax` per US-02. Not relaxed
+/// for local dev: WebKit drops `Secure` cookies over plain `http://localhost`, so the dev SPA
+/// runs over HTTPS with a same-origin `/api` proxy instead (ADR-0006).
 pub fn set_cookie_header(name: &str, value: &str, max_age_secs: i64, path: &str) -> String {
     format!("{name}={value}; Path={path}; Max-Age={max_age_secs}; HttpOnly; Secure; SameSite=Lax")
 }

@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use platform::{Clock, JobQueue};
+
+use crate::app::workspaces::WorkspaceDirectory;
 use sqlx::PgPool;
 
 pub struct IdentityService {
@@ -9,6 +11,7 @@ pub struct IdentityService {
     pub(super) clock: Arc<dyn Clock>,
     pub(super) public_base_url: String,
     pub(super) session_secret: Vec<u8>,
+    pub(super) workspaces: Arc<dyn WorkspaceDirectory>,
 }
 
 impl IdentityService {
@@ -18,6 +21,7 @@ impl IdentityService {
         clock: Arc<dyn Clock>,
         public_base_url: String,
         session_secret: Vec<u8>,
+        workspaces: Arc<dyn WorkspaceDirectory>,
     ) -> Self {
         Self {
             pool,
@@ -25,6 +29,7 @@ impl IdentityService {
             clock,
             public_base_url,
             session_secret,
+            workspaces,
         }
     }
 
