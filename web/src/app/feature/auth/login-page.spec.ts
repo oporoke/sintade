@@ -17,13 +17,7 @@ describe('LoginPage', () => {
   }
 
   it('navigates to /home after a successful login', () => {
-    const login = vi.fn().mockReturnValue(
-      of({
-        user: { id: '1', email: 'a@example.com', display_name: 'A', email_verified: true },
-        workspaces: [],
-        current_workspace_id: 'w1',
-      }),
-    );
+    const login = vi.fn().mockReturnValue(of({ message: 'logged in' }));
     const fixture = setup({ login });
     const router = TestBed.inject(Router);
     const navigateSpy = vi.spyOn(router, 'navigateByUrl');
