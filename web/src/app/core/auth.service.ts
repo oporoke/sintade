@@ -1,5 +1,5 @@
 import { Injectable, inject, signal } from '@angular/core';
-import { Observable, tap } from 'rxjs';
+import { Observable, switchMap, tap } from 'rxjs';
 
 import { ApiClient } from './api-client.service';
 import { MeResponse, MessageResponse } from './auth.models';
@@ -19,13 +19,12 @@ export class AuthService {
     });
   }
 
-  /** Deliberately does *not* chain into `fetchMe()`: WebKit doesn't reliably have a
-   * just-received Set-Cookie available to an immediately-following request on the same tick
-   * (observed as a real, reproducible CI failure -- WebKit only, chromium/firefox unaffected).
-   * The guard's own `fetchMe()` call, made after the router's navigation cycle to /home, is a
-   * real subsequent tick and doesn't hit this. */
-  login(email: string, password: string): Observable<MessageResponse> {
-    return this.api.post<MessageResponse>('/auth/login', { email, password });
+  /** Chains into `fetchMe()` so `currentUser` is populated before this observable completes --
+   * callers navigating on success (e.g. to a guarded route) won't race the guard's own check. */
+  login(email: string, password: string): Observable<MeResponse> {
+    return this.api
+      .post<MessageResponse>('/auth/login', { email, password })
+      .pipe(switchMap(() => this.fetchMe()));
   }
 
   logout(): Observable<void> {

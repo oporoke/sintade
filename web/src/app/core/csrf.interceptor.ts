@@ -5,10 +5,10 @@ const CSRF_HEADER_NAME = 'X-CSRF-Token';
 
 /**
  * Double-submit CSRF (see bin/api/src/csrf.rs): reads the `sintade_csrf` cookie and echoes it
- * back as a header on state-changing requests. Angular ships a built-in XSRF interceptor, but
- * it deliberately skips cross-origin requests (`xsrfInterceptorFn` in
- * @angular/common/http) — the SPA (:4200) and API (:8080) are on different origins by design
- * here, so that built-in interceptor is a no-op for this app and a custom one is needed instead.
+ * back as a header on state-changing requests. Angular's built-in XSRF interceptor skips
+ * cross-origin requests (`xsrfInterceptorFn` in @angular/common/http); dev is same-origin via
+ * the `ng serve` proxy (ADR-0006), but production topology isn't decided yet, so this custom
+ * interceptor stays origin-agnostic rather than relying on the built-in one.
  */
 export const csrfInterceptor: HttpInterceptorFn = (req, next) => {
   if (req.method === 'GET' || req.method === 'HEAD') {

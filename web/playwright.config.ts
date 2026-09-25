@@ -11,8 +11,11 @@ export default defineConfig({
   fullyParallel: true,
   webServer: [
     {
+      // `ng serve` runs over HTTPS with a self-signed cert and proxies /api to :8080 (ADR-0006):
+      // WebKit on Linux drops the API's `Secure` cookies over plain http://localhost.
       command: 'npm run start -- --port 4200',
-      url: 'http://localhost:4200',
+      url: 'https://localhost:4200',
+      ignoreHTTPSErrors: true,
       reuseExistingServer: true,
       timeout: 60_000,
     },
@@ -27,7 +30,8 @@ export default defineConfig({
     },
   ],
   use: {
-    baseURL: 'http://localhost:4200',
+    baseURL: 'https://localhost:4200',
+    ignoreHTTPSErrors: true,
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'], channel: chromiumChannel } },

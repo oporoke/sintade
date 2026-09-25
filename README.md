@@ -882,7 +882,7 @@ Configuration is environment-variable based, loaded by the `platform` crate. Fea
 | `S3_BUCKET` | Yes | Private media bucket | `sintade-dev` | No |
 | `S3_ACCESS_KEY` | Yes | Storage access key | `<your-access-key>` | Yes |
 | `S3_SECRET_KEY` | Yes | Storage secret key | `<your-secret-key>` | Yes |
-| `PUBLIC_BASE_URL` | Yes | Base URL for links and emails | `http://localhost:4200` | No |
+| `PUBLIC_BASE_URL` | Yes | Base URL for links and emails | `https://localhost:4200` | No |
 | `SESSION_SECRET` | Yes | Signs cookies (64 random bytes, base64) | `<your-session-secret>` | Yes |
 | `DATA_ENC_KEY` | Yes (V1 TOTP) | AES-256-GCM key (32 bytes, base64) | `<your-encryption-key>` | Yes |
 | `SMTP_URL` | Yes | SMTP server | `smtp://localhost:1025` | Yes in prod |
@@ -938,7 +938,7 @@ just web              # cd web && npm ci && npm start
 | Service | URL |
 | --- | --- |
 | API | `http://localhost:8080` |
-| Web app | `http://localhost:4200` |
+| Web app | `https://localhost:4200` (self-signed; `/api` proxied to the API, see ADR-0006) |
 | Mailpit UI | `http://localhost:8025` |
 | MinIO console | `http://localhost:9001` |
 | MinIO S3 API | `http://localhost:9000` |

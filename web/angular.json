@@ -67,6 +67,10 @@
               "buildTarget": "web:build:development"
             }
           },
+          "options": {
+            "ssl": true,
+            "proxyConfig": "proxy.conf.json"
+          },
           "defaultConfiguration": "development"
         },
         "test": {
