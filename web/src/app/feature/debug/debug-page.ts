@@ -9,9 +9,17 @@ import {
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Subscription } from 'rxjs';
 
-import { AudioLevels, MicDevice, toCaptureError } from '../../capture';
+import { AudioLevels, MicDevice, openChunkStore, toCaptureError } from '../../capture';
 import { CapabilityService } from '../../core/capability.service';
 import { AUDIO_MIXER, SOURCE_MANAGER } from '../../core/capture.tokens';
+import {
+  StoreBackend,
+  StoredTakeCheck,
+  clearTestTakes,
+  inspectTestTakes,
+  openBackend,
+  writeTestTake,
+} from './chunk-store-self-test';
 import { ClipAnalysis, MixSelfTestResult, runMixSelfTest } from './mix-self-test';
 import {
   RecorderScenario,
@@ -34,7 +42,7 @@ interface TrackInfo {
  * Developer diagnostics (dev-only, so plain strings rather than `$localize`, as on Day 9):
  * the capability matrix, a source preview (Day 21) that exercises `SourceManager` against the
  * real browser, live mixing with level meters, and device-free self-tests of the mixer (Day 22)
- * and the chunk recorder (Day 23).
+ * and the chunk recorder (Days 23–24), and the chunk store surviving a reload (Day 25).
  */
 @Component({
   selector: 'app-debug-page',
@@ -244,6 +252,45 @@ interface TrackInfo {
     @if (recorderTestError()) {
       <p role="alert" data-testid="rec-selftest-error">{{ recorderTestError() }}</p>
     }
+
+    <h2>Chunk store</h2>
+    <p data-testid="store-auto">openChunkStore() picks: {{ autoBackend() }}</p>
+    <p>Write a 5-chunk test take, reload the page, then inspect: every byte must match.</p>
+    @for (backend of storeBackends; track backend) {
+      <section [attr.aria-label]="'Chunk store ' + backend">
+        <h3>{{ backend }}</h3>
+        <button
+          type="button"
+          (click)="storeWrite(backend)"
+          [attr.data-testid]="'store-write-' + backend"
+        >
+          Write test take
+        </button>
+        <button
+          type="button"
+          (click)="storeInspect(backend)"
+          [attr.data-testid]="'store-inspect-' + backend"
+        >
+          Inspect stored takes
+        </button>
+        <button
+          type="button"
+          (click)="storeClear(backend)"
+          [attr.data-testid]="'store-clear-' + backend"
+        >
+          Clear test takes
+        </button>
+        <p [attr.data-testid]="'store-status-' + backend">{{ storeStatus()[backend] }}</p>
+        <ul [attr.data-testid]="'store-results-' + backend">
+          @for (take of storeResults()[backend]; track take.takeId) {
+            <li>
+              {{ take.takeId }}: {{ take.indexes.length }} chunks ({{ take.indexes.join(',') }}),
+              {{ take.intact ? 'intact' : 'CORRUPT' }}
+            </li>
+          }
+        </ul>
+      </section>
+    }
   `,
 })
 export class DebugPage {
@@ -272,6 +319,16 @@ export class DebugPage {
   protected readonly recorderTestUrl = signal<string | null>(null);
   protected readonly recorderTestRunning = signal(false);
   protected readonly recorderTestError = signal<string | null>(null);
+  protected readonly storeBackends: readonly StoreBackend[] = ['opfs', 'indexeddb'];
+  protected readonly autoBackend = signal('…');
+  protected readonly storeStatus = signal<Record<StoreBackend, string>>({
+    opfs: '',
+    indexeddb: '',
+  });
+  protected readonly storeResults = signal<Record<StoreBackend, StoredTakeCheck[]>>({
+    opfs: [],
+    indexeddb: [],
+  });
 
   readonly rows = computed<CapabilityRow[]>(() => {
     const capabilities = this.capabilities();
@@ -288,6 +345,10 @@ export class DebugPage {
       this.display.set(null);
       this.displayInfo.set(null);
     });
+    openChunkStore().then(
+      (store) => this.autoBackend.set(store.backend),
+      (error: unknown) => this.autoBackend.set(`none (${toCaptureError(error).message})`),
+    );
     this.destroyRef.onDestroy(() => {
       this.releaseRecorderTestUrl();
       this.stopMix();
@@ -383,6 +444,29 @@ export class DebugPage {
     }
   }
 
+  async storeWrite(backend: StoreBackend): Promise<void> {
+    await this.withStore(backend, async (store) => {
+      const takeId = await writeTestTake(store);
+      return `wrote ${takeId}`;
+    });
+  }
+
+  async storeInspect(backend: StoreBackend): Promise<void> {
+    await this.withStore(backend, async (store) => {
+      const takes = await inspectTestTakes(store);
+      this.storeResults.update((results) => ({ ...results, [backend]: takes }));
+      return `${takes.length} test take(s) stored`;
+    });
+  }
+
+  async storeClear(backend: StoreBackend): Promise<void> {
+    await this.withStore(backend, async (store) => {
+      await clearTestTakes(store);
+      this.storeResults.update((results) => ({ ...results, [backend]: [] }));
+      return 'cleared';
+    });
+  }
+
   stopAll(): void {
     this.stopMix();
     this.sources.stopAll();
@@ -400,6 +484,20 @@ export class DebugPage {
       next: (mics) => this.mics.set(mics),
       error: (error: unknown) => this.showError(error),
     });
+  }
+
+  private async withStore(
+    backend: StoreBackend,
+    action: (store: NonNullable<Awaited<ReturnType<typeof openBackend>>>) => Promise<string>,
+  ): Promise<void> {
+    const setStatus = (status: string) =>
+      this.storeStatus.update((statuses) => ({ ...statuses, [backend]: status }));
+    try {
+      const store = await openBackend(backend);
+      setStatus(store ? await action(store) : 'unavailable in this browser');
+    } catch (error) {
+      setStatus(`error: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   private releaseRecorderTestUrl(): void {
