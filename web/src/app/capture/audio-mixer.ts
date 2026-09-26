@@ -24,6 +24,8 @@ export type AudioContextPort = Pick<
 
 const ANALYSER_FFT_SIZE = 1024;
 const DEFAULT_LEVEL_INTERVAL_MS = 100;
+/** How long the audio engine gets to start before we give up rather than hang the recorder. */
+export const AUDIO_START_TIMEOUT_MS = 2000;
 
 /**
  * Mixes microphone and display (system/tab) audio into one track with Web Audio (§10 Record,
@@ -64,7 +66,7 @@ export class AudioMixer {
     }
     this.context = context;
     if (context.state === 'suspended') {
-      await context.resume();
+      await startAudio(context);
     }
 
     const destination = context.createMediaStreamDestination();
@@ -130,6 +132,35 @@ export class AudioMixer {
     this.analysers.clear();
     this.output?.stop();
     this.output = null;
+  }
+}
+
+/**
+ * Resumes a suspended context, but never waits forever: with no working audio output device
+ * (seen on headless Linux without a sound server) Firefox and WebKit leave `resume()` pending
+ * indefinitely, which would otherwise freeze the recorder at "starting".
+ */
+export async function startAudio(
+  context: Pick<AudioContextPort, 'resume'>,
+  timeoutMs = AUDIO_START_TIMEOUT_MS,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new CaptureError(
+            'not-supported',
+            `the audio engine did not start within ${timeoutMs} ms (no audio output device?)`,
+          ),
+        ),
+      timeoutMs,
+    );
+  });
+  try {
+    await Promise.race([context.resume(), timeout]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

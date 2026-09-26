@@ -1,4 +1,4 @@
-import { AudioLevels, AudioMixer } from '../../capture';
+import { AudioLevels, AudioMixer, startAudio } from '../../capture';
 
 export interface ToneResult {
   frequencyHz: number;
@@ -42,7 +42,7 @@ export async function runMixSelfTest(durationMs = 2000): Promise<MixSelfTestResu
   const sourceContext = new AudioContext();
   const mixer = new AudioMixer();
   try {
-    await sourceContext.resume();
+    await startAudio(sourceContext);
     const [mic, display] = [TONES[0], TONES[1]].map(({ frequencyHz }) => {
       const oscillator = sourceContext.createOscillator();
       oscillator.frequency.value = frequencyHz;

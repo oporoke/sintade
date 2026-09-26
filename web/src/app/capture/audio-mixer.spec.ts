@@ -159,6 +159,23 @@ describe('AudioMixer', () => {
     expect(mixer.level('mic')).toBe(0);
   });
 
+  it('fails with not-supported instead of hanging when the audio engine never starts', async () => {
+    vi.useFakeTimers();
+    try {
+      const { context, mixer } = setup();
+      context.resume.mockImplementation(() => new Promise<void>(() => undefined));
+      const result = mixer.mix({ mic: stream(1) });
+      const assertion = expect(result).rejects.toMatchObject({
+        kind: 'not-supported',
+        message: expect.stringContaining('did not start'),
+      });
+      await vi.advanceTimersByTimeAsync(2000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('is not-supported when Web Audio cannot be created', async () => {
     const mixer = new AudioMixer(() => {
       throw new ReferenceError('AudioContext is not defined');

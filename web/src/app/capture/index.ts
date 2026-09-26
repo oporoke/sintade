@@ -2,7 +2,7 @@
  * The capture engine's public surface. Framework-free: nothing under `capture/` may import
  * Angular (enforced by ESLint), so the Manifest V3 extension can reuse it unchanged.
  */
-export { AudioMixer, rms } from './audio-mixer';
+export { AUDIO_START_TIMEOUT_MS, AudioMixer, rms, startAudio } from './audio-mixer';
 export type {
   AudioContextPort,
   AudioLevels,
