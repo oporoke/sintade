@@ -1085,9 +1085,9 @@ Rules: one row = one mergeable unit of work. `In progress` must name the branch 
 | MVP | Cargo workspace, `core`, `platform` crates | 19 | In progress | Merged Days 1–8 (`feat/day-001`..`008`). `core` renamed to `kernel`, see ADR-0003. `platform` has `Config`, `Clock`, `ObjectStore`+`S3ObjectStore`, `JobQueue`, `Outbox`+`listen`, `Mailer`+`SmtpMailer`. Not "Done" per this table's own rule (not yet deployed anywhere) |
 | MVP | Docker Compose dev env + CI pipeline | 19 | In progress | `compose.yml` (Days 2, follow-up) and `.github/workflows/ci.yml` (Day 10, PR #11) both exist and pass for real (watched actual GitHub Actions runs). `deploy-staging` is wired but has no VPS target yet — see `docs/plan/PROGRESS.md` |
 | MVP | Angular shell: `ApiClient`, auth interceptor, `CapabilityService` | 20 | In progress | Day 9 (`feat/day-009-angular-shell`): `ApiClient`, `CapabilityService`, theme tokens, routing all exist. Built an *error* interceptor, not an *auth* interceptor — auth doesn't exist until Identity (M2); this row's literal wording is ahead of where the plan actually introduces auth |
-| MVP | Identity: register, login, refresh rotation, logout | 12 | Not started |  |
-| MVP | Identity: email verification, password reset | 12 | Not started |  |
-| MVP | Personal workspace auto-created on signup | 13 | Not started |  |
+| MVP | Identity: register, login, refresh rotation, logout | 12 | In progress | Merged Days 12–14, 16–17, 19 (incl. logout everywhere, Angular screens). US-01/US-02 criteria pass. Local demo `docs/demos/M02-identity.md` (2026-09-26); not *Done*, since no staging/prod deploy exists yet |
+| MVP | Identity: email verification, password reset | 12 | In progress | Merged Day 15. US-01 (verification) / US-03 criteria pass. Local demo `docs/demos/M02-identity.md` (2026-09-26); not *Done*, since no staging/prod deploy exists yet |
+| MVP | Personal workspace auto-created on signup | 13 | In progress | Day 12, moved behind the `tenancy` crate on Day 18 (ADR-0007). Same-transaction creation verified. Local demo `docs/demos/M02-identity.md` (2026-09-26); not *Done*, since no staging/prod deploy exists yet |
 | MVP | Capture: source selection + device picker | 1 | Not started |  |
 | MVP | Capture: `AudioMixer` (mic + system audio) | 1 | Not started |  |
 | MVP | Capture: `ChunkRecorder`, controls, countdown | 2 | Not started |  |
@@ -1101,7 +1101,7 @@ Rules: one row = one mergeable unit of work. `In progress` must name the branch 
 | MVP | Share links: private / link / public | 9 | Not started |  |
 | MVP | Watch page, playback grants, basic player | 6 | Not started |  |
 | MVP | Library list, rename, trash | 11 | Not started |  |
-| MVP | Hardening: rate limits, headers, tenant-isolation tests | 18 | Not started |  |
+| MVP | Hardening: rate limits, headers, tenant-isolation tests | 18 | In progress | Rate limits + CSRF + headers (Day 16); generated tenant-isolation harness (Day 18). Remaining hardening is M8 |
 | MVP | Backups + production VPS deploy | 19 | Not started |  |
 | V1 | Webcam bubble, quality presets, shortcuts, meters | 1, 2 | Not started |  |
 | V1 | HLS ladder, sprites, SSE status, full player | 5, 6 | Not started |  |
@@ -1131,21 +1131,27 @@ Format: **ID — As a \<role>, I want \<capability>, so that \<outcome>.** Crite
 
 **US-01 — As a visitor, I want to sign up with email and password, so that I can record.**
 
-- [ ] Password ≥ 10 chars, checked against a breached-password list (top 100k)
-- [ ] Duplicate email returns a generic message (no account enumeration)
-- [ ] Personal workspace created in the same transaction as the user
-- [ ] Verification email sent within 60 s; link valid 24 h, single use
+_Verified locally 2026-09-26, `docs/demos/M02-identity.md`; staging pending._
+
+- [x] Password ≥ 10 chars, checked against a breached-password list (top 100k)
+- [x] Duplicate email returns a generic message (no account enumeration)
+- [x] Personal workspace created in the same transaction as the user
+- [x] Verification email sent within 60 s; link valid 24 h, single use
 
 **US-02 — As a user, I want to log in and stay logged in, so that I don't re-enter credentials daily.**
 
-- [ ] Access cookie 15 min, refresh cookie 30 days, both `HttpOnly; Secure; SameSite=Lax`
-- [ ] Given a refresh token is reused after rotation, when it is presented, then the whole session family is revoked
-- [ ] 5 failed logins per IP+email per minute returns `429`
+_Verified locally 2026-09-26, `docs/demos/M02-identity.md`; staging pending._
+
+- [x] Access cookie 15 min, refresh cookie 30 days, both `HttpOnly; Secure; SameSite=Lax`
+- [x] Given a refresh token is reused after rotation, when it is presented, then the whole session family is revoked
+- [x] 5 failed logins per IP+email per minute returns `429`
 
 **US-03 — As a user, I want to reset a forgotten password, so that I regain access.**
 
-- [ ] Reset link valid 1 h, single use; all sessions revoked on reset
-- [ ] Response identical whether or not the email exists
+_Verified locally 2026-09-26, `docs/demos/M02-identity.md`; staging pending._
+
+- [x] Reset link valid 1 h, single use; all sessions revoked on reset
+- [x] Response identical whether or not the email exists
 
 ### Capture and recording
 
