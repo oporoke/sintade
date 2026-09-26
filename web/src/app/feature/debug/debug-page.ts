@@ -13,7 +13,11 @@ import { AudioLevels, MicDevice, toCaptureError } from '../../capture';
 import { CapabilityService } from '../../core/capability.service';
 import { AUDIO_MIXER, SOURCE_MANAGER } from '../../core/capture.tokens';
 import { ClipAnalysis, MixSelfTestResult, runMixSelfTest } from './mix-self-test';
-import { RecorderSelfTestResult, runRecorderSelfTest } from './recorder-self-test';
+import {
+  RecorderScenario,
+  RecorderSelfTestResult,
+  runRecorderSelfTest,
+} from './recorder-self-test';
 
 interface CapabilityRow {
   name: string;
@@ -185,21 +189,41 @@ interface TrackInfo {
 
     <h2>Recorder self-test</h2>
     <p>
-      Records 6 s of an animated canvas plus a tone with ChunkRecorder (2 s slices), concatenates
-      the chunks in order and plays the result to the end at 4×.
+      Records an animated canvas plus a tone with ChunkRecorder (2 s slices), concatenates the
+      chunks in order and plays the result to the end at 4×. Pause: 2 s, pause 2 s, 2 s (expect a ~4
+      s clip). Track ended: the video track ends after 3 s; the recorder must stop itself.
     </p>
     <button
       type="button"
-      (click)="runRecorderTest()"
+      (click)="runRecorderTest('continuous')"
       [disabled]="recorderTestRunning()"
       data-testid="rec-selftest-run"
     >
-      Run recorder self-test
+      Run recorder self-test (6 s)
+    </button>
+    <button
+      type="button"
+      (click)="runRecorderTest('pause')"
+      [disabled]="recorderTestRunning()"
+      data-testid="rec-selftest-run-pause"
+    >
+      With a pause
+    </button>
+    <button
+      type="button"
+      (click)="runRecorderTest('track-ended')"
+      [disabled]="recorderTestRunning()"
+      data-testid="rec-selftest-run-track-ended"
+    >
+      Ending the track
     </button>
     @if (recorderTestRunning()) {
       <p data-testid="rec-selftest-running">Recording and replaying…</p>
     }
     @if (recorderTest(); as result) {
+      <p data-testid="rec-selftest-summary">
+        {{ result.scenario }}: stopped by {{ result.stoppedBy }}
+      </p>
       <p data-testid="rec-selftest-chunks">
         {{ result.mimeType }}: {{ result.chunkSizes.length }} chunks ({{
           result.chunkSizes.join(', ')
@@ -343,13 +367,13 @@ export class DebugPage {
     return 'unavailable' in result.clip ? result.clip.unavailable : '';
   }
 
-  async runRecorderTest(): Promise<void> {
+  async runRecorderTest(scenario: RecorderScenario): Promise<void> {
     this.recorderTestRunning.set(true);
     this.recorderTest.set(null);
     this.recorderTestError.set(null);
     this.releaseRecorderTestUrl();
     try {
-      const result = await runRecorderSelfTest();
+      const result = await runRecorderSelfTest(scenario);
       this.recorderTest.set(result);
       this.recorderTestUrl.set(URL.createObjectURL(result.file));
     } catch (error) {

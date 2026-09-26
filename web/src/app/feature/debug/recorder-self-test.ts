@@ -1,12 +1,26 @@
+import { firstValueFrom } from 'rxjs';
+
 import {
   ChunkRecorder,
+  RecordingSummary,
   DEFAULT_TIMESLICE_MS,
   DEFAULT_VIDEO_BITS_PER_SECOND,
   selectMimeType,
   startAudio,
 } from '../../capture';
 
+/**
+ * - `continuous`: 6 s straight (Day 23).
+ * - `pause`: 2 s, pause 2 s (the canvas keeps animating), 2 s more: the clip must be ~4 s.
+ * - `track-ended`: the video track ends after 3 s, as with the browser's "Stop sharing";
+ *   the recorder must stop by itself.
+ */
+export type RecorderScenario = 'continuous' | 'pause' | 'track-ended';
+
 export interface RecorderSelfTestResult {
+  scenario: RecorderScenario;
+  /** How the take ended: our `stop()` call, or the recorder stopping itself. */
+  stoppedBy: 'stop()' | 'track ended';
   mimeType: string;
   chunkSizes: number[];
   recordedMs: number;
@@ -28,12 +42,15 @@ const HEIGHT = 360;
 const PLAYBACK_RATE = 4;
 
 /**
- * Day 23 Check, "concatenated chunks play as a valid file", without devices: an animated canvas
+ * Day 23/24 Checks ("concatenated chunks play as a valid file", "clip with a pause plays
+ * correctly"), without devices: an animated canvas
  * plus a tone are recorded by the real `ChunkRecorder` in 2 s slices; the chunks are
  * concatenated in index order (as the worker will, §10 Process step 2) and the result is played
  * to the end in a `<video>`.
  */
-export async function runRecorderSelfTest(durationMs = 6000): Promise<RecorderSelfTestResult> {
+export async function runRecorderSelfTest(
+  scenario: RecorderScenario = 'continuous',
+): Promise<RecorderSelfTestResult> {
   if (typeof MediaRecorder === 'undefined') {
     throw new Error('MediaRecorder is not available in this browser');
   }
@@ -52,10 +69,29 @@ export async function runRecorderSelfTest(durationMs = 6000): Promise<RecorderSe
       timesliceMs: DEFAULT_TIMESLICE_MS,
       bitsPerSecond: DEFAULT_VIDEO_BITS_PER_SECOND,
     });
-    await delay(durationMs);
-    const summary = await recorder.stop();
+    let stoppedBy: RecorderSelfTestResult['stoppedBy'] = 'stop()';
+    let summary: RecordingSummary;
+    if (scenario === 'pause') {
+      await delay(2000);
+      recorder.pause();
+      await delay(2000);
+      recorder.resume();
+      await delay(2000);
+      summary = await recorder.stop();
+    } else if (scenario === 'track-ended') {
+      const stopped = firstValueFrom(recorder.stopped$);
+      await delay(3000);
+      stream.getVideoTracks().forEach((track) => stopFromBrowser(track));
+      summary = await withTimeout(stopped, 5000, 'the recorder did not stop when its track ended');
+      stoppedBy = 'track ended';
+    } else {
+      await delay(6000);
+      summary = await recorder.stop();
+    }
     const file = new Blob(chunks, { type: recorder.mimeType ?? mimeType });
     return {
+      scenario,
+      stoppedBy,
       mimeType: file.type,
       chunkSizes: chunks.map((chunk) => chunk.size),
       recordedMs: summary.durationMs,
@@ -166,6 +202,24 @@ function playToEnd(file: Blob): Promise<PlaybackCheck> {
     );
     video.src = url;
   });
+}
+
+/**
+ * Simulates the user clicking the browser's "Stop sharing": `track.stop()` does not fire
+ * `ended` (by spec only the browser ending a track does), so dispatch that event ourselves.
+ * `dispatchEvent` also runs the track's `onended` handler, which is the path Firefox delivers
+ * on (see `onTrackEnded`).
+ */
+function stopFromBrowser(track: MediaStreamTrack): void {
+  track.dispatchEvent(new Event('ended'));
+  track.stop();
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error(message)), ms)),
+  ]);
 }
 
 function delay(ms: number): Promise<void> {
