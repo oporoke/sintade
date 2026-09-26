@@ -1,6 +1,13 @@
 import { InjectionToken } from '@angular/core';
 
-import { AudioMixer, ChunkStore, SourceManager, openChunkStore } from '../capture';
+import {
+  AudioMixer,
+  ChunkStore,
+  SourceManager,
+  TakeSession,
+  TakeSessionOptions,
+  openChunkStore,
+} from '../capture';
 
 /*
  * Angular's handles on the framework-free capture engine. The capture package itself knows
@@ -29,3 +36,9 @@ export const CHUNK_STORE = new InjectionToken<Promise<ChunkStore>>('ChunkStore',
     return store;
   },
 });
+
+/** Starts a take (overridable so pages can be tested without MediaRecorder and storage). */
+export const START_TAKE = new InjectionToken<(options: TakeSessionOptions) => Promise<TakeSession>>(
+  'StartTake',
+  { providedIn: 'root', factory: () => (options) => TakeSession.start(options) },
+);
