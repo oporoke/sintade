@@ -34,7 +34,18 @@ export default defineConfig({
     ignoreHTTPSErrors: true,
   },
   projects: [
-    { name: 'chromium', use: { ...devices['Desktop Chrome'], channel: chromiumChannel } },
+    {
+      name: 'chromium',
+      use: {
+        ...devices['Desktop Chrome'],
+        channel: chromiumChannel,
+        // Fake mic/camera and auto-accepted permission and screen-share prompts, so capture code
+        // runs for real under automation (Day 21). Firefox/WebKit equivalents: Day 31 harness.
+        launchOptions: {
+          args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'],
+        },
+      },
+    },
     { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
     { name: 'webkit', use: { ...devices['Desktop Safari'] } },
   ],
