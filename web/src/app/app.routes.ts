@@ -36,6 +36,11 @@ export const routes: Routes = [
     loadComponent: () => import('./feature/home/home-page').then((m) => m.HomePage),
   },
   {
+    path: 'record',
+    canActivate: [authGuard],
+    loadComponent: () => import('./feature/recorder/recorder-page').then((m) => m.RecorderPage),
+  },
+  {
     path: 'settings/profile',
     canActivate: [authGuard],
     loadComponent: () => import('./feature/settings/profile-page').then((m) => m.ProfilePage),

@@ -13,9 +13,41 @@ export interface CapabilityMatrix {
   systemAudio: boolean;
 }
 
+/**
+ * Whether system/tab audio can be recorded here, and the one-line reason or caveat to show
+ * (US-10; README §4.1 support table). There's no feature-detection API for this, so it's
+ * UA-based.
+ */
+export type SystemAudioSupport =
+  { supported: true; note: string | null } | { supported: false; reason: string };
+
 @Injectable({ providedIn: 'root' })
 export class CapabilityService {
   readonly capabilities = signal<CapabilityMatrix>(detectCapabilities());
+  readonly systemAudio = signal<SystemAudioSupport>(systemAudioSupport(userAgent()));
+}
+
+export function systemAudioSupport(ua: string): SystemAudioSupport {
+  const chromium = /Chrome\/|Chromium\/|Edg\//.test(ua) && !/OPR\//.test(ua);
+  if (chromium) {
+    return /Windows/.test(ua)
+      ? { supported: true, note: null }
+      : {
+          supported: true,
+          note: $localize`On this system only a browser tab's audio can be captured, not the whole system's.`,
+        };
+  }
+  if (/Firefox\//.test(ua)) {
+    return { supported: false, reason: $localize`Firefox can't record system or tab audio.` };
+  }
+  if (/Safari\//.test(ua)) {
+    return { supported: false, reason: $localize`Safari can't record system or tab audio.` };
+  }
+  return { supported: false, reason: $localize`This browser can't record system audio.` };
+}
+
+function userAgent(): string {
+  return typeof navigator === 'undefined' ? '' : navigator.userAgent;
 }
 
 function detectCapabilities(): CapabilityMatrix {
@@ -24,16 +56,6 @@ function detectCapabilities(): CapabilityMatrix {
     mediaRecorderWebm:
       typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('video/webm'),
     opfs: typeof navigator !== 'undefined' && typeof navigator.storage?.getDirectory === 'function',
-    systemAudio: detectSystemAudioHeuristic(),
+    systemAudio: systemAudioSupport(userAgent()).supported,
   };
-}
-
-function detectSystemAudioHeuristic(): boolean {
-  if (typeof navigator === 'undefined') {
-    return false;
-  }
-  const ua = navigator.userAgent;
-  const isChromiumFamily = /Chrome|Chromium|Edg\//.test(ua);
-  const isOpera = /OPR\//.test(ua);
-  return isChromiumFamily && !isOpera;
 }
