@@ -143,6 +143,16 @@ describe('RecorderPage', () => {
     expect(localStorage.getItem('sintade.recorder.mic')).toBe('mic-b');
   });
 
+  it('keeps a remembered mic choosable when the browser hides device ids', async () => {
+    localStorage.setItem('sintade.recorder.mic', 'real-id-from-last-time');
+    const sources = fakeSources();
+    sources.listMics.mockResolvedValue([{ deviceId: '', label: 'Microphone 1' }]);
+    const { q } = await setup(SUPPORTED, sources);
+    const select = q<HTMLSelectElement>('recorder-mic-select');
+    expect(select?.value).toBe('real-id-from-last-time');
+    expect(select?.selectedOptions[0]?.textContent?.trim()).toBe('Last used microphone');
+  });
+
   it('preselects the remembered mic on the next visit', async () => {
     localStorage.setItem('sintade.recorder.mic', 'mic-b');
     const { q } = await setup(SUPPORTED);
