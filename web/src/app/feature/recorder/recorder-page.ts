@@ -13,16 +13,11 @@ import {
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Subscription } from 'rxjs';
 
-import {
-  CaptureError,
-  MicDevice,
-  TakeMeta,
-  TakeSession,
-  assembleTake,
-  toCaptureError,
-} from '../../capture';
+import { MicDevice, TakeMeta, TakeSession, assembleTake, toCaptureError } from '../../capture';
+import { currentBrowser } from '../../core/browser';
 import { CapabilityService } from '../../core/capability.service';
 import { AUDIO_MIXER, CHUNK_STORE, SOURCE_MANAGER, START_TAKE } from '../../core/capture.tokens';
+import { CaptureProblem, CaptureSource, captureHelp } from './capture-help';
 import { Countdown } from './countdown';
 import { formatClock, formatDuration } from './format';
 import { meterValue } from './meter';
@@ -56,160 +51,185 @@ const ANY_MIC = 'any';
   imports: [Countdown],
   template: `
     <h1 i18n>New recording</h1>
-
-    <fieldset [disabled]="phase() !== 'setup'" data-testid="recorder-setup">
-      <legend i18n>Setup</legend>
-      <section aria-labelledby="recorder-screen-heading">
-        <h2 id="recorder-screen-heading" i18n>Screen</h2>
-        <button type="button" (click)="chooseScreen()" data-testid="recorder-choose-screen" i18n>
-          Choose screen, window or tab
-        </button>
-        @if (display(); as display) {
-          <video
-            [srcObject]="display"
-            autoplay
-            muted
-            playsinline
-            width="480"
-            data-testid="recorder-screen-preview"
-            i18n-aria-label
-            aria-label="Preview of what you are sharing"
-          ></video>
-          @if (displayInfo(); as info) {
-            <p data-testid="recorder-screen-info">{{ info.label }} — {{ info.detail }}</p>
-          }
-        }
-
-        <p>
-          <label>
-            <input
-              type="checkbox"
-              [checked]="systemAudio()"
-              [disabled]="!systemAudioSupport().supported"
-              (change)="onSystemAudioChange($event)"
-              aria-describedby="recorder-system-audio-hint"
-              data-testid="recorder-system-audio"
-            />
-            <span i18n>Include system audio</span>
-          </label>
-        </p>
-        <p id="recorder-system-audio-hint" data-testid="recorder-system-audio-hint">
-          {{ systemAudioHint() }}
-        </p>
-      </section>
-
-      <section aria-labelledby="recorder-mic-heading">
-        <h2 id="recorder-mic-heading" i18n>Microphone</h2>
-        <label>
-          <span i18n>Microphone</span>
-          <select (change)="onMicChange($event)" data-testid="recorder-mic-select">
-            <option value="" [selected]="!selectedMic()" i18n>No microphone</option>
-            @for (mic of mics(); track mic.deviceId) {
-              <option
-                [value]="mic.deviceId || anyMic"
-                [selected]="(mic.deviceId || anyMic) === selectedMic()"
-              >
-                {{ mic.label }}
-              </option>
-            }
-          </select>
-        </label>
-      </section>
-    </fieldset>
-
-    @if (micInfo(); as mic) {
-      <p data-testid="recorder-mic-info">{{ mic.label }} — {{ mic.detail }}</p>
-      <p>
-        <label for="recorder-mic-meter" i18n>Level</label>
-        <meter
-          id="recorder-mic-meter"
-          min="0"
-          max="1"
-          low="0.02"
-          high="0.6"
-          [value]="micLevel()"
-          data-testid="recorder-mic-meter"
-        ></meter>
-        <span data-testid="recorder-mic-level" hidden>{{ micLevel().toFixed(3) }}</span>
-      </p>
-      @if (phase() === 'setup') {
-        <p i18n>Say something: the bar should move.</p>
-      }
-    }
-
-    @if (phase() === 'setup' || phase() === 'countdown') {
-      <button
-        type="button"
-        (click)="start()"
-        [disabled]="!display() || phase() === 'countdown'"
-        data-testid="recorder-start"
-        i18n
+    @if (viewOnly) {
+      <section
+        role="note"
+        data-testid="recorder-mobile-notice"
+        aria-labelledby="recorder-mobile-title"
       >
-        Start recording
-      </button>
-      @if (!display()) {
-        <p i18n>Choose what to share first.</p>
-      }
-    }
-    <app-countdown #countdownRef />
+        <h2 id="recorder-mobile-title" i18n>Recording needs a computer</h2>
+        <p i18n>
+          Phones and tablets can't record the screen in a browser. Open Sintade in Chrome, Edge,
+          Firefox or Safari on a computer to record. You can still watch and share recordings here.
+        </p>
+      </section>
+    } @else {
+      <fieldset [disabled]="phase() !== 'setup'" data-testid="recorder-setup">
+        <legend i18n>Setup</legend>
+        <section aria-labelledby="recorder-screen-heading">
+          <h2 id="recorder-screen-heading" i18n>Screen</h2>
+          <button type="button" (click)="chooseScreen()" data-testid="recorder-choose-screen" i18n>
+            Choose screen, window or tab
+          </button>
+          @if (display(); as display) {
+            <video
+              [srcObject]="display"
+              autoplay
+              muted
+              playsinline
+              width="480"
+              data-testid="recorder-screen-preview"
+              i18n-aria-label
+              aria-label="Preview of what you are sharing"
+            ></video>
+            @if (displayInfo(); as info) {
+              <p data-testid="recorder-screen-info">{{ info.label }} — {{ info.detail }}</p>
+            }
+          }
 
-    @if (isRecording()) {
-      <section aria-label="Recording controls" i18n-aria-label data-testid="recorder-controls">
-        <p role="status" data-testid="recorder-status">
-          {{ phase() === 'paused' ? pausedLabel : recordingLabel }}
+          <p>
+            <label>
+              <input
+                type="checkbox"
+                [checked]="systemAudio()"
+                [disabled]="!systemAudioSupport().supported"
+                (change)="onSystemAudioChange($event)"
+                aria-describedby="recorder-system-audio-hint"
+                data-testid="recorder-system-audio"
+              />
+              <span i18n>Include system audio</span>
+            </label>
+          </p>
+          <p id="recorder-system-audio-hint" data-testid="recorder-system-audio-hint">
+            {{ systemAudioHint() }}
+          </p>
+        </section>
+
+        <section aria-labelledby="recorder-mic-heading">
+          <h2 id="recorder-mic-heading" i18n>Microphone</h2>
+          <label>
+            <span i18n>Microphone</span>
+            <select (change)="onMicChange($event)" data-testid="recorder-mic-select">
+              <option value="" [selected]="!selectedMic()" i18n>No microphone</option>
+              @for (mic of mics(); track mic.deviceId) {
+                <option
+                  [value]="mic.deviceId || anyMic"
+                  [selected]="(mic.deviceId || anyMic) === selectedMic()"
+                >
+                  {{ mic.label }}
+                </option>
+              }
+            </select>
+          </label>
+        </section>
+      </fieldset>
+
+      @if (micInfo(); as mic) {
+        <p data-testid="recorder-mic-info">{{ mic.label }} — {{ mic.detail }}</p>
+        <p>
+          <label for="recorder-mic-meter" i18n>Level</label>
+          <meter
+            id="recorder-mic-meter"
+            min="0"
+            max="1"
+            low="0.02"
+            high="0.6"
+            [value]="micLevel()"
+            data-testid="recorder-mic-meter"
+          ></meter>
+          <span data-testid="recorder-mic-level" hidden>{{ micLevel().toFixed(3) }}</span>
         </p>
-        <p
-          role="timer"
-          aria-label="Recording time"
-          i18n-aria-label
-          data-testid="recorder-timer"
-          [attr.data-elapsed-ms]="elapsedMs()"
-        >
-          {{ clock() }}
-        </p>
-        <button
-          #pauseButton
-          type="button"
-          (click)="togglePause()"
-          [disabled]="phase() === 'saving'"
-          data-testid="recorder-pause"
-        >
-          {{ phase() === 'paused' ? resumeLabel : pauseLabel }}
-        </button>
+        @if (phase() === 'setup') {
+          <p i18n>Say something: the bar should move.</p>
+        }
+      }
+
+      @if (phase() === 'setup' || phase() === 'countdown') {
         <button
           type="button"
-          (click)="stop()"
-          [disabled]="phase() === 'saving'"
-          data-testid="recorder-stop"
+          (click)="start()"
+          [disabled]="!display() || phase() === 'countdown'"
+          data-testid="recorder-start"
           i18n
         >
-          Stop recording
+          Start recording
         </button>
-        @if (phase() === 'saving') {
-          <p role="status" i18n>Saving…</p>
+        @if (!display()) {
+          <p i18n>Choose what to share first.</p>
         }
-      </section>
-    }
+      }
+      <app-countdown #countdownRef />
 
-    @if (result(); as take) {
-      <section aria-labelledby="recorder-done-heading" data-testid="recorder-done">
-        <h2 #doneHeading id="recorder-done-heading" tabindex="-1" i18n>Recording saved</h2>
-        <p data-testid="recorder-done-summary" [attr.data-duration-ms]="take.durationMs">
-          {{ savedSummary(take) }}
-        </p>
-        @if (downloadUrl(); as url) {
-          <a [href]="url" [download]="downloadName()" data-testid="recorder-download" i18n>
-            Save a copy
-          </a>
-        }
-        <button type="button" (click)="newRecording()" data-testid="recorder-new" i18n>
-          New recording
-        </button>
-      </section>
-    }
+      @if (isRecording()) {
+        <section aria-label="Recording controls" i18n-aria-label data-testid="recorder-controls">
+          <p role="status" data-testid="recorder-status">
+            {{ phase() === 'paused' ? pausedLabel : recordingLabel }}
+          </p>
+          <p
+            role="timer"
+            aria-label="Recording time"
+            i18n-aria-label
+            data-testid="recorder-timer"
+            [attr.data-elapsed-ms]="elapsedMs()"
+          >
+            {{ clock() }}
+          </p>
+          <button
+            #pauseButton
+            type="button"
+            (click)="togglePause()"
+            [disabled]="phase() === 'saving'"
+            data-testid="recorder-pause"
+          >
+            {{ phase() === 'paused' ? resumeLabel : pauseLabel }}
+          </button>
+          <button
+            type="button"
+            (click)="stop()"
+            [disabled]="phase() === 'saving'"
+            data-testid="recorder-stop"
+            i18n
+          >
+            Stop recording
+          </button>
+          @if (phase() === 'saving') {
+            <p role="status" i18n>Saving…</p>
+          }
+        </section>
+      }
 
-    @if (error()) {
-      <p role="alert" data-testid="recorder-error">{{ error() }}</p>
+      @if (result(); as take) {
+        <section aria-labelledby="recorder-done-heading" data-testid="recorder-done">
+          <h2 #doneHeading id="recorder-done-heading" tabindex="-1" i18n>Recording saved</h2>
+          <p data-testid="recorder-done-summary" [attr.data-duration-ms]="take.durationMs">
+            {{ savedSummary(take) }}
+          </p>
+          @if (downloadUrl(); as url) {
+            <a [href]="url" [download]="downloadName()" data-testid="recorder-download" i18n>
+              Save a copy
+            </a>
+          }
+          <button type="button" (click)="newRecording()" data-testid="recorder-new" i18n>
+            New recording
+          </button>
+        </section>
+      }
+
+      @if (problem(); as problem) {
+        <section role="alert" data-testid="recorder-error" aria-labelledby="recorder-problem-title">
+          <h2 id="recorder-problem-title" data-testid="recorder-problem-title">
+            {{ problem.title }}
+          </h2>
+          <ol data-testid="recorder-help-steps">
+            @for (step of problem.steps; track step) {
+              <li>{{ step }}</li>
+            }
+          </ol>
+          <button type="button" (click)="retry()" data-testid="recorder-retry" i18n>
+            Try again
+          </button>
+        </section>
+      }
     }
   `,
 })
@@ -239,7 +259,11 @@ export class RecorderPage {
   protected readonly selectedMic = signal<string | null>(micPreference.load());
   protected readonly micInfo = signal<LiveSource | null>(null);
   protected readonly micLevel = signal(0);
-  protected readonly error = signal<string | null>(null);
+  protected readonly problem = signal<CaptureProblem | null>(null);
+  private readonly browser = currentBrowser();
+  /** Mobile browsers can't record (README §4.1); nor can anything without screen capture. */
+  protected readonly viewOnly =
+    this.browser.mobile || !this.capabilityService.capabilities().getDisplayMedia;
   protected readonly phase = signal<Phase>('setup');
   protected readonly elapsedMs = signal(0);
   protected readonly result = signal<TakeMeta | null>(null);
@@ -300,7 +324,7 @@ export class RecorderPage {
   }
 
   async chooseScreen(): Promise<void> {
-    this.error.set(null);
+    this.problem.set(null);
     try {
       const stream = await this.sources.pickDisplay({
         systemAudio: this.systemAudio() && this.systemAudioSupport().supported,
@@ -308,7 +332,7 @@ export class RecorderPage {
       this.display.set(stream);
       this.displayInfo.set(describeDisplay(stream));
     } catch (error) {
-      this.showError(error);
+      this.showError(error, 'screen');
     }
   }
 
@@ -316,13 +340,18 @@ export class RecorderPage {
     const deviceId = (event.target as HTMLSelectElement).value || null;
     this.selectedMic.set(deviceId);
     micPreference.save(deviceId);
-    this.error.set(null);
+    this.problem.set(null);
     if (!deviceId) {
       this.stopMeter();
       this.sources.stopMic();
       this.micInfo.set(null);
       return;
     }
+    await this.openSelectedMic(deviceId);
+  }
+
+  /** Opens the chosen mic (also Try again after a mic problem) and starts the device check. */
+  private async openSelectedMic(deviceId: string): Promise<void> {
     try {
       const stream = await this.sources.openMic(deviceId === ANY_MIC ? undefined : deviceId);
       const [track] = stream.getAudioTracks();
@@ -341,7 +370,7 @@ export class RecorderPage {
     } catch (error) {
       this.stopMeter();
       this.micInfo.set(null);
-      this.showError(error);
+      this.showError(error, 'mic');
     }
   }
 
@@ -351,7 +380,7 @@ export class RecorderPage {
     if (this.phase() !== 'setup' || !display) {
       return;
     }
-    this.error.set(null);
+    this.problem.set(null);
     this.phase.set('countdown');
     const outcome = await this.countdown().run();
     if (outcome === 'cancelled') {
@@ -381,13 +410,13 @@ export class RecorderPage {
         (take) => this.finish(take),
         (error: unknown) => {
           this.phase.set('setup');
-          this.showError(error);
+          this.showError(error, 'screen');
         },
       );
       this.focusAfterRender(() => this.pauseButton()?.nativeElement);
     } catch (error) {
       this.phase.set('setup');
-      this.showError(error);
+      this.showError(error, 'screen');
     }
   }
 
@@ -400,7 +429,7 @@ export class RecorderPage {
   }
 
   async stop(): Promise<void> {
-    await this.session?.stop().catch((error: unknown) => this.showError(error));
+    await this.session?.stop().catch((error: unknown) => this.showError(error, 'screen'));
   }
 
   newRecording(): void {
@@ -472,8 +501,22 @@ export class RecorderPage {
       .subscribe({ next: (mics) => this.mics.set(mics), error: () => undefined });
   }
 
-  private showError(error: unknown): void {
-    this.error.set(errorMessage(toCaptureError(error)));
+  /** Try again: re-asks for whichever source failed. */
+  async retry(): Promise<void> {
+    const problem = this.problem();
+    if (problem?.source === 'mic') {
+      const deviceId = this.selectedMic();
+      if (deviceId) {
+        this.problem.set(null);
+        await this.openSelectedMic(deviceId);
+      }
+    } else if (this.phase() === 'setup') {
+      await this.chooseScreen();
+    }
+  }
+
+  private showError(error: unknown, source: CaptureSource): void {
+    this.problem.set(captureHelp(toCaptureError(error), source, this.browser));
   }
 }
 
@@ -486,22 +529,4 @@ function describeDisplay(stream: MediaStream): LiveSource {
     label: video?.label || $localize`Screen`,
     detail: `${settings.width ?? '?'}×${settings.height ?? '?'}, ${audio}`,
   };
-}
-
-/** Plain-language messages per failure; per-browser recovery instructions come on Day 30. */
-function errorMessage(error: CaptureError): string {
-  switch (error.kind) {
-    case 'permission-denied':
-      return $localize`Permission was denied or the picker was closed.`;
-    case 'no-device':
-      return $localize`That device isn't available. Check it's connected.`;
-    case 'device-busy':
-      return $localize`That device is in use by another application.`;
-    case 'not-supported':
-      return $localize`This browser can't record here.`;
-    case 'aborted':
-      return $localize`The shared screen is no longer available. Choose it again.`;
-    default:
-      return $localize`Something went wrong starting capture. Please try again.`;
-  }
 }
