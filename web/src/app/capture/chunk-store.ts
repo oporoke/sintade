@@ -171,10 +171,15 @@ export async function openIndexedDbChunkStore(indexedDb: IDBFactory): Promise<Ch
   return new IndexedDbChunkStore(db);
 }
 
+/**
+ * Bytes, not the Blob itself: WebKit refuses Blobs in IndexedDB in ephemeral/private contexts
+ * (the transaction just aborts), while an ArrayBuffer works everywhere.
+ */
 interface StoredChunk {
   takeId: string;
   index: number;
-  blob: Blob;
+  bytes: ArrayBuffer;
+  type: string;
 }
 
 class IndexedDbChunkStore implements ChunkStore {
@@ -185,7 +190,7 @@ class IndexedDbChunkStore implements ChunkStore {
   async put(takeId: string, index: number, blob: Blob): Promise<void> {
     validateTakeId(takeId);
     validateIndex(index);
-    const record: StoredChunk = { takeId, index, blob };
+    const record: StoredChunk = { takeId, index, bytes: await blob.arrayBuffer(), type: blob.type };
     await this.transact('readwrite', (store) => store.put(record));
   }
 
@@ -194,7 +199,7 @@ class IndexedDbChunkStore implements ChunkStore {
     const record = await this.transact<StoredChunk | undefined>('readonly', (store) =>
       store.get([takeId, index]),
     );
-    return record?.blob ?? null;
+    return record ? new Blob([record.bytes], { type: record.type }) : null;
   }
 
   async indexes(takeId: string): Promise<number[]> {
@@ -225,9 +230,13 @@ class IndexedDbChunkStore implements ChunkStore {
     return new Promise<T>((resolve, reject) => {
       const transaction = this.db.transaction(IDB_STORE, mode);
       const pending = run(transaction.objectStore(IDB_STORE));
+      const failure = () =>
+        transaction.error ??
+        pending.error ??
+        new CaptureError('unknown', `IndexedDB ${mode} transaction on chunks failed`);
       transaction.oncomplete = () => resolve(pending.result as T);
-      transaction.onerror = () => reject(transaction.error);
-      transaction.onabort = () => reject(transaction.error ?? new Error('transaction aborted'));
+      transaction.onerror = () => reject(failure());
+      transaction.onabort = () => reject(failure());
     });
   }
 }
