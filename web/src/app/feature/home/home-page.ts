@@ -16,6 +16,7 @@ import { AuthService } from '../../core/auth.service';
     @if (authService.currentUser(); as me) {
       <p data-testid="home-user-email">{{ me.user.email }}</p>
     }
+    <p><a routerLink="/record" data-testid="home-record-link" i18n>New recording</a></p>
     <p>
       <a routerLink="/settings/profile" data-testid="home-profile-link" i18n>Profile settings</a>
     </p>
