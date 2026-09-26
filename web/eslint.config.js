@@ -37,6 +37,27 @@ module.exports = defineConfig([
     },
   },
   {
+    // CLAUDE.md rule 9: the capture engine is framework-free so the extension reuses it unchanged.
+    files: ['src/app/capture/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['@angular/*'],
+              message: 'capture/ is framework-free (CLAUDE.md rule 9): no Angular imports.',
+            },
+            {
+              group: ['../*'],
+              message: 'capture/ must be self-contained: import only from within capture/.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     files: ['**/*.html'],
     extends: [angular.configs.templateRecommended, angular.configs.templateAccessibility],
     rules: {},
