@@ -14,6 +14,7 @@ export { CaptureError, toCaptureError } from './capture-error';
 export {
   AUDIO_BITS_PER_SECOND,
   ChunkRecorder,
+  DEFAULT_TIMER_INTERVAL_MS,
   DEFAULT_TIMESLICE_MS,
   DEFAULT_VIDEO_BITS_PER_SECOND,
   PREFERRED_MIME_TYPES,
@@ -29,3 +30,4 @@ export type {
 export type { CaptureErrorKind } from './capture-error';
 export { SourceManager } from './source-manager';
 export type { DisplayOptions, MediaDevicesPort, MicDevice } from './source-manager';
+export { onTrackEnded } from './track-ended';

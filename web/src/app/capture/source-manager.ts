@@ -1,6 +1,7 @@
 import { Observable, Subject } from 'rxjs';
 
 import { CaptureError, toCaptureError } from './capture-error';
+import { onTrackEnded } from './track-ended';
 
 /** The slice of `MediaDevices` the source manager uses; injectable so tests can fake it. */
 export type MediaDevicesPort = Pick<
@@ -80,12 +81,15 @@ export class SourceManager {
     this.stopDisplay();
     this.display = stream;
     const [video] = stream.getVideoTracks();
-    video?.addEventListener('ended', () => {
-      if (this.display === stream) {
-        this.display = null;
-        this.displayEndedSubject.next();
-      }
-    });
+    if (video) {
+      const unsubscribe = onTrackEnded(video, () => {
+        unsubscribe();
+        if (this.display === stream) {
+          this.display = null;
+          this.displayEndedSubject.next();
+        }
+      });
+    }
     return stream;
   }
 

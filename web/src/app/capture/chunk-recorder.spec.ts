@@ -24,6 +24,12 @@ class FakeMediaRecorder extends EventTarget {
     this.timeslice = timeslice;
     this.state = 'recording';
   }
+  pause(): void {
+    this.state = 'paused';
+  }
+  resume(): void {
+    this.state = 'recording';
+  }
   stop(): void {
     this.state = 'inactive';
     queueMicrotask(() => {
@@ -45,7 +51,15 @@ class FakeMediaRecorder extends EventTarget {
   }
 }
 
-const stream = {} as MediaStream;
+class FakeTrack extends EventTarget {
+  readonly kind = 'video';
+  /** What the browser does when the user clicks "Stop sharing". */
+  endFromBrowser(): void {
+    this.dispatchEvent(new Event('ended'));
+  }
+}
+const videoTrack = new FakeTrack();
+const stream = { getVideoTracks: () => [videoTrack] } as unknown as MediaStream;
 const options = {
   mimeType: 'video/webm;codecs=vp9,opus',
   timesliceMs: 2000,
@@ -164,5 +178,105 @@ describe('ChunkRecorder', () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatchObject({ name: 'CaptureError', kind: 'unknown' });
     expect(recorder.state).toBe('idle');
+  });
+
+  describe('pause and resume (Day 24)', () => {
+    it('pauses and resumes the underlying recorder with matching states', () => {
+      const { recorder, fake, states } = setup();
+      recorder.start(stream, options);
+      recorder.pause();
+      expect(fake().state).toBe('paused');
+      recorder.resume();
+      expect(fake().state).toBe('recording');
+      expect(states).toEqual(['idle', 'recording', 'paused', 'recording']);
+    });
+
+    it('excludes paused time from the timer and the final duration', async () => {
+      const { recorder, advance } = setup();
+      recorder.start(stream, options);
+      advance(2000);
+      recorder.pause();
+      advance(5000);
+      expect(recorder.elapsedMs()).toBe(2000); // frozen while paused
+      recorder.resume();
+      advance(1500);
+      expect(recorder.elapsedMs()).toBe(3500);
+
+      await expect(recorder.stop()).resolves.toMatchObject({ durationMs: 3500 });
+    });
+
+    it('can stop while paused, not counting the pause', async () => {
+      const { recorder, advance } = setup();
+      recorder.start(stream, options);
+      advance(1000);
+      recorder.pause();
+      advance(9000);
+      await expect(recorder.stop()).resolves.toMatchObject({ durationMs: 1000 });
+    });
+
+    it('rejects pause/resume in the wrong state', () => {
+      const { recorder } = setup();
+      expect(() => recorder.pause()).toThrow(/cannot pause while idle/);
+      recorder.start(stream, options);
+      expect(() => recorder.resume()).toThrow(/cannot resume while recording/);
+    });
+
+    it('elapsed$ ticks the pause-excluding timer', async () => {
+      vi.useFakeTimers();
+      try {
+        const { recorder, advance } = setup();
+        const ticks: number[] = [];
+        recorder.start(stream, options);
+        const subscription = recorder.elapsed$(250).subscribe((ms) => ticks.push(ms));
+        advance(250);
+        await vi.advanceTimersByTimeAsync(250);
+        subscription.unsubscribe();
+        expect(ticks).toEqual([0, 250]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe('source track ending (Day 24)', () => {
+    it('stops by itself when the video track ends and reports it on stopped$', async () => {
+      const { recorder, advance } = setup();
+      const stopped = new Promise((resolve) => recorder.stopped$.subscribe(resolve));
+      recorder.start(stream, options);
+      advance(3000);
+      videoTrack.endFromBrowser();
+
+      await expect(stopped).resolves.toEqual({ chunkCount: 1, durationMs: 3000 });
+      expect(recorder.state).toBe('idle');
+    });
+
+    it('also stops when the track ends during a pause', async () => {
+      const { recorder } = setup();
+      const stopped = new Promise((resolve) => recorder.stopped$.subscribe(resolve));
+      recorder.start(stream, options);
+      recorder.pause();
+      videoTrack.endFromBrowser();
+      await expect(stopped).resolves.toMatchObject({ chunkCount: 1 });
+    });
+
+    it('stopped$ also fires for a manual stop, and a second stop() shares the result', async () => {
+      const { recorder } = setup();
+      const onStopped = vi.fn();
+      recorder.stopped$.subscribe(onStopped);
+      recorder.start(stream, options);
+      const first = recorder.stop();
+      const second = recorder.stop();
+      expect(second).toBe(first);
+      await first;
+      expect(onStopped).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores the track ending after the take is over', async () => {
+      const { recorder } = setup();
+      recorder.start(stream, options);
+      await recorder.stop();
+      expect(() => videoTrack.endFromBrowser()).not.toThrow();
+      expect(recorder.state).toBe('idle');
+    });
   });
 });
