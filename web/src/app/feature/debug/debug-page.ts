@@ -12,7 +12,7 @@ import { Subscription } from 'rxjs';
 import { AudioLevels, MicDevice, toCaptureError } from '../../capture';
 import { CapabilityService } from '../../core/capability.service';
 import { AUDIO_MIXER, SOURCE_MANAGER } from '../../core/capture.tokens';
-import { MixSelfTestResult, runMixSelfTest } from './mix-self-test';
+import { ClipAnalysis, MixSelfTestResult, runMixSelfTest } from './mix-self-test';
 
 interface CapabilityRow {
   name: string;
@@ -156,22 +156,26 @@ interface TrackInfo {
         mic {{ result.levels.mic.toFixed(3) }}, display {{ result.levels.display.toFixed(3) }}, mix
         {{ result.levels.mix.toFixed(3) }}
       </p>
-      <p data-testid="selftest-clip">
-        {{ result.mimeType }}, {{ result.bytes }} bytes, {{ result.decodedSeconds.toFixed(2) }} s
-      </p>
-      <table data-testid="selftest-results">
-        <tbody>
-          @for (tone of result.tones; track tone.frequencyHz) {
-            <tr>
-              <td>{{ tone.frequencyHz }} Hz ({{ tone.role }})</td>
-              <td [attr.data-testid]="'selftest-tone-' + tone.frequencyHz">
-                {{ tone.present ? 'present' : 'absent' }}
-              </td>
-              <td>{{ tone.amplitude.toFixed(3) }}</td>
-            </tr>
-          }
-        </tbody>
-      </table>
+      @if (clipAnalysis(result); as clip) {
+        <p data-testid="selftest-clip">
+          {{ clip.mimeType }}, {{ clip.bytes }} bytes, {{ clip.decodedSeconds.toFixed(2) }} s
+        </p>
+        <table data-testid="selftest-results">
+          <tbody>
+            @for (tone of clip.tones; track tone.frequencyHz) {
+              <tr>
+                <td>{{ tone.frequencyHz }} Hz ({{ tone.role }})</td>
+                <td [attr.data-testid]="'selftest-tone-' + tone.frequencyHz">
+                  {{ tone.present ? 'present' : 'absent' }}
+                </td>
+                <td>{{ tone.amplitude.toFixed(3) }}</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      } @else {
+        <p data-testid="selftest-clip-unavailable">No test clip: {{ clipUnavailable(result) }}</p>
+      }
     }
     @if (selfTestError()) {
       <p role="alert" data-testid="selftest-error">{{ selfTestError() }}</p>
@@ -284,6 +288,14 @@ export class DebugPage {
     } finally {
       this.selfTestRunning.set(false);
     }
+  }
+
+  protected clipAnalysis(result: MixSelfTestResult): ClipAnalysis | null {
+    return 'tones' in result.clip ? result.clip : null;
+  }
+
+  protected clipUnavailable(result: MixSelfTestResult): string {
+    return 'unavailable' in result.clip ? result.clip.unavailable : '';
   }
 
   stopAll(): void {

@@ -6,16 +6,12 @@ import { expect, test } from '@playwright/test';
  * through the real AudioMixer into a MediaRecorder clip, which is decoded and analysed; the
  * mixer's per-source and mix meters are checked against theory mid-clip.
  */
-test('mixed test clip contains both audio sources', async ({ page }, testInfo) => {
+test('mixed test clip contains both audio sources', async ({ page, browserName }, testInfo) => {
   await page.goto('/debug');
   await page.getByTestId('selftest-run').click();
 
-  await expect(page.getByTestId('selftest-results')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('selftest-levels')).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId('selftest-error')).toHaveCount(0);
-  await expect(page.getByTestId('selftest-tone-440')).toHaveText('present');
-  await expect(page.getByTestId('selftest-tone-1000')).toHaveText('present');
-  await expect(page.getByTestId('selftest-tone-2500')).toHaveText('absent');
-
   // Meters read mid-clip: each 0.25-amplitude sine is RMS ≈ 0.177; the two summed ≈ 0.25.
   // (Deterministic, unlike metering Chromium's fake mic: its 2 Hz beep phase-locks with the
   // 100 ms level sampling, so a run either always or never catches it.)
@@ -24,6 +20,17 @@ test('mixed test clip contains both audio sources', async ({ page }, testInfo) =
   expect(mic).toBeCloseTo(0.177, 1);
   expect(display).toBeCloseTo(0.177, 1);
   expect(mix).toBeCloseTo(0.25, 1);
+
+  // Playwright's Linux WebKit build ships without MediaRecorder (Safari has it), so there the
+  // mixer and meters are verified but no clip can be recorded.
+  if (await page.getByTestId('selftest-clip-unavailable').isVisible()) {
+    expect(browserName, 'only the Linux WebKit build may lack MediaRecorder').toBe('webkit');
+    testInfo.annotations.push({ type: 'clip', description: 'MediaRecorder unavailable' });
+    return;
+  }
+  await expect(page.getByTestId('selftest-tone-440')).toHaveText('present');
+  await expect(page.getByTestId('selftest-tone-1000')).toHaveText('present');
+  await expect(page.getByTestId('selftest-tone-2500')).toHaveText('absent');
 
   const clip = (await page.getByTestId('selftest-clip').textContent())?.trim();
   testInfo.annotations.push({ type: 'clip', description: clip });

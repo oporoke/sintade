@@ -8,14 +8,20 @@ export interface ToneResult {
   present: boolean;
 }
 
-export interface MixSelfTestResult {
-  /** Meter readings taken mid-clip. Theory: each 0.25-amplitude sine is RMS ≈ 0.177; the sum of
-   * two unrelated sines is RMS ≈ 0.25. */
-  levels: AudioLevels;
+export interface ClipAnalysis {
   mimeType: string;
   bytes: number;
   decodedSeconds: number;
   tones: ToneResult[];
+}
+
+export interface MixSelfTestResult {
+  /** Meter readings taken mid-test. Theory: each 0.25-amplitude sine is RMS ≈ 0.177; the sum of
+   * two unrelated sines is RMS ≈ 0.25. */
+  levels: AudioLevels;
+  /** The recorded test clip, or why this engine can't record one (e.g. no `MediaRecorder` in
+   * Playwright's Linux WebKit build; Safari itself has it). */
+  clip: ClipAnalysis | { unavailable: string };
 }
 
 /** Stand-in "mic" and "display" tones, plus a control frequency that must stay absent. */
@@ -58,41 +64,57 @@ export async function runMixSelfTest(durationMs = 2000): Promise<MixSelfTestResu
     if (!track) {
       throw new Error('mixer produced no track');
     }
+
+    if (typeof MediaRecorder === 'undefined') {
+      await delay(durationMs / 2);
+      return { levels: readLevels(mixer), clip: { unavailable: 'MediaRecorder is not available' } };
+    }
     const mimeType = CLIP_MIME_TYPES.find((type) => MediaRecorder.isTypeSupported(type)) ?? '';
     const recording = record(new MediaStream([track]), mimeType, durationMs);
     await delay(durationMs / 2);
-    const levels = {
-      mic: mixer.level('mic'),
-      display: mixer.level('display'),
-      mix: mixer.level('mix'),
-    };
+    const levels = readLevels(mixer);
     const clip = await recording;
-
-    const decodeContext = new AudioContext();
-    try {
-      const audio = await decodeContext.decodeAudioData(await clip.arrayBuffer());
-      const samples = audio.getChannelData(0);
-      // Skip the first and last quarter: encoder start-up and tail padding.
-      const window = samples.subarray(
-        Math.floor(samples.length / 4),
-        Math.floor((samples.length * 3) / 4),
-      );
-      return {
-        levels,
-        mimeType: clip.type || mimeType,
-        bytes: clip.size,
-        decodedSeconds: audio.duration,
-        tones: TONES.map(({ frequencyHz, role }) => {
-          const amplitude = toneAmplitude(window, audio.sampleRate, frequencyHz);
-          return { frequencyHz, role, amplitude, present: amplitude > PRESENT_THRESHOLD };
-        }),
-      };
-    } finally {
-      await decodeContext.close();
-    }
+    return { levels, clip: await analyseClip(clip, mimeType) };
   } finally {
     await mixer.close();
     await sourceContext.close();
+  }
+}
+
+function readLevels(mixer: AudioMixer): AudioLevels {
+  return { mic: mixer.level('mic'), display: mixer.level('display'), mix: mixer.level('mix') };
+}
+
+async function analyseClip(clip: Blob, requestedType: string): Promise<ClipAnalysis> {
+  const mimeType = clip.type || requestedType;
+  const decodeContext = new AudioContext();
+  try {
+    let audio: AudioBuffer;
+    try {
+      audio = await decodeContext.decodeAudioData(await clip.arrayBuffer());
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `${reason} (clip ${mimeType || 'no type'}, ${clip.size} bytes; decode context ${decodeContext.sampleRate} Hz)`,
+      );
+    }
+    const samples = audio.getChannelData(0);
+    // Skip the first and last quarter: encoder start-up and tail padding.
+    const window = samples.subarray(
+      Math.floor(samples.length / 4),
+      Math.floor((samples.length * 3) / 4),
+    );
+    return {
+      mimeType,
+      bytes: clip.size,
+      decodedSeconds: audio.duration,
+      tones: TONES.map(({ frequencyHz, role }) => {
+        const amplitude = toneAmplitude(window, audio.sampleRate, frequencyHz);
+        return { frequencyHz, role, amplitude, present: amplitude > PRESENT_THRESHOLD };
+      }),
+    };
+  } finally {
+    await decodeContext.close();
   }
 }
 
