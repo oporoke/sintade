@@ -39,4 +39,12 @@ export {
   openOpfsChunkStore,
   parseChunkName,
 } from './chunk-store';
-export type { ChunkStore } from './chunk-store';
+export type { ChunkStore, TakeMeta } from './chunk-store';
+export { assembleTake, listOrphans, persistTake } from './take-journal';
+export type {
+  AssembledTake,
+  LocksPort,
+  OrphanTake,
+  PersistOptions,
+  PersistedTake,
+} from './take-journal';

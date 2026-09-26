@@ -16,7 +16,9 @@ import { AuthService } from '../../core/auth.service';
     @if (authService.currentUser(); as me) {
       <p data-testid="home-user-email">{{ me.user.email }}</p>
     }
-    <p><a routerLink="/settings/profile" data-testid="home-profile-link" i18n>Profile settings</a></p>
+    <p>
+      <a routerLink="/settings/profile" data-testid="home-profile-link" i18n>Profile settings</a>
+    </p>
     <button type="button" (click)="logout()" data-testid="home-logout" i18n>Log out</button>
   `,
 })

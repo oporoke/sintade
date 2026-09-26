@@ -16,9 +16,7 @@ import { extractErrorMessage } from '../../core/http-error';
         Missing reset token. Use the link from your email.
       </p>
     } @else if (submitted()) {
-      <p data-testid="reset-password-success" i18n>
-        Your password has been reset.
-      </p>
+      <p data-testid="reset-password-success" i18n>Your password has been reset.</p>
       <p>
         <a routerLink="/login" i18n>Go to login</a>
       </p>

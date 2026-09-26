@@ -6,6 +6,19 @@ import { CaptureError } from './capture-error';
  * an IndexedDB fallback where OPFS or its writable file handles are missing (§2, ADR 0004 in
  * the design's decision log). Framework-free (CLAUDE.md rule 9).
  */
+/**
+ * What's known about a take, journaled after every chunk so it survives a crash (Day 26):
+ * `durationMs` is the pause-excluding recorded time when the last chunk was persisted.
+ */
+export interface TakeMeta {
+  takeId: string;
+  /** Wall-clock start, epoch ms. */
+  startedAt: number;
+  mimeType: string;
+  chunkCount: number;
+  durationMs: number;
+}
+
 export interface ChunkStore {
   readonly backend: 'opfs' | 'indexeddb';
   /** Stores a chunk; writing the same index again replaces it (idempotent retries). */
@@ -15,13 +28,19 @@ export interface ChunkStore {
   indexes(takeId: string): Promise<number[]>;
   /** Every take with at least one stored chunk. */
   takes(): Promise<string[]>;
+  /** Removes a take's chunks and metadata. */
   deleteTake(takeId: string): Promise<void>;
+  putMeta(meta: TakeMeta): Promise<void>;
+  getMeta(takeId: string): Promise<TakeMeta | null>;
 }
 
 const OPFS_ROOT = 'sintade-chunks';
 const CHUNK_SUFFIX = '.chunk';
+const META_FILE = 'take.json';
 const IDB_NAME = 'sintade-chunks';
 const IDB_STORE = 'chunks';
+const IDB_META_STORE = 'takes';
+const IDB_VERSION = 2;
 const IDB_TAKE_INDEX = 'by-take';
 const TAKE_ID = /^[A-Za-z0-9-]{1,64}$/;
 
@@ -40,16 +59,20 @@ export async function openChunkStore(
   throw new CaptureError('not-supported', 'neither OPFS nor IndexedDB is available');
 }
 
-/** The OPFS store, or `null` where OPFS can't be written from this thread. */
+/**
+ * The OPFS store, or `null` where OPFS can't be written from this thread. `name` separates
+ * independent stores (e.g. diagnostics) from the app's recordings.
+ */
 export async function openOpfsChunkStore(
   storage: Pick<StorageManager, 'getDirectory'> | undefined = globalThis.navigator?.storage,
+  name = OPFS_ROOT,
 ): Promise<ChunkStore | null> {
   if (typeof storage?.getDirectory !== 'function') {
     return null;
   }
   try {
     const root = await storage.getDirectory();
-    const directory = await root.getDirectoryHandle(OPFS_ROOT, { create: true });
+    const directory = await root.getDirectoryHandle(name, { create: true });
     // Some engines expose OPFS but only allow writes from workers (sync access handles).
     const probe = await directory.getFileHandle('.probe', { create: true });
     if (typeof probe.createWritable !== 'function') {
@@ -125,6 +148,35 @@ export class OpfsChunkStore implements ChunkStore {
     return takes.sort();
   }
 
+  async putMeta(meta: TakeMeta): Promise<void> {
+    const directory = await this.takeDirectory(meta.takeId, true);
+    const file = await directory.getFileHandle(META_FILE, { create: true });
+    const writable = await file.createWritable();
+    try {
+      await writable.write(JSON.stringify(meta));
+      await writable.close();
+    } catch (error) {
+      await writable.abort().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async getMeta(takeId: string): Promise<TakeMeta | null> {
+    const directory = await this.takeDirectory(takeId, false);
+    if (!directory) {
+      return null;
+    }
+    try {
+      const file = await directory.getFileHandle(META_FILE);
+      return parseMeta(await (await file.getFile()).text());
+    } catch (error) {
+      if (isNotFound(error)) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
   async deleteTake(takeId: string): Promise<void> {
     validateTakeId(takeId);
     try {
@@ -157,13 +209,24 @@ export class OpfsChunkStore implements ChunkStore {
   }
 }
 
-export async function openIndexedDbChunkStore(indexedDb: IDBFactory): Promise<ChunkStore> {
+export async function openIndexedDbChunkStore(
+  indexedDb: IDBFactory,
+  name = IDB_NAME,
+): Promise<ChunkStore> {
   const db = await request(
     (() => {
-      const open = indexedDb.open(IDB_NAME, 1);
-      open.onupgradeneeded = () => {
-        const store = open.result.createObjectStore(IDB_STORE, { keyPath: ['takeId', 'index'] });
-        store.createIndex(IDB_TAKE_INDEX, 'takeId');
+      const open = indexedDb.open(name, IDB_VERSION);
+      open.onupgradeneeded = (event) => {
+        // Forward-only upgrades, like the server's migrations.
+        if (event.oldVersion < 1) {
+          const store = open.result.createObjectStore(IDB_STORE, {
+            keyPath: ['takeId', 'index'],
+          });
+          store.createIndex(IDB_TAKE_INDEX, 'takeId');
+        }
+        if (event.oldVersion < 2) {
+          open.result.createObjectStore(IDB_META_STORE, { keyPath: 'takeId' });
+        }
       };
       return open;
     })(),
@@ -220,16 +283,33 @@ class IndexedDbChunkStore implements ChunkStore {
     await this.transact('readwrite', (store) =>
       store.delete(IDBKeyRange.bound([takeId, 0], [takeId, Number.MAX_SAFE_INTEGER])),
     );
+    await this.transact('readwrite', (store) => store.delete(takeId), IDB_META_STORE);
+  }
+
+  async putMeta(meta: TakeMeta): Promise<void> {
+    validateTakeId(meta.takeId);
+    await this.transact('readwrite', (store) => store.put({ ...meta }), IDB_META_STORE);
+  }
+
+  async getMeta(takeId: string): Promise<TakeMeta | null> {
+    validateTakeId(takeId);
+    const record = await this.transact<TakeMeta | undefined>(
+      'readonly',
+      (store) => store.get(takeId),
+      IDB_META_STORE,
+    );
+    return record ?? null;
   }
 
   /** Runs one request in its own transaction; resolves once the transaction has committed. */
   private transact<T>(
     mode: IDBTransactionMode,
     run: (store: IDBObjectStore) => IDBRequest,
+    storeName = IDB_STORE,
   ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      const transaction = this.db.transaction(IDB_STORE, mode);
-      const pending = run(transaction.objectStore(IDB_STORE));
+      const transaction = this.db.transaction(storeName, mode);
+      const pending = run(transaction.objectStore(storeName));
       const failure = () =>
         transaction.error ??
         pending.error ??
@@ -257,6 +337,24 @@ export function chunkName(index: number): string {
 export function parseChunkName(name: string): number | null {
   const match = /^(\d{6,})\.chunk$/.exec(name);
   return match ? Number(match[1]) : null;
+}
+
+function parseMeta(json: string): TakeMeta | null {
+  try {
+    const value: unknown = JSON.parse(json);
+    if (
+      typeof value === 'object' &&
+      value !== null &&
+      'takeId' in value &&
+      'startedAt' in value &&
+      'durationMs' in value
+    ) {
+      return value as TakeMeta;
+    }
+  } catch {
+    // A torn write can't happen (writes commit on close), but never let bad JSON block recovery.
+  }
+  return null;
 }
 
 function validateTakeId(takeId: string): void {

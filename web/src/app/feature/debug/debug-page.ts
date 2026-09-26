@@ -9,9 +9,19 @@ import {
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Subscription } from 'rxjs';
 
-import { AudioLevels, MicDevice, openChunkStore, toCaptureError } from '../../capture';
+import {
+  AudioLevels,
+  ChunkRecorder,
+  DEFAULT_TIMESLICE_MS,
+  DEFAULT_VIDEO_BITS_PER_SECOND,
+  MicDevice,
+  openChunkStore,
+  persistTake,
+  selectMimeType,
+  toCaptureError,
+} from '../../capture';
 import { CapabilityService } from '../../core/capability.service';
-import { AUDIO_MIXER, SOURCE_MANAGER } from '../../core/capture.tokens';
+import { AUDIO_MIXER, CHUNK_STORE, SOURCE_MANAGER } from '../../core/capture.tokens';
 import {
   StoreBackend,
   StoredTakeCheck,
@@ -25,6 +35,7 @@ import {
   RecorderScenario,
   RecorderSelfTestResult,
   runRecorderSelfTest,
+  syntheticSource,
 } from './recorder-self-test';
 
 interface CapabilityRow {
@@ -42,7 +53,8 @@ interface TrackInfo {
  * Developer diagnostics (dev-only, so plain strings rather than `$localize`, as on Day 9):
  * the capability matrix, a source preview (Day 21) that exercises `SourceManager` against the
  * real browser, live mixing with level meters, and device-free self-tests of the mixer (Day 22)
- * and the chunk recorder (Days 23–24), and the chunk store surviving a reload (Day 25).
+ * and the chunk recorder (Days 23–24), the chunk store surviving a reload (Day 25), and a
+ * persisted recording to kill mid-way for crash recovery (Day 26).
  */
 @Component({
   selector: 'app-debug-page',
@@ -291,12 +303,41 @@ interface TrackInfo {
         </ul>
       </section>
     }
+
+    <h2>Crash recovery</h2>
+    <p>
+      Starts a persisted recording (canvas + tone, journaled to the chunk store). Kill the tab while
+      it runs, reopen the app: the recovery dialog should offer it with this length.
+    </p>
+    <button
+      type="button"
+      (click)="startPersistedRecording()"
+      [disabled]="persistedTakeId() !== null"
+      data-testid="crash-start"
+    >
+      Start persisted recording
+    </button>
+    @if (persistedTakeId(); as takeId) {
+      <p
+        data-testid="crash-status"
+        [attr.data-take-id]="takeId"
+        [attr.data-persisted-ms]="persistedMs()"
+      >
+        Recording {{ takeId }}: {{ persistedChunks() }} chunks persisted,
+        {{ (persistedMs() / 1000).toFixed(1) }} s
+      </p>
+    }
+    @if (persistedError()) {
+      <p role="alert" data-testid="crash-error">{{ persistedError() }}</p>
+    }
   `,
 })
 export class DebugPage {
   private readonly capabilityService = inject(CapabilityService);
   private readonly sources = inject(SOURCE_MANAGER);
   private readonly mixer = inject(AUDIO_MIXER);
+  private readonly chunkStore = inject(CHUNK_STORE);
+  private stopPersisted: (() => void) | null = null;
   private levelsSubscription: Subscription | null = null;
   private readonly destroyRef = inject(DestroyRef);
   private micsSubscription: Subscription | null = null;
@@ -319,6 +360,10 @@ export class DebugPage {
   protected readonly recorderTestUrl = signal<string | null>(null);
   protected readonly recorderTestRunning = signal(false);
   protected readonly recorderTestError = signal<string | null>(null);
+  protected readonly persistedTakeId = signal<string | null>(null);
+  protected readonly persistedMs = signal(0);
+  protected readonly persistedChunks = signal(0);
+  protected readonly persistedError = signal<string | null>(null);
   protected readonly storeBackends: readonly StoreBackend[] = ['opfs', 'indexeddb'];
   protected readonly autoBackend = signal('…');
   protected readonly storeStatus = signal<Record<StoreBackend, string>>({
@@ -350,6 +395,7 @@ export class DebugPage {
       (error: unknown) => this.autoBackend.set(`none (${toCaptureError(error).message})`),
     );
     this.destroyRef.onDestroy(() => {
+      this.stopPersisted?.();
       this.releaseRecorderTestUrl();
       this.stopMix();
       this.sources.stopAll();
@@ -441,6 +487,40 @@ export class DebugPage {
       this.recorderTestError.set(error instanceof Error ? error.message : String(error));
     } finally {
       this.recorderTestRunning.set(false);
+    }
+  }
+
+  async startPersistedRecording(): Promise<void> {
+    this.persistedError.set(null);
+    try {
+      if (typeof MediaRecorder === 'undefined') {
+        throw new Error('MediaRecorder is not available in this browser');
+      }
+      const mimeType = selectMimeType();
+      if (!mimeType) {
+        throw new Error('no preferred recording format is supported');
+      }
+      const store = await this.chunkStore;
+      const takeId = crypto.randomUUID();
+      const source = await syntheticSource();
+      const recorder = new ChunkRecorder();
+      const take = await persistTake(recorder, store, { takeId, mimeType });
+      take.persisted$.subscribe((meta) => {
+        this.persistedMs.set(meta.durationMs);
+        this.persistedChunks.set(meta.chunkCount);
+      });
+      recorder.start(source.stream, {
+        mimeType,
+        timesliceMs: DEFAULT_TIMESLICE_MS,
+        bitsPerSecond: DEFAULT_VIDEO_BITS_PER_SECOND,
+      });
+      this.persistedTakeId.set(takeId);
+      this.stopPersisted = () => {
+        void recorder.stop().catch(() => undefined);
+        source.stop();
+      };
+    } catch (error) {
+      this.persistedError.set(error instanceof Error ? error.message : String(error));
     }
   }
 

@@ -13,8 +13,8 @@ import { extractErrorMessage } from '../../core/http-error';
     <h1 i18n>Create your account</h1>
     @if (submitted()) {
       <p data-testid="signup-success" i18n>
-        If your details are valid, a verification email has been sent. Check your inbox, then
-        log in.
+        If your details are valid, a verification email has been sent. Check your inbox, then log
+        in.
       </p>
     } @else {
       <form [formGroup]="form" (ngSubmit)="submit()">

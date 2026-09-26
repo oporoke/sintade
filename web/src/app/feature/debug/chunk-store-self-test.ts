@@ -17,8 +17,13 @@ const CHUNKS = 5;
  * then read it back and compare every byte. Chunk content is derived from (take, index), so the
  * verifying page needs nothing from the writing page.
  */
+/** Its own store, so test takes never look like the user's unfinished recordings. */
+const SELF_TEST_STORE = 'sintade-chunks-selftest';
+
 export async function openBackend(backend: StoreBackend): Promise<ChunkStore | null> {
-  return backend === 'opfs' ? openOpfsChunkStore() : openIndexedDbChunkStore(indexedDB);
+  return backend === 'opfs'
+    ? openOpfsChunkStore(navigator.storage, SELF_TEST_STORE)
+    : openIndexedDbChunkStore(indexedDB, SELF_TEST_STORE);
 }
 
 export async function writeTestTake(store: ChunkStore): Promise<string> {

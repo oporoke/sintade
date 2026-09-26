@@ -1,6 +1,6 @@
 import { InjectionToken } from '@angular/core';
 
-import { AudioMixer, SourceManager } from '../capture';
+import { AudioMixer, ChunkStore, SourceManager, openChunkStore } from '../capture';
 
 /*
  * Angular's handles on the framework-free capture engine. The capture package itself knows
@@ -14,4 +14,18 @@ export const SOURCE_MANAGER = new InjectionToken<SourceManager>('SourceManager',
 /** A fresh mixer per injector: each recorder/page owns its own Web Audio graph. */
 export const AUDIO_MIXER = new InjectionToken<AudioMixer>('AudioMixer', {
   factory: () => new AudioMixer(),
+});
+
+/**
+ * The device's chunk store, opened once per app (OPFS, or IndexedDB where OPFS can't be
+ * written). A promise: opening is async, and callers must handle it being unavailable.
+ */
+export const CHUNK_STORE = new InjectionToken<Promise<ChunkStore>>('ChunkStore', {
+  providedIn: 'root',
+  factory: () => {
+    const store = openChunkStore();
+    // Consumers await it and handle failure; don't report an unhandled rejection meanwhile.
+    store.catch(() => undefined);
+    return store;
+  },
 });
