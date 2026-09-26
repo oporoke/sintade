@@ -11,6 +11,21 @@ export type {
   MixSources,
 } from './audio-mixer';
 export { CaptureError, toCaptureError } from './capture-error';
+export {
+  AUDIO_BITS_PER_SECOND,
+  ChunkRecorder,
+  DEFAULT_TIMESLICE_MS,
+  DEFAULT_VIDEO_BITS_PER_SECOND,
+  PREFERRED_MIME_TYPES,
+  selectMimeType,
+} from './chunk-recorder';
+export type {
+  Chunk,
+  CreateMediaRecorder,
+  RecorderOptions,
+  RecorderState,
+  RecordingSummary,
+} from './chunk-recorder';
 export type { CaptureErrorKind } from './capture-error';
 export { SourceManager } from './source-manager';
 export type { DisplayOptions, MediaDevicesPort, MicDevice } from './source-manager';

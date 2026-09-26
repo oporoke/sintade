@@ -1090,7 +1090,7 @@ Rules: one row = one mergeable unit of work. `In progress` must name the branch 
 | MVP | Personal workspace auto-created on signup | 13 | In progress | Day 12, moved behind the `tenancy` crate on Day 18 (ADR-0007). Same-transaction creation verified. Local demo `docs/demos/M02-identity.md` (2026-09-26); not *Done*, since no staging/prod deploy exists yet |
 | MVP | Capture: source selection + device picker | 1 | In progress | Day 21 (`feat/day-021-capture-source-manager`): framework-free `SourceManager` (display + mic, device list, `CaptureError`), previewed on `/debug`. Picker UI and remembered mic choice: Day 27 |
 | MVP | Capture: `AudioMixer` (mic + system audio) | 1 | In progress | Day 22 (`feat/day-022-audio-mixer`): mic + display → one `MediaStreamDestination` track, RMS meters per input + mix; the cross-engine self-test proves both sources in a recorded clip. Wired into the recorder on Day 39 |
-| MVP | Capture: `ChunkRecorder`, controls, countdown | 2 | Not started |  |
+| MVP | Capture: `ChunkRecorder`, controls, countdown | 2 | In progress | Day 23 (`feat/day-023-chunk-recorder`): `ChunkRecorder` per the §5 contract minus pause/resume (Day 24); concatenated chunks proven playable on Chromium + Firefox. Controls/countdown: Days 28–29 |
 | MVP | Capture: OPFS `ChunkStore` + recovery dialog | 3 | Not started |  |
 | MVP | Ingest: recording, take, upload-session creation | 4 | Not started |  |
 | MVP | Ingest: presign, ack, status, finalize | 4 | Not started |  |
