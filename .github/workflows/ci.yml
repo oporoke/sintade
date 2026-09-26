@@ -178,6 +178,16 @@ jobs:
           pactl set-default-sink ci_null
       - run: npx playwright test
         working-directory: web
+      - name: Show page state of failed e2e tests
+        if: failure()
+        working-directory: web
+        run: |
+          for f in test-results/*/error-context.md; do
+            [ -f "$f" ] || continue
+            echo "::group::$f"
+            sed -n '/Page snapshot/,/Test source/p' "$f"
+            echo "::endgroup::"
+          done
 
   audit:
     runs-on: ubuntu-latest
