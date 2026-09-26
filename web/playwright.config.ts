@@ -42,7 +42,13 @@ export default defineConfig({
         // Fake mic/camera and auto-accepted permission and screen-share prompts, so capture code
         // runs for real under automation (Day 21). Firefox/WebKit equivalents: Day 31 harness.
         launchOptions: {
-          args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'],
+          // --disable-audio-output: Web Audio runs on Chromium's fake output clock instead of the
+          // host's sound server (CI's PulseAudio null sink, added for Firefox/WebKit, stalls it).
+          args: [
+            '--use-fake-ui-for-media-stream',
+            '--use-fake-device-for-media-stream',
+            '--disable-audio-output',
+          ],
         },
       },
     },
