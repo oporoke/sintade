@@ -9,7 +9,9 @@ path = "src/lib.rs"
 
 [dependencies]
 async-trait = "0.1.92"
-aws-sdk-s3 = "1.149.0"
+# Default features minus `rustls`, which pulls the legacy rustls 0.21 client and a vulnerable
+# rustls-webpki 0.101 (RUSTSEC-2026-0098/0099/0104). `default-https-client` is rustls 0.23.
+aws-sdk-s3 = { version = "1.149.0", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
 kernel = { version = "0.1.0", path = "../kernel" }
 lettre = { version = "0.11.23", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
 rand = "0.10.3"
