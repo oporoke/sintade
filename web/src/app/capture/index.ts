@@ -48,3 +48,5 @@ export type {
   PersistOptions,
   PersistedTake,
 } from './take-journal';
+export { TakeSession } from './take-session';
+export type { TakeSessionOptions } from './take-session';

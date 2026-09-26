@@ -1,4 +1,4 @@
-import { formatDuration, formatStart } from './format';
+import { formatClock, formatDuration, formatStart } from './format';
 
 describe('formatDuration', () => {
   it.each([
@@ -22,5 +22,16 @@ describe('formatStart', () => {
 
   it('adds the date for an older recording', () => {
     expect(formatStart(new Date(2026, 8, 20, 9, 30).getTime(), now)).toMatch(/20/);
+  });
+});
+
+describe('formatClock', () => {
+  it.each([
+    [0, '0:00'],
+    [5_900, '0:05'],
+    [723_000, '12:03'],
+    [3_723_000, '1:02:03'],
+  ])('%i ms → %s', (ms, text) => {
+    expect(formatClock(ms)).toBe(text);
   });
 });

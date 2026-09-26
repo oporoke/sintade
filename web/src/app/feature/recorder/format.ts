@@ -25,3 +25,14 @@ export function formatStart(epochMs: number, now: Date = new Date()): string {
   const day = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' }).format(start);
   return `${day}, ${time}`;
 }
+
+/** The recording timer: "0:05", "12:03", "1:02:03". Seconds are floored, like a stopwatch. */
+export function formatClock(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = String(totalSeconds % 60).padStart(2, '0');
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${seconds}`
+    : `${minutes}:${seconds}`;
+}

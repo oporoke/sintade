@@ -2,9 +2,20 @@ import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Subject, of } from 'rxjs';
 
-import { AudioMixer, CaptureError, MicDevice, SourceManager } from '../../capture';
+import { BehaviorSubject, Subject as RxSubject } from 'rxjs';
+
+import {
+  AudioMixer,
+  CaptureError,
+  ChunkStore,
+  MicDevice,
+  RecorderState,
+  SourceManager,
+  TakeMeta,
+  TakeSession,
+} from '../../capture';
 import { CapabilityService, SystemAudioSupport } from '../../core/capability.service';
-import { AUDIO_MIXER, SOURCE_MANAGER } from '../../core/capture.tokens';
+import { AUDIO_MIXER, CHUNK_STORE, SOURCE_MANAGER, START_TAKE } from '../../core/capture.tokens';
 import { RecorderPage } from './recorder-page';
 
 function track(kind: 'audio' | 'video', label: string, settings: MediaTrackSettings = {}) {
@@ -169,27 +180,6 @@ describe('RecorderPage', () => {
     expect(mixer.close).toHaveBeenCalled();
     expect(q('recorder-mic-meter')).toBeNull();
   });
-
-  it('Start is disabled until a screen is chosen, then runs the countdown to ready', async () => {
-    vi.useFakeTimers();
-    try {
-      const { q, settle, fixture } = await setupWithFakeTimers();
-      expect(q<HTMLButtonElement>('recorder-start')?.disabled).toBe(true);
-
-      q<HTMLButtonElement>('recorder-choose-screen')?.click();
-      await settle();
-      q<HTMLButtonElement>('recorder-start')?.click();
-      fixture.detectChanges();
-      expect(q('countdown-number')?.textContent?.trim()).toBe('3');
-
-      await vi.advanceTimersByTimeAsync(3000);
-      fixture.detectChanges();
-      expect(q('countdown')).toBeNull();
-      expect(q('recorder-ready')).not.toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
 });
 
 describe('RecorderPage before mic permission (Firefox)', () => {
@@ -221,25 +211,132 @@ describe('RecorderPage before mic permission (Firefox)', () => {
   });
 });
 
-/** Like setup(), but settles with fake timers already installed. */
-async function setupWithFakeTimers() {
-  TestBed.configureTestingModule({
-    imports: [RecorderPage],
-    providers: [
-      { provide: CapabilityService, useValue: { systemAudio: signal(SUPPORTED) } },
-      { provide: SOURCE_MANAGER, useValue: fakeSources() },
-      { provide: AUDIO_MIXER, useValue: fakeMixer() },
-    ],
-  });
-  const fixture = TestBed.createComponent(RecorderPage);
-  const element: HTMLElement = fixture.nativeElement;
-  const q = <T extends Element>(testId: string) =>
-    element.querySelector<T>(`[data-testid="${testId}"]`);
-  const settle = async () => {
-    await vi.advanceTimersByTimeAsync(0);
-    fixture.detectChanges();
+/** A take that records until told otherwise; `endFromBrowser()` mimics "Stop sharing". */
+function fakeSession() {
+  const state = new BehaviorSubject<RecorderState>('recording');
+  const elapsed = new RxSubject<number>();
+  let finish: (meta: TakeMeta) => void = () => undefined;
+  const ended = new Promise<TakeMeta>((resolve) => (finish = resolve));
+  const meta: TakeMeta = {
+    takeId: '0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b',
+    startedAt: 0,
+    mimeType: 'video/webm',
+    chunkCount: 3,
+    durationMs: 12_000,
   };
-  fixture.detectChanges();
-  await settle();
-  return { fixture, q, settle };
+  const end = () => {
+    state.next('stopping');
+    state.next('idle');
+    finish(meta);
+  };
+  const session = {
+    state$: state.asObservable(),
+    elapsed$: () => elapsed.asObservable(),
+    pause: vi.fn(() => state.next('paused')),
+    resume: vi.fn(() => state.next('recording')),
+    stop: vi.fn(async () => {
+      end();
+      return meta;
+    }),
+    ended,
+  };
+  return {
+    session: session as unknown as TakeSession & typeof session,
+    elapsed,
+    endFromBrowser: end,
+  };
 }
+
+describe('RecorderPage control bar', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.useFakeTimers();
+  });
+  afterEach(() => vi.useRealTimers());
+
+  async function recording() {
+    const take = fakeSession();
+    const startTake = vi.fn().mockResolvedValue(take.session);
+    const store = {
+      getMeta: vi.fn().mockResolvedValue(null),
+      indexes: vi.fn().mockResolvedValue([]),
+      get: vi.fn(),
+    } as unknown as ChunkStore;
+    TestBed.configureTestingModule({
+      imports: [RecorderPage],
+      providers: [
+        { provide: CapabilityService, useValue: { systemAudio: signal(SUPPORTED) } },
+        { provide: SOURCE_MANAGER, useValue: fakeSources() },
+        { provide: AUDIO_MIXER, useValue: fakeMixer() },
+        { provide: CHUNK_STORE, useValue: Promise.resolve(store) },
+        { provide: START_TAKE, useValue: startTake },
+      ],
+    });
+    const fixture = TestBed.createComponent(RecorderPage);
+    document.body.appendChild(fixture.nativeElement);
+    const element: HTMLElement = fixture.nativeElement;
+    const q = <T extends Element>(testId: string) =>
+      element.querySelector<T>(`[data-testid="${testId}"]`);
+    const settle = async (ms = 0) => {
+      await vi.advanceTimersByTimeAsync(ms);
+      fixture.detectChanges();
+      await vi.advanceTimersByTimeAsync(0);
+      fixture.detectChanges();
+    };
+    fixture.detectChanges();
+    await settle();
+    q<HTMLButtonElement>('recorder-choose-screen')?.click();
+    await settle();
+    q<HTMLButtonElement>('recorder-start')?.click();
+    await settle(3000); // the 3-2-1
+    return { ...take, startTake, fixture, q, settle };
+  }
+
+  it('starts the take after the countdown and moves focus to Pause', async () => {
+    const { q, startTake } = await recording();
+    expect(startTake).toHaveBeenCalledTimes(1);
+    expect(q('recorder-status')?.textContent?.trim()).toBe('Recording');
+    expect(document.activeElement).toBe(q('recorder-pause'));
+    expect(q<HTMLFieldSetElement>('recorder-setup')?.disabled).toBe(true);
+  });
+
+  it('shows the pause-excluding timer as m:ss', async () => {
+    const { q, elapsed, settle } = await recording();
+    elapsed.next(65_400);
+    await settle();
+    expect(q('recorder-timer')?.textContent?.trim()).toBe('1:05');
+  });
+
+  it('pauses and resumes from the same button, relabelled', async () => {
+    const { q, session, settle } = await recording();
+    q<HTMLButtonElement>('recorder-pause')?.click();
+    await settle();
+    expect(session.pause).toHaveBeenCalled();
+    expect(q('recorder-status')?.textContent?.trim()).toBe('Paused');
+    expect(q('recorder-pause')?.textContent?.trim()).toBe('Resume');
+
+    q<HTMLButtonElement>('recorder-pause')?.click();
+    await settle();
+    expect(session.resume).toHaveBeenCalled();
+    expect(q('recorder-pause')?.textContent?.trim()).toBe('Pause');
+  });
+
+  it('Stop saves the take, shows the result and moves focus to it', async () => {
+    const { q, session, settle } = await recording();
+    q<HTMLButtonElement>('recorder-stop')?.click();
+    await settle();
+    expect(session.stop).toHaveBeenCalled();
+    expect(q('recorder-controls')).toBeNull();
+    expect(q('recorder-done-summary')?.textContent?.trim()).toBe(
+      '12 s saved on this device. Uploading arrives soon.',
+    );
+    expect(document.activeElement?.id).toBe('recorder-done-heading');
+  });
+
+  it('ends the same way when the browser stops the share', async () => {
+    const { q, endFromBrowser, settle } = await recording();
+    endFromBrowser();
+    await settle();
+    expect(q('recorder-done')).not.toBeNull();
+  });
+});
