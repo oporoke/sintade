@@ -9,9 +9,16 @@ export const errorInterceptor: HttpInterceptorFn = (req, next) => {
       if (error instanceof HttpErrorResponse) {
         const requestId = error.headers.get('x-request-id');
         const problem = isProblemDetails(error.error) ? error.error : undefined;
-        console.error('[api]', req.method, req.url, error.status, problem?.detail ?? error.message, {
-          requestId,
-        });
+        console.error(
+          '[api]',
+          req.method,
+          req.url,
+          error.status,
+          problem?.detail ?? error.message,
+          {
+            requestId,
+          },
+        );
       }
       return throwError(() => error);
     }),

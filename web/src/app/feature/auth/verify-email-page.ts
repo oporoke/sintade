@@ -17,9 +17,7 @@ type VerifyState = 'verifying' | 'success' | 'error';
         <p data-testid="verify-email-verifying" i18n>Verifying...</p>
       }
       @case ('success') {
-        <p data-testid="verify-email-success" i18n>
-          Your email is verified. You can now log in.
-        </p>
+        <p data-testid="verify-email-success" i18n>Your email is verified. You can now log in.</p>
         <p>
           <a routerLink="/login" i18n>Go to login</a>
         </p>

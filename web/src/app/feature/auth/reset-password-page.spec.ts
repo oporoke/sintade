@@ -40,10 +40,7 @@ describe('ResetPasswordPage', () => {
     fixture.componentInstance.submit();
     fixture.detectChanges();
 
-    expect(resetPassword).toHaveBeenCalledWith(
-      'a-real-token',
-      'a-brand-new-strong-password-77',
-    );
+    expect(resetPassword).toHaveBeenCalledWith('a-real-token', 'a-brand-new-strong-password-77');
     const element: HTMLElement = fixture.nativeElement;
     expect(element.querySelector('[data-testid="reset-password-success"]')).not.toBeNull();
   });

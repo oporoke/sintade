@@ -103,7 +103,8 @@ export async function runRecorderSelfTest(
   }
 }
 
-async function syntheticSource(): Promise<{ stream: MediaStream; stop: () => void }> {
+/** An animated canvas plus a 440 Hz tone: a device-free stand-in for screen + mic. */
+export async function syntheticSource(): Promise<{ stream: MediaStream; stop: () => void }> {
   const canvas = document.createElement('canvas');
   canvas.width = WIDTH;
   canvas.height = HEIGHT;

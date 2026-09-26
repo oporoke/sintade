@@ -19,8 +19,9 @@ class FakeFile {
     return async () => {
       let pending: Blob = new Blob([]);
       return {
-        write: async (data: Blob) => {
-          pending = data;
+        // Like the real API, accepts strings as well as Blobs.
+        write: async (data: Blob | string) => {
+          pending = data instanceof Blob ? data : new Blob([data]);
         },
         close: async () => {
           this.content = pending;
@@ -134,6 +135,24 @@ describe('OpfsChunkStore', () => {
     await expect(store.deleteTake(TAKE)).resolves.toBeUndefined(); // already gone: fine
   });
 
+  it('journals take metadata next to the chunks without counting it as a chunk', async () => {
+    const { store } = setup();
+    const meta = {
+      takeId: TAKE,
+      startedAt: 1_700_000_000_000,
+      mimeType: 'video/webm',
+      chunkCount: 1,
+      durationMs: 2000,
+    };
+    await store.put(TAKE, 0, new Blob(['a']));
+    await store.putMeta(meta);
+
+    expect(await store.getMeta(TAKE)).toEqual(meta);
+    expect(await store.indexes(TAKE)).toEqual([0]);
+    await store.deleteTake(TAKE);
+    expect(await store.getMeta(TAKE)).toBeNull();
+  });
+
   it('rejects take ids that are not safe file names', async () => {
     const { store } = setup();
     await expect(store.put('../escape', 0, new Blob(['x']))).rejects.toThrow(/invalid take id/);
@@ -155,7 +174,7 @@ describe('openChunkStore', () => {
   it('falls back when OPFS files cannot be written from this thread', async () => {
     const indexedDb = { open: vi.fn(() => ({})) } as unknown as IDBFactory;
     void openChunkStore(storageWith(new FakeDirectory(false)), indexedDb);
-    await vi.waitFor(() => expect(indexedDb.open).toHaveBeenCalledWith('sintade-chunks', 1));
+    await vi.waitFor(() => expect(indexedDb.open).toHaveBeenCalledWith('sintade-chunks', 2));
   });
 
   it('falls back when OPFS throws (e.g. private browsing)', async () => {
