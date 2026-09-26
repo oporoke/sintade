@@ -3,9 +3,9 @@ import { TestBed } from '@angular/core/testing';
 
 import { Subject, of } from 'rxjs';
 
-import { CaptureError, MicDevice, SourceManager } from '../../capture';
+import { AudioMixer, CaptureError, MicDevice, SourceManager } from '../../capture';
 import { CapabilityService, CapabilityMatrix } from '../../core/capability.service';
-import { SOURCE_MANAGER } from '../../core/source-manager.token';
+import { AUDIO_MIXER, SOURCE_MANAGER } from '../../core/capture.tokens';
 import { DebugPage } from './debug-page';
 
 describe('DebugPage', () => {
@@ -25,6 +25,7 @@ describe('DebugPage', () => {
       providers: [
         { provide: CapabilityService, useValue: capabilityServiceStub },
         { provide: SOURCE_MANAGER, useValue: fakeSources().manager },
+        { provide: AUDIO_MIXER, useValue: fakeMixer() },
       ],
     });
 
@@ -48,6 +49,7 @@ describe('DebugPage', () => {
   describe('sources', () => {
     function setup(capabilities: Partial<CapabilityMatrix> = {}) {
       const sources = fakeSources();
+      const mixer = fakeMixer();
       TestBed.configureTestingModule({
         imports: [DebugPage],
         providers: [
@@ -64,6 +66,7 @@ describe('DebugPage', () => {
             },
           },
           { provide: SOURCE_MANAGER, useValue: sources.manager },
+          { provide: AUDIO_MIXER, useValue: mixer },
         ],
       });
       const fixture = TestBed.createComponent(DebugPage);
@@ -76,7 +79,7 @@ describe('DebugPage', () => {
       };
       const text = (testId: string) =>
         element.querySelector(`[data-testid="${testId}"]`)?.textContent?.trim();
-      return { sources, fixture, element, click, text };
+      return { sources, mixer, fixture, element, click, text };
     }
 
     it('previews the picked screen with its track info', async () => {
@@ -118,6 +121,32 @@ describe('DebugPage', () => {
       expect(text('source-error')).toBe('permission-denied: user said no');
     });
 
+    it('mixes the open sources and shows level meters', async () => {
+      const { sources, mixer, click, text } = setup();
+      await click('source-pick-screen');
+      await click('source-open-mic');
+      await click('mix-start');
+
+      expect(mixer.mix).toHaveBeenCalledWith({
+        mic: sources.manager.currentMic,
+        display: sources.manager.currentDisplay,
+      });
+      expect(text('mix-info')).toContain('Mixed Audio');
+      expect(text('level-mic')).toBe('0.500');
+      expect(text('level-display')).toBe('0.000');
+      expect(text('level-mix')).toBe('0.500');
+    });
+
+    it('stop all tears down the mix', async () => {
+      const { mixer, click, element } = setup();
+      await click('source-open-mic');
+      await click('mix-start');
+      await click('source-stop-all');
+
+      expect(mixer.close).toHaveBeenCalled();
+      expect(element.querySelector('[data-testid="level-mix"]')).toBeNull();
+    });
+
     it('disables the system-audio toggle where it is unsupported', () => {
       const { element } = setup({ systemAudio: false });
       const toggle = element.querySelector<HTMLInputElement>('[data-testid="source-system-audio"]');
@@ -149,9 +178,20 @@ function fakeSources() {
   const manager = {
     displayEnded$: displayEnded.asObservable(),
     mics$: of(mics),
+    currentDisplay: displayStream,
+    currentMic: micStream,
     pickDisplay: vi.fn().mockResolvedValue(displayStream),
     openMic: vi.fn().mockResolvedValue(micStream),
     stopAll: vi.fn(),
   } as unknown as SourceManager;
   return { manager, displayEnded };
+}
+
+function fakeMixer() {
+  const mixed = fakeTrack('audio', 'Mixed Audio', {});
+  return {
+    mix: vi.fn().mockResolvedValue(mixed),
+    levels$: () => of({ mic: 0.5, display: 0, mix: 0.5 }),
+    close: vi.fn().mockResolvedValue(undefined),
+  } as unknown as AudioMixer;
 }
