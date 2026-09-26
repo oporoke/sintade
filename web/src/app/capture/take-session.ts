@@ -21,6 +21,7 @@ export interface TakeSessionOptions {
   /** Test seams; default to the real browser APIs. */
   recorder?: ChunkRecorder;
   mimeType?: string | null;
+  isTypeSupported?: (type: string) => boolean;
   locks?: LocksPort | null;
   createStream?: (tracks: MediaStreamTrack[]) => MediaStream;
 }
@@ -41,15 +42,20 @@ export class TakeSession {
   ) {}
 
   static async start(options: TakeSessionOptions): Promise<TakeSession> {
-    const mimeType = options.mimeType === undefined ? selectMimeType() : options.mimeType;
-    if (!mimeType) {
-      throw new CaptureError('not-supported', 'this browser cannot record in a supported format');
-    }
     const [video] = options.display.getVideoTracks();
     if (!video || video.readyState === 'ended') {
       throw new CaptureError('aborted', 'the shared screen is no longer available');
     }
     const audio = await options.mixer.mix({ mic: options.mic, display: options.display });
+    // Chosen after mixing: a video-only take needs a MIME type without an audio codec.
+    const mimeType =
+      options.mimeType === undefined
+        ? selectMimeType(options.isTypeSupported, { audio: audio !== null })
+        : options.mimeType;
+    if (!mimeType) {
+      await options.mixer.close();
+      throw new CaptureError('not-supported', 'this browser cannot record in a supported format');
+    }
     const createStream = options.createStream ?? ((tracks) => new MediaStream(tracks));
     const stream = createStream(audio ? [video, audio] : [video]);
 
