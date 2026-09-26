@@ -13,6 +13,7 @@ import { AudioLevels, MicDevice, toCaptureError } from '../../capture';
 import { CapabilityService } from '../../core/capability.service';
 import { AUDIO_MIXER, SOURCE_MANAGER } from '../../core/capture.tokens';
 import { ClipAnalysis, MixSelfTestResult, runMixSelfTest } from './mix-self-test';
+import { RecorderSelfTestResult, runRecorderSelfTest } from './recorder-self-test';
 
 interface CapabilityRow {
   name: string;
@@ -28,7 +29,8 @@ interface TrackInfo {
 /**
  * Developer diagnostics (dev-only, so plain strings rather than `$localize`, as on Day 9):
  * the capability matrix, a source preview (Day 21) that exercises `SourceManager` against the
- * real browser, live mixing with level meters, and a device-free mix self-test (Day 22).
+ * real browser, live mixing with level meters, and device-free self-tests of the mixer (Day 22)
+ * and the chunk recorder (Day 23).
  */
 @Component({
   selector: 'app-debug-page',
@@ -180,6 +182,44 @@ interface TrackInfo {
     @if (selfTestError()) {
       <p role="alert" data-testid="selftest-error">{{ selfTestError() }}</p>
     }
+
+    <h2>Recorder self-test</h2>
+    <p>
+      Records 6 s of an animated canvas plus a tone with ChunkRecorder (2 s slices), concatenates
+      the chunks in order and plays the result to the end at 4×.
+    </p>
+    <button
+      type="button"
+      (click)="runRecorderTest()"
+      [disabled]="recorderTestRunning()"
+      data-testid="rec-selftest-run"
+    >
+      Run recorder self-test
+    </button>
+    @if (recorderTestRunning()) {
+      <p data-testid="rec-selftest-running">Recording and replaying…</p>
+    }
+    @if (recorderTest(); as result) {
+      <p data-testid="rec-selftest-chunks">
+        {{ result.mimeType }}: {{ result.chunkSizes.length }} chunks ({{
+          result.chunkSizes.join(', ')
+        }}
+        bytes) over {{ (result.recordedMs / 1000).toFixed(2) }} s
+      </p>
+      <p data-testid="rec-selftest-playback">
+        {{ result.playback.ended ? 'played to the end' : 'did not finish' }}:
+        {{ result.playback.videoWidth }}×{{ result.playback.videoHeight }},
+        {{ result.playback.playedSeconds.toFixed(2) }} s
+      </p>
+      @if (recorderTestUrl(); as url) {
+        <a [href]="url" download="recorder-self-test.webm" data-testid="rec-selftest-download">
+          Download concatenated file
+        </a>
+      }
+    }
+    @if (recorderTestError()) {
+      <p role="alert" data-testid="rec-selftest-error">{{ recorderTestError() }}</p>
+    }
   `,
 })
 export class DebugPage {
@@ -204,6 +244,10 @@ export class DebugPage {
   protected readonly selfTest = signal<MixSelfTestResult | null>(null);
   protected readonly selfTestRunning = signal(false);
   protected readonly selfTestError = signal<string | null>(null);
+  protected readonly recorderTest = signal<RecorderSelfTestResult | null>(null);
+  protected readonly recorderTestUrl = signal<string | null>(null);
+  protected readonly recorderTestRunning = signal(false);
+  protected readonly recorderTestError = signal<string | null>(null);
 
   readonly rows = computed<CapabilityRow[]>(() => {
     const capabilities = this.capabilities();
@@ -221,6 +265,7 @@ export class DebugPage {
       this.displayInfo.set(null);
     });
     this.destroyRef.onDestroy(() => {
+      this.releaseRecorderTestUrl();
       this.stopMix();
       this.sources.stopAll();
     });
@@ -298,6 +343,22 @@ export class DebugPage {
     return 'unavailable' in result.clip ? result.clip.unavailable : '';
   }
 
+  async runRecorderTest(): Promise<void> {
+    this.recorderTestRunning.set(true);
+    this.recorderTest.set(null);
+    this.recorderTestError.set(null);
+    this.releaseRecorderTestUrl();
+    try {
+      const result = await runRecorderSelfTest();
+      this.recorderTest.set(result);
+      this.recorderTestUrl.set(URL.createObjectURL(result.file));
+    } catch (error) {
+      this.recorderTestError.set(error instanceof Error ? error.message : String(error));
+    } finally {
+      this.recorderTestRunning.set(false);
+    }
+  }
+
   stopAll(): void {
     this.stopMix();
     this.sources.stopAll();
@@ -315,6 +376,14 @@ export class DebugPage {
       next: (mics) => this.mics.set(mics),
       error: (error: unknown) => this.showError(error),
     });
+  }
+
+  private releaseRecorderTestUrl(): void {
+    const url = this.recorderTestUrl();
+    if (url) {
+      URL.revokeObjectURL(url);
+      this.recorderTestUrl.set(null);
+    }
   }
 
   private stopMix(): void {
