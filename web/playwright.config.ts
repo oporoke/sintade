@@ -52,7 +52,20 @@ export default defineConfig({
         },
       },
     },
-    { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
+    {
+      name: 'firefox',
+      use: {
+        ...devices['Desktop Firefox'],
+        // Fake mic/camera with no permission prompt (Day 28's mic meter). Without these,
+        // getUserMedia waits forever on a prompt nobody can answer.
+        launchOptions: {
+          firefoxUserPrefs: {
+            'media.navigator.streams.fake': true,
+            'media.navigator.permission.disabled': true,
+          },
+        },
+      },
+    },
     { name: 'webkit', use: { ...devices['Desktop Safari'] } },
   ],
 });

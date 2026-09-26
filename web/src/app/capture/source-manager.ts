@@ -14,6 +14,7 @@ export type MediaDevicesPort = Pick<
 >;
 
 export interface MicDevice {
+  /** Empty before permission in Firefox: the device can't be addressed individually yet. */
   deviceId: string;
   /** Browsers hide real labels until mic permission is granted; a numbered fallback is used. */
   label: string;

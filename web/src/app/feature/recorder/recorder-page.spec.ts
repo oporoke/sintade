@@ -2,9 +2,9 @@ import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Subject, of } from 'rxjs';
 
-import { CaptureError, MicDevice, SourceManager } from '../../capture';
+import { AudioMixer, CaptureError, MicDevice, SourceManager } from '../../capture';
 import { CapabilityService, SystemAudioSupport } from '../../core/capability.service';
-import { SOURCE_MANAGER } from '../../core/capture.tokens';
+import { AUDIO_MIXER, SOURCE_MANAGER } from '../../core/capture.tokens';
 import { RecorderPage } from './recorder-page';
 
 function track(kind: 'audio' | 'video', label: string, settings: MediaTrackSettings = {}) {
@@ -33,12 +33,22 @@ function fakeSources() {
   return manager as unknown as SourceManager & typeof manager;
 }
 
-async function setup(support: SystemAudioSupport, sources = fakeSources()) {
+function fakeMixer(micLevel = 0.4) {
+  const mixer = {
+    mix: vi.fn().mockResolvedValue({ kind: 'audio' }),
+    levels$: () => of({ mic: micLevel, display: 0, mix: micLevel }),
+    close: vi.fn().mockResolvedValue(undefined),
+  };
+  return mixer as unknown as AudioMixer & typeof mixer;
+}
+
+async function setup(support: SystemAudioSupport, sources = fakeSources(), mixer = fakeMixer()) {
   TestBed.configureTestingModule({
     imports: [RecorderPage],
     providers: [
       { provide: CapabilityService, useValue: { systemAudio: signal(support) } },
       { provide: SOURCE_MANAGER, useValue: sources },
+      { provide: AUDIO_MIXER, useValue: mixer },
     ],
   });
   const fixture = TestBed.createComponent(RecorderPage);
@@ -53,7 +63,7 @@ async function setup(support: SystemAudioSupport, sources = fakeSources()) {
     await new Promise((resolve) => setTimeout(resolve, 0));
     fixture.detectChanges();
   };
-  return { fixture, element, sources, q, settle };
+  return { fixture, element, sources, mixer, q, settle };
 }
 
 const SUPPORTED: SystemAudioSupport = { supported: true, note: null };
@@ -139,4 +149,97 @@ describe('RecorderPage', () => {
       'Permission was denied or the picker was closed.',
     );
   });
+
+  it('meters the opened mic and stops metering when the mic is released', async () => {
+    const { q, mixer, settle } = await setup(SUPPORTED);
+    const select = q<HTMLSelectElement>('recorder-mic-select');
+    if (select) {
+      select.value = 'mic-a';
+      select.dispatchEvent(new Event('change'));
+    }
+    await settle();
+    expect(mixer.mix).toHaveBeenCalledWith({ mic: expect.anything() });
+    expect(q('recorder-mic-level')?.textContent?.trim()).toBe('0.400');
+
+    if (select) {
+      select.value = '';
+      select.dispatchEvent(new Event('change'));
+    }
+    await settle();
+    expect(mixer.close).toHaveBeenCalled();
+    expect(q('recorder-mic-meter')).toBeNull();
+  });
+
+  it('Start is disabled until a screen is chosen, then runs the countdown to ready', async () => {
+    vi.useFakeTimers();
+    try {
+      const { q, settle, fixture } = await setupWithFakeTimers();
+      expect(q<HTMLButtonElement>('recorder-start')?.disabled).toBe(true);
+
+      q<HTMLButtonElement>('recorder-choose-screen')?.click();
+      await settle();
+      q<HTMLButtonElement>('recorder-start')?.click();
+      fixture.detectChanges();
+      expect(q('countdown-number')?.textContent?.trim()).toBe('3');
+
+      await vi.advanceTimersByTimeAsync(3000);
+      fixture.detectChanges();
+      expect(q('countdown')).toBeNull();
+      expect(q('recorder-ready')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
+
+describe('RecorderPage before mic permission (Firefox)', () => {
+  beforeEach(() => localStorage.clear());
+
+  it('opens the browser default for an unaddressable mic, then pins the real device', async () => {
+    const sources = fakeSources();
+    sources.listMics.mockResolvedValue([{ deviceId: '', label: 'Microphone 1' }]);
+    const realTrack = {
+      kind: 'audio',
+      label: 'Fake Mic',
+      getSettings: () => ({ deviceId: 'real-mic-id' }),
+    } as unknown as MediaStreamTrack;
+    sources.openMic.mockResolvedValue({
+      getAudioTracks: () => [realTrack],
+    } as unknown as MediaStream);
+    const { q, settle } = await setup(SUPPORTED, sources);
+
+    const select = q<HTMLSelectElement>('recorder-mic-select');
+    if (select) {
+      select.value = 'any';
+      select.dispatchEvent(new Event('change'));
+    }
+    await settle();
+
+    expect(sources.openMic).toHaveBeenCalledWith(undefined);
+    expect(q('recorder-mic-info')?.textContent).toContain('Fake Mic');
+    expect(localStorage.getItem('sintade.recorder.mic')).toBe('real-mic-id');
+  });
+});
+
+/** Like setup(), but settles with fake timers already installed. */
+async function setupWithFakeTimers() {
+  TestBed.configureTestingModule({
+    imports: [RecorderPage],
+    providers: [
+      { provide: CapabilityService, useValue: { systemAudio: signal(SUPPORTED) } },
+      { provide: SOURCE_MANAGER, useValue: fakeSources() },
+      { provide: AUDIO_MIXER, useValue: fakeMixer() },
+    ],
+  });
+  const fixture = TestBed.createComponent(RecorderPage);
+  const element: HTMLElement = fixture.nativeElement;
+  const q = <T extends Element>(testId: string) =>
+    element.querySelector<T>(`[data-testid="${testId}"]`);
+  const settle = async () => {
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+  };
+  fixture.detectChanges();
+  await settle();
+  return { fixture, q, settle };
+}

@@ -5,6 +5,7 @@ import {
   computed,
   inject,
   signal,
+  viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Subscription } from 'rxjs';
@@ -22,6 +23,7 @@ import {
 } from '../../capture';
 import { CapabilityService } from '../../core/capability.service';
 import { AUDIO_MIXER, CHUNK_STORE, SOURCE_MANAGER } from '../../core/capture.tokens';
+import { Countdown, CountdownOutcome } from '../recorder/countdown';
 import {
   StoreBackend,
   StoredTakeCheck,
@@ -59,6 +61,7 @@ interface TrackInfo {
 @Component({
   selector: 'app-debug-page',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [Countdown],
   template: `
     <h1>Capability matrix</h1>
     <table data-testid="capability-matrix">
@@ -330,6 +333,16 @@ interface TrackInfo {
     @if (persistedError()) {
       <p role="alert" data-testid="crash-error">{{ persistedError() }}</p>
     }
+
+    <h2>Countdown</h2>
+    <p>The recorder's 3-2-1 (Esc skips), runnable without choosing a screen.</p>
+    <button type="button" (click)="runCountdown()" data-testid="debug-countdown-run">
+      Run countdown
+    </button>
+    <app-countdown #debugCountdown />
+    @if (countdownOutcome()) {
+      <p data-testid="debug-countdown-outcome">{{ countdownOutcome() }}</p>
+    }
   `,
 })
 export class DebugPage {
@@ -360,6 +373,8 @@ export class DebugPage {
   protected readonly recorderTestUrl = signal<string | null>(null);
   protected readonly recorderTestRunning = signal(false);
   protected readonly recorderTestError = signal<string | null>(null);
+  protected readonly countdownOutcome = signal<CountdownOutcome | null>(null);
+  private readonly debugCountdown = viewChild.required<Countdown>('debugCountdown');
   protected readonly persistedTakeId = signal<string | null>(null);
   protected readonly persistedMs = signal(0);
   protected readonly persistedChunks = signal(0);
@@ -488,6 +503,11 @@ export class DebugPage {
     } finally {
       this.recorderTestRunning.set(false);
     }
+  }
+
+  async runCountdown(): Promise<void> {
+    this.countdownOutcome.set(null);
+    this.countdownOutcome.set(await this.debugCountdown().run());
   }
 
   async startPersistedRecording(): Promise<void> {
