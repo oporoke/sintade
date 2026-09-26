@@ -16,8 +16,8 @@ export interface ClipAnalysis {
 }
 
 export interface MixSelfTestResult {
-  /** Meter readings taken mid-test. Theory: each 0.25-amplitude sine is RMS ≈ 0.177; the sum of
-   * two unrelated sines is RMS ≈ 0.25. */
+  /** Peak meter readings over the middle of the test. Theory: each 0.25-amplitude sine is
+   * RMS ≈ 0.177; the sum of two unrelated sines is RMS ≈ 0.25. */
   levels: AudioLevels;
   /** The recorded test clip, or why this engine can't record one (e.g. no `MediaRecorder` in
    * Playwright's Linux WebKit build; Safari itself has it). */
@@ -32,6 +32,7 @@ const TONES = [
 ] as const;
 const TONE_GAIN = 0.25;
 const PRESENT_THRESHOLD = 0.05;
+const LEVEL_READINGS = 10;
 const CLIP_MIME_TYPES = [
   'audio/webm;codecs=opus',
   'audio/webm',
@@ -66,13 +67,14 @@ export async function runMixSelfTest(durationMs = 2000): Promise<MixSelfTestResu
     }
 
     if (typeof MediaRecorder === 'undefined') {
-      await delay(durationMs / 2);
-      return { levels: readLevels(mixer), clip: { unavailable: 'MediaRecorder is not available' } };
+      return {
+        levels: await peakLevels(mixer, durationMs),
+        clip: { unavailable: 'MediaRecorder is not available' },
+      };
     }
     const mimeType = CLIP_MIME_TYPES.find((type) => MediaRecorder.isTypeSupported(type)) ?? '';
     const recording = record(new MediaStream([track]), mimeType, durationMs);
-    await delay(durationMs / 2);
-    const levels = readLevels(mixer);
+    const levels = await peakLevels(mixer, durationMs);
     const clip = await recording;
     return { levels, clip: await analyseClip(clip, mimeType) };
   } finally {
@@ -81,8 +83,22 @@ export async function runMixSelfTest(durationMs = 2000): Promise<MixSelfTestResu
   }
 }
 
-function readLevels(mixer: AudioMixer): AudioLevels {
-  return { mic: mixer.level('mic'), display: mixer.level('display'), mix: mixer.level('mix') };
+/**
+ * Peak of the meter readings sampled across the middle half of the test. One reading is a
+ * single ~21 ms analyser window, and an engine's stream bridge can drop a buffer now and then
+ * (seen on WebKit under CI's virtual audio clock), which only ever lowers a reading. The peak
+ * still proves each input reaches its meter at full level.
+ */
+async function peakLevels(mixer: AudioMixer, durationMs: number): Promise<AudioLevels> {
+  const peak: AudioLevels = { mic: 0, display: 0, mix: 0 };
+  await delay(durationMs / 4);
+  for (let i = 0; i < LEVEL_READINGS; i += 1) {
+    for (const name of ['mic', 'display', 'mix'] as const) {
+      peak[name] = Math.max(peak[name], mixer.level(name));
+    }
+    await delay(durationMs / 2 / LEVEL_READINGS);
+  }
+  return peak;
 }
 
 async function analyseClip(clip: Blob, requestedType: string): Promise<ClipAnalysis> {
