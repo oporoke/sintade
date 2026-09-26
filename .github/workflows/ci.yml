@@ -185,7 +185,7 @@ jobs:
           for f in test-results/*/error-context.md; do
             [ -f "$f" ] || continue
             echo "::group::$f"
-            sed -n '/Page snapshot/,/Test source/p' "$f"
+            head -c 6000 "$f"
             echo "::endgroup::"
           done
 
