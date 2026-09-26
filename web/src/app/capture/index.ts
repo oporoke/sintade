@@ -31,3 +31,12 @@ export type { CaptureErrorKind } from './capture-error';
 export { SourceManager } from './source-manager';
 export type { DisplayOptions, MediaDevicesPort, MicDevice } from './source-manager';
 export { onTrackEnded } from './track-ended';
+export {
+  OpfsChunkStore,
+  chunkName,
+  openChunkStore,
+  openIndexedDbChunkStore,
+  openOpfsChunkStore,
+  parseChunkName,
+} from './chunk-store';
+export type { ChunkStore } from './chunk-store';
