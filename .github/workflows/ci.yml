@@ -168,8 +168,26 @@ jobs:
         working-directory: web
       - run: npx playwright install --with-deps chromium firefox webkit
         working-directory: web
+      - name: Virtual audio output device
+        # Firefox and WebKit only run Web Audio with a working output device; runners have no
+        # sound server, so AudioContext never starts there (Day 22). Chromium fakes its own.
+        run: |
+          sudo apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=ci_null
+          pactl set-default-sink ci_null
       - run: npx playwright test
         working-directory: web
+      - name: Show page state of failed e2e tests
+        if: failure()
+        working-directory: web
+        run: |
+          for f in test-results/*/error-context.md; do
+            [ -f "$f" ] || continue
+            echo "::group::$f"
+            head -c 6000 "$f"
+            echo "::endgroup::"
+          done
 
   audit:
     runs-on: ubuntu-latest
