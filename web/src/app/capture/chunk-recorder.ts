@@ -29,17 +29,34 @@ export const PREFERRED_MIME_TYPES = [
   'video/webm;codecs=vp8,opus',
   'video/mp4;codecs=avc1,mp4a',
 ] as const;
+
+/**
+ * The same preference for takes with no audio track. Naming an audio codec for a video-only
+ * stream is not harmless: Firefox then records nothing and never fires `stop` (Day 31).
+ */
+export const PREFERRED_VIDEO_ONLY_MIME_TYPES = [
+  'video/webm;codecs=vp9',
+  'video/webm;codecs=vp8',
+  'video/mp4;codecs=avc1',
+] as const;
 export const DEFAULT_TIMESLICE_MS = 2000;
 export const DEFAULT_VIDEO_BITS_PER_SECOND = 2_500_000;
 export const AUDIO_BITS_PER_SECOND = 128_000;
 export const DEFAULT_TIMER_INTERVAL_MS = 250;
+/** How long `stop()` waits for the browser's final chunk before giving up (never hang). */
+export const STOP_TIMEOUT_MS = 10_000;
 
-/** The first preferred MIME type this browser can record, or `null` if none. */
+/**
+ * The first preferred MIME type this browser can record, or `null` if none. Pass
+ * `{ audio: false }` for a take without an audio track.
+ */
 export function selectMimeType(
   isTypeSupported: (type: string) => boolean = (type) =>
     typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(type),
+  { audio = true }: { audio?: boolean } = {},
 ): string | null {
-  return PREFERRED_MIME_TYPES.find((type) => isTypeSupported(type)) ?? null;
+  const preferred = audio ? PREFERRED_MIME_TYPES : PREFERRED_VIDEO_ONLY_MIME_TYPES;
+  return preferred.find((type) => isTypeSupported(type)) ?? null;
 }
 
 export type CreateMediaRecorder = (
@@ -77,6 +94,7 @@ export class ChunkRecorder {
     private readonly createRecorder: CreateMediaRecorder = (stream, options) =>
       new MediaRecorder(stream, options),
     private readonly now: () => number = () => performance.now(),
+    private readonly stopTimeoutMs = STOP_TIMEOUT_MS,
   ) {}
 
   get state(): RecorderState {
@@ -179,11 +197,23 @@ export class ChunkRecorder {
     const durationMs = this.elapsedMs();
     this.detachEndedListener();
     this.stateSubject.next('stopping');
-    this.stopping = new Promise((resolve) => {
+    this.stopping = new Promise((resolve, reject) => {
+      // A browser that never delivers `stop` must not leave the take "saving" forever.
+      const timer = setTimeout(() => {
+        const error = new CaptureError(
+          'unknown',
+          `the recorder did not finish within ${this.stopTimeoutMs} ms`,
+        );
+        this.stateSubject.next('idle');
+        this.chunksSubject.error(error);
+        this.stoppedSubject.error(error);
+        reject(error);
+      }, this.stopTimeoutMs);
       // The spec fires the last `dataavailable` before `stop`, so every chunk is in by then.
       recorder.addEventListener(
         'stop',
         () => {
+          clearTimeout(timer);
           const summary = { chunkCount: this.nextIndex, durationMs };
           this.stateSubject.next('idle');
           this.chunksSubject.complete();
