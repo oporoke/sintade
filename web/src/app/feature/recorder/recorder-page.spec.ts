@@ -57,7 +57,7 @@ async function setup(support: SystemAudioSupport, sources = fakeSources(), mixer
   TestBed.configureTestingModule({
     imports: [RecorderPage],
     providers: [
-      { provide: CapabilityService, useValue: { systemAudio: signal(support) } },
+      { provide: CapabilityService, useValue: capabilities(support) },
       { provide: SOURCE_MANAGER, useValue: sources },
       { provide: AUDIO_MIXER, useValue: mixer },
     ],
@@ -78,6 +78,18 @@ async function setup(support: SystemAudioSupport, sources = fakeSources(), mixer
 }
 
 const SUPPORTED: SystemAudioSupport = { supported: true, note: null };
+
+function capabilities(support: SystemAudioSupport, getDisplayMedia = true) {
+  return {
+    systemAudio: signal(support),
+    capabilities: signal({
+      getDisplayMedia,
+      mediaRecorderWebm: true,
+      opfs: true,
+      systemAudio: true,
+    }),
+  };
+}
 
 describe('RecorderPage', () => {
   beforeEach(() => localStorage.clear());
@@ -156,9 +168,16 @@ describe('RecorderPage', () => {
     const { q, settle } = await setup(SUPPORTED, sources);
     q<HTMLButtonElement>('recorder-choose-screen')?.click();
     await settle();
-    expect(q('recorder-error')?.textContent?.trim()).toBe(
-      'Permission was denied or the picker was closed.',
+    expect(q('recorder-problem-title')?.textContent?.trim()).toBe(
+      'Screen sharing was cancelled or blocked',
     );
+    expect(q('recorder-help-steps')?.querySelectorAll('li').length).toBeGreaterThan(0);
+
+    // Try again re-opens the screen picker.
+    sources.pickDisplay.mockClear();
+    q<HTMLButtonElement>('recorder-retry')?.click();
+    await settle();
+    expect(sources.pickDisplay).toHaveBeenCalledTimes(1);
   });
 
   it('meters the opened mic and stops metering when the mic is released', async () => {
@@ -265,7 +284,7 @@ describe('RecorderPage control bar', () => {
     TestBed.configureTestingModule({
       imports: [RecorderPage],
       providers: [
-        { provide: CapabilityService, useValue: { systemAudio: signal(SUPPORTED) } },
+        { provide: CapabilityService, useValue: capabilities(SUPPORTED) },
         { provide: SOURCE_MANAGER, useValue: fakeSources() },
         { provide: AUDIO_MIXER, useValue: fakeMixer() },
         { provide: CHUNK_STORE, useValue: Promise.resolve(store) },
@@ -338,5 +357,46 @@ describe('RecorderPage control bar', () => {
     endFromBrowser();
     await settle();
     expect(q('recorder-done')).not.toBeNull();
+  });
+});
+
+describe('RecorderPage problems and view-only', () => {
+  beforeEach(() => localStorage.clear());
+
+  it('explains a blocked microphone with steps, and Try again reopens it', async () => {
+    const sources = fakeSources();
+    sources.openMic.mockRejectedValueOnce(new CaptureError('permission-denied', 'NotAllowedError'));
+    const { q, settle } = await setup(SUPPORTED, sources);
+    const select = q<HTMLSelectElement>('recorder-mic-select');
+    if (select) {
+      select.value = 'mic-a';
+      select.dispatchEvent(new Event('change'));
+    }
+    await settle();
+
+    expect(q('recorder-problem-title')?.textContent?.trim()).toBe('Microphone access is blocked');
+    expect(q('recorder-help-steps')?.textContent).toMatch(/Microphone|microphone/);
+
+    q<HTMLButtonElement>('recorder-retry')?.click();
+    await settle();
+    expect(sources.openMic).toHaveBeenLastCalledWith('mic-a');
+    expect(q('recorder-error')).toBeNull();
+    expect(q('recorder-mic-info')).not.toBeNull();
+  });
+
+  it('shows the view-only notice instead of the recorder without screen capture', async () => {
+    TestBed.configureTestingModule({
+      imports: [RecorderPage],
+      providers: [
+        { provide: CapabilityService, useValue: capabilities(SUPPORTED, false) },
+        { provide: SOURCE_MANAGER, useValue: fakeSources() },
+        { provide: AUDIO_MIXER, useValue: fakeMixer() },
+      ],
+    });
+    const fixture = TestBed.createComponent(RecorderPage);
+    fixture.detectChanges();
+    const element: HTMLElement = fixture.nativeElement;
+    expect(element.querySelector('[data-testid="recorder-mobile-notice"]')).not.toBeNull();
+    expect(element.querySelector('[data-testid="recorder-setup"]')).toBeNull();
   });
 });
