@@ -96,6 +96,7 @@ async function analyseClip(clip: Blob, requestedType: string): Promise<ClipAnaly
       const reason = error instanceof Error ? error.message : String(error);
       throw new Error(
         `${reason} (clip ${mimeType || 'no type'}, ${clip.size} bytes; decode context ${decodeContext.sampleRate} Hz)`,
+        { cause: error },
       );
     }
     const samples = audio.getChannelData(0);
