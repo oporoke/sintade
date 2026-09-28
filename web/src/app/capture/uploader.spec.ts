@@ -80,6 +80,20 @@ class FakeApi implements UploadApi {
     return this.serverStatus;
   }
 
+  readonly finalizeFailures: unknown[] = [];
+  async finalize(
+    _takeId: string,
+    chunkCount: number,
+    durationMs: number,
+  ): Promise<{ recording_id: string }> {
+    this.calls.push(`finalize ${chunkCount} ${durationMs}`);
+    const failure = this.finalizeFailures.shift();
+    if (failure) {
+      throw failure;
+    }
+    return { recording_id: 'rec-1' };
+  }
+
   readonly put = async (url: string, blob: Blob): Promise<void> => {
     const idx = url.split('/').pop()?.split('?')[0];
     this.calls.push(`put ${idx}`);
@@ -361,6 +375,54 @@ describe('Uploader', () => {
       await resumed;
       await uploader.drained();
       expect(api.acked.has(0)).toBe(true);
+    });
+  });
+
+  describe('finalize', () => {
+    it('drains, finalizes, then clears the take from the device', async () => {
+      const { store, api, uploader } = setup();
+      await fill(store, [0, 1, 2]);
+      [0, 1, 2].forEach((idx) => uploader.enqueue(idx));
+      const finalized = await uploader.finalize(3, 6000);
+
+      expect(finalized).toEqual({ recording_id: 'rec-1' });
+      expect(api.calls.at(-1)).toBe('finalize 3 6000');
+      expect(api.calls.indexOf('ack 2')).toBeLessThan(api.calls.indexOf('finalize 3 6000'));
+      expect(await store.indexes(TAKE)).toEqual([]);
+    });
+
+    it('retries a transient failure', async () => {
+      const { store, api, delays, uploader } = setup();
+      await fill(store, [0]);
+      uploader.enqueue(0);
+      api.finalizeFailures.push(new UploadHttpError('api', 503, 'busy'));
+      await uploader.finalize(1, 2000);
+      expect(delays).toEqual([750]);
+      expect(api.calls.filter((call) => call.startsWith('finalize'))).toHaveLength(2);
+    });
+
+    it('uploads missing chunks the server reports, then finalizes again', async () => {
+      const { store, api, uploader } = setup();
+      await fill(store, [0, 1]);
+      // Only chunk 0 was ever enqueued; the server says 1 is missing.
+      uploader.enqueue(0);
+      api.finalizeFailures.push(new UploadHttpError('api', 422, 'missing'));
+      api.serverStatus = {
+        finalized: false,
+        chunks: [{ idx: 0, size_bytes: 7, sha256: await sha256Hex(new Blob(['chunk 0'])) }],
+      };
+      await uploader.finalize(2, 4000);
+      expect(api.acked.has(1)).toBe(true);
+      expect(api.calls.filter((call) => call.startsWith('finalize'))).toHaveLength(2);
+    });
+
+    it('keeps the take on the device when finalize is refused', async () => {
+      const { store, api, uploader } = setup();
+      await fill(store, [0]);
+      uploader.enqueue(0);
+      api.finalizeFailures.push(new UploadHttpError('api', 409, 'closed'));
+      await expect(uploader.finalize(1, 2000)).rejects.toBeInstanceOf(UploadError);
+      expect(await store.indexes(TAKE)).toEqual([0]);
     });
   });
 });

@@ -23,6 +23,12 @@ export interface UploadApi {
   presign(takeId: string, idx: number, count: number): Promise<PresignedUrl[]>;
   ack(takeId: string, idx: number, sizeBytes: number, sha256: string): Promise<void>;
   status(takeId: string): Promise<UploadStatus>;
+  /** Declares the take complete; the server answers `422` if chunks are missing. */
+  finalize(takeId: string, chunkCount: number, durationMs: number): Promise<FinalizedTake>;
+}
+
+export interface FinalizedTake {
+  recording_id: string;
 }
 
 /** Sends a chunk's bytes to its presigned URL. */
@@ -37,7 +43,8 @@ export interface NetworkPort {
   whenOnline(): Promise<void>;
 }
 
-export type UploaderState = 'idle' | 'uploading' | 'retrying' | 'offline' | 'failed';
+export type UploaderState =
+  'idle' | 'uploading' | 'retrying' | 'offline' | 'finalizing' | 'finalized' | 'failed';
 
 export interface UploadProgress {
   /** Chunks enqueued so far (uploaded or not). */
@@ -247,6 +254,36 @@ export class Uploader {
     }
   }
 
+  /**
+   * Finishes the take once recording has stopped (§10 Record step 8): waits for the queue to
+   * drain, finalizes with the chunk count and pause-excluding duration (retrying transient
+   * failures like any upload step), then deletes the take from the device, since the server
+   * now has every chunk. If the server reports chunks missing, uploads them from the store
+   * (`resume()`) and finalizes once more.
+   */
+  async finalize(chunkCount: number, durationMs: number): Promise<FinalizedTake> {
+    for (let attempt = 0; ; attempt += 1) {
+      await this.drained();
+      this.setState('finalizing');
+      try {
+        const finalized = await this.withRetry(() =>
+          this.api.finalize(this.takeId, chunkCount, durationMs),
+        );
+        await this.store.deleteTake(this.takeId);
+        this.setState('finalized');
+        return finalized;
+      } catch (error) {
+        const missing = error instanceof UploadHttpError && error.status === 422;
+        if (!missing || attempt > 0) {
+          const failure = new UploadError(chunkCount - 1, error);
+          this.fail(failure);
+          throw failure;
+        }
+        await this.resume();
+      }
+    }
+  }
+
   /** Resolves once every queued chunk is uploaded; rejects with the first `UploadError`. */
   async drained(): Promise<void> {
     while (this.running) {
@@ -263,7 +300,7 @@ export class Uploader {
     }
     this.running ??= this.drain().finally(() => {
       this.running = null;
-      if (!this.failure) {
+      if (!this.failure && this.state !== 'finalizing') {
         this.setState('idle');
       }
     });

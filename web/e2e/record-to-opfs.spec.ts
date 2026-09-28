@@ -1,4 +1,5 @@
 import { signUpAndLogIn } from './support/auth';
+import { keepTakesOnDevice } from './support/offline';
 import { expect, test } from './support/test';
 
 interface StoredTake {
@@ -12,6 +13,8 @@ interface StoredTake {
  */
 test('record 5 s: chunks and journal are in OPFS', async ({ page, request, browserName }) => {
   await signUpAndLogIn(page, request);
+  // The take must stay in OPFS to be inspected (uploaded takes are cleared from the device).
+  await keepTakesOnDevice(page);
   await page.goto('/record');
   await page.getByTestId('recorder-choose-screen').click();
   await expect(page.getByTestId('recorder-screen-preview')).toBeVisible();

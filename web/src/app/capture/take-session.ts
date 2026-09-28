@@ -17,6 +17,7 @@ export interface TakeSessionOptions {
   mic: MediaStream | null;
   mixer: AudioMixer;
   store: ChunkStore;
+  /** The key the chunks are stored under: the server's take id when the take is uploaded. */
   takeId: string;
   /** Test seams; default to the real browser APIs. */
   recorder?: ChunkRecorder;
@@ -39,6 +40,8 @@ export class TakeSession {
     /** Resolves with the final journal once the take has ended and every chunk is stored, whether
      * it ended by `stop()` or by the browser's "Stop sharing". */
     readonly ended: Promise<TakeMeta>,
+    /** Each chunk's index once it is durably stored, for the uploader. */
+    readonly stored$: Observable<number>,
   ) {}
 
   static async start(options: TakeSessionOptions): Promise<TakeSession> {
@@ -70,7 +73,7 @@ export class TakeSession {
       timesliceMs: DEFAULT_TIMESLICE_MS,
       bitsPerSecond: DEFAULT_VIDEO_BITS_PER_SECOND,
     });
-    return new TakeSession(options.takeId, mimeType, recorder, persisted.done);
+    return new TakeSession(options.takeId, mimeType, recorder, persisted.done, persisted.stored$);
   }
 
   get state$(): Observable<RecorderState> {

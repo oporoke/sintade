@@ -130,11 +130,19 @@ describe('persistTake', () => {
       mimeType: 'x',
       locks: null,
     });
+    const storedWhen: string[] = [];
+    take.stored$.subscribe((index) => storedWhen.push(`${index} after ${order.join(',')}`));
     chunks.next({ index: 0, blob: new Blob(['a']) });
     chunks.next({ index: 1, blob: new Blob(['b']) });
     chunks.complete();
     await take.done;
     expect(order).toEqual([0, 1]);
+    // Each index is announced only once its chunk is in the store.
+    expect(storedWhen).toEqual(['0 after 0', '1 after 0,1']);
+    // Late subscribers get every index (the uploader subscribes after the take starts).
+    const late: number[] = [];
+    take.stored$.subscribe((index) => late.push(index));
+    expect(late).toEqual([0, 1]);
   });
 });
 
