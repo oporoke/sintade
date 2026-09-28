@@ -17,12 +17,13 @@ export { expect } from '@playwright/test';
  */
 export const test = base.extend<{ fakeMedia: void }>({
   fakeMedia: [
-    async ({ page, context, browserName }, use) => {
+    async ({ context, browserName }, use) => {
       if (browserName === 'webkit') {
         await context.grantPermissions(['microphone']);
       }
       if (browserName !== 'chromium') {
-        await page.addInitScript(installCanvasScreen);
+        // On the context, so tabs a test opens itself (e.g. the M3 crash demo) get it too.
+        await context.addInitScript(installCanvasScreen);
       }
       await use();
     },
@@ -32,8 +33,7 @@ export const test = base.extend<{ fakeMedia: void }>({
 
 /** Runs in the page before app code. Must be self-contained (it's serialised). */
 function installCanvasScreen(): void {
-  const devices = navigator.mediaDevices;
-  if (!devices) {
+  if (typeof MediaDevices === 'undefined') {
     return;
   }
   const fakeScreen = async (): Promise<MediaStream> => {
@@ -59,5 +59,11 @@ function installCanvasScreen(): void {
     draw();
     return canvas.captureStream(30);
   };
-  Object.defineProperty(devices, 'getDisplayMedia', { value: fakeScreen, configurable: true });
+  // On the prototype: WebKit can hand the page a different `navigator.mediaDevices` object than
+  // the one an init script sees, so patching the instance is silently lost there.
+  Object.defineProperty(MediaDevices.prototype, 'getDisplayMedia', {
+    value: fakeScreen,
+    configurable: true,
+    writable: true,
+  });
 }
