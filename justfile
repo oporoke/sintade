@@ -14,6 +14,10 @@ test:
 e2e:
     cd web && npx playwright test
 
+# M3 demo: films a 2-minute recording and a crash/recovery per browser into web/demo-output/
+demo-m3 *args:
+    cd web && DEMO=1 npx playwright test e2e/m3-demo.spec.ts --workers=1 {{args}}
+
 deps-up:
     docker compose up -d --wait postgres minio mailpit
     docker compose run --rm minio-init
