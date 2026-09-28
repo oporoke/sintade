@@ -52,12 +52,27 @@ export type {
 } from './take-journal';
 export { TakeSession } from './take-session';
 export type { TakeSessionOptions } from './take-session';
-export { UploadError, Uploader, fetchPut, sha256Hex } from './uploader';
+export {
+  BASE_BACKOFF_MS,
+  MAX_BACKOFF_MS,
+  PRESIGN_BATCH,
+  PUT_TIMEOUT_MS,
+  UploadError,
+  UploadHttpError,
+  Uploader,
+  browserNetwork,
+  fetchPut,
+  isRetryable,
+  sha256Hex,
+} from './uploader';
 export type {
   DigestChunk,
+  NetworkPort,
   PresignedUrl,
   PutChunk,
   UploadApi,
   UploadProgress,
+  UploadStatus,
   UploaderOptions,
+  UploaderState,
 } from './uploader';

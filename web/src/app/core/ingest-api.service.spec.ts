@@ -2,6 +2,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 
+import { UploadHttpError } from '../capture';
 import { IngestApi } from './ingest-api.service';
 
 describe('IngestApi', () => {
@@ -49,6 +50,18 @@ describe('IngestApi', () => {
     http
       .expectOne('/api/v1/takes/take-1/chunks/0/ack')
       .flush({ status: 409 }, { status: 409, statusText: 'Conflict' });
-    await expect(result).rejects.toBeTruthy();
+    const error = await result.catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(UploadHttpError);
+    expect((error as UploadHttpError).status).toBe(409);
+    expect((error as UploadHttpError).source).toBe('api');
+  });
+
+  it('reports a dropped connection as status 0', async () => {
+    const result = api.status('take-1');
+    http
+      .expectOne('/api/v1/takes/take-1/status')
+      .error(new ProgressEvent('error'), { status: 0, statusText: 'Unknown Error' });
+    const error = await result.catch((e: unknown) => e);
+    expect((error as UploadHttpError).status).toBe(0);
   });
 });
