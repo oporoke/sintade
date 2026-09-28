@@ -12,30 +12,12 @@ use crate::session::SessionClaims;
 /// and filters every query by `workspace_id`. The role is re-read from `memberships` on each
 /// request (via `TenancyService::authorize`), so removal or a role change applies immediately.
 #[derive(Debug, Clone, Copy)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "no workspace-scoped route until Day 33; the tenant-isolation harness uses it"
-    )
-)]
 pub struct WorkspaceContext {
-    #[cfg_attr(
-        test,
-        expect(dead_code, reason = "the test probe route only needs the workspace")
-    )]
     pub user_id: UserId,
     pub workspace_id: WorkspaceId,
     pub role: Role,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "no workspace-scoped route until Day 33; the tenant-isolation harness uses it"
-    )
-)]
 impl WorkspaceContext {
     /// Checks a finer-grained permission after the extractor has already established
     /// membership. A member lacking it gets `403`: they can see the workspace exists.

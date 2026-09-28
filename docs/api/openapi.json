@@ -419,6 +419,77 @@
         }
       }
     },
+    "/api/v1/recordings": {
+      "post": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "Starts a recording: creates the recording and its first take in the caller's current\nworkspace (upload protocol v1, docs/design.md §9). Chunks are presigned and acked against\nthe returned `take_id`.",
+        "operationId": "create_recording",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRecordingBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Recording and take created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateRecordingResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing CSRF token, or the role can't create recordings",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not a member of the session's workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid title or MIME type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/healthz": {
       "get": {
         "tags": [
@@ -458,6 +529,55 @@
   },
   "components": {
     "schemas": {
+      "CreateRecordingBody": {
+        "type": "object",
+        "required": [
+          "mime_type",
+          "has_system_audio",
+          "has_mic",
+          "has_camera"
+        ],
+        "properties": {
+          "has_camera": {
+            "type": "boolean"
+          },
+          "has_mic": {
+            "type": "boolean"
+          },
+          "has_system_audio": {
+            "type": "boolean"
+          },
+          "mime_type": {
+            "type": "string",
+            "description": "The take's MIME type as `MediaRecorder` reports it, e.g. `video/webm;codecs=vp9,opus`.\nThe container must be `video/webm` or `video/mp4`."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional; blank or missing becomes \"Untitled recording\". At most 200 characters."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateRecordingResponse": {
+        "type": "object",
+        "required": [
+          "recording_id",
+          "take_id"
+        ],
+        "properties": {
+          "recording_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "take_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
       "ForgotPasswordBody": {
         "type": "object",
         "required": [

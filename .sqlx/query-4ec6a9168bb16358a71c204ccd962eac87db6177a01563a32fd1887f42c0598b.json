@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT count(*) AS \"n!\" FROM recordings r\n                               JOIN takes t ON t.recording_id = r.id\n                               WHERE r.workspace_id = $1 AND t.workspace_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "4ec6a9168bb16358a71c204ccd962eac87db6177a01563a32fd1887f42c0598b"
+}

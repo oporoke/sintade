@@ -6,6 +6,7 @@ use crate::routes::auth::{
     __path_register, __path_reset_password,
 };
 use crate::routes::me::{__path_me, __path_update_me};
+use crate::routes::recordings::__path_create_recording;
 use crate::routes::verify_email::__path_verify_email;
 
 /// The API contract. `api openapi` prints it; `just openapi` writes it to
@@ -26,6 +27,7 @@ use crate::routes::verify_email::__path_verify_email;
         reset_password,
         me,
         update_me,
+        create_recording,
     )
 )]
 pub struct ApiDoc;
