@@ -142,8 +142,9 @@ impl Sha256Digest {
             return Err(DigestError::Malformed);
         }
         let mut bytes = [0u8; 32];
-        for (byte, pair) in bytes.iter_mut().zip(raw.chunks_exact(2)) {
-            *byte = (hex_value(pair[0])? << 4) | hex_value(pair[1])?;
+        let (pairs, _) = raw.as_chunks::<2>();
+        for (byte, [high, low]) in bytes.iter_mut().zip(pairs) {
+            *byte = (hex_value(*high)? << 4) | hex_value(*low)?;
         }
         Ok(Self(bytes))
     }
