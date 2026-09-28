@@ -6,6 +6,9 @@ pub struct Config {
     pub rust_log: String,
     pub public_base_url: String,
     pub s3_endpoint: String,
+    /// Where browsers reach storage, if not `s3_endpoint` (ADR-0010). Presigned URLs are signed
+    /// for this host.
+    pub s3_public_endpoint: Option<String>,
     pub s3_bucket: String,
     pub s3_access_key: String,
     pub s3_secret_key: String,
@@ -20,6 +23,9 @@ impl Config {
             rust_log: std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()),
             public_base_url: env_var("PUBLIC_BASE_URL")?,
             s3_endpoint: env_var("S3_ENDPOINT")?,
+            s3_public_endpoint: std::env::var("S3_PUBLIC_ENDPOINT")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
             s3_bucket: env_var("S3_BUCKET")?,
             s3_access_key: env_var("S3_ACCESS_KEY")?,
             s3_secret_key: env_var("S3_SECRET_KEY")?,

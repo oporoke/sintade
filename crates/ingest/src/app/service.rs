@@ -151,6 +151,17 @@ pub struct TakeStatus {
     pub finalized: bool,
     /// Acknowledged chunk indexes, ascending.
     pub received: Vec<u32>,
+    /// The same chunks with their recorded size and hash, so a client can check its local copy
+    /// matches before skipping it.
+    pub chunks: Vec<ReceivedChunk>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReceivedChunk {
+    pub idx: u32,
+    pub size_bytes: u32,
+    /// Lowercase hex.
+    pub sha256: String,
 }
 
 /// Declares the take complete: `chunk_count` chunks (indexes `0..chunk_count`) lasting
@@ -409,15 +420,22 @@ impl IngestService {
         else {
             return Ok(None);
         };
-        let received = infra::received_indexes(&self.pool, take_id, workspace_id)
+        let chunks: Vec<ReceivedChunk> = infra::receipts(&self.pool, take_id, workspace_id)
             .await?
             .into_iter()
-            .filter_map(|idx| u32::try_from(idx).ok())
+            .filter_map(|receipt| {
+                Some(ReceivedChunk {
+                    idx: u32::try_from(receipt.idx).ok()?,
+                    size_bytes: u32::try_from(receipt.size_bytes).ok()?,
+                    sha256: Sha256Digest::from_bytes(&receipt.sha256)?.to_hex(),
+                })
+            })
             .collect();
         Ok(Some(TakeStatus {
             recording_id: take.recording_id,
             finalized: take.finalized,
-            received,
+            received: chunks.iter().map(|chunk| chunk.idx).collect(),
+            chunks,
         }))
     }
 
@@ -1110,6 +1128,14 @@ mod tests {
         let status = up.status().await;
         assert!(!status.finalized);
         assert_eq!(status.received, vec![0, 1, 3, 5]);
+        assert_eq!(
+            status.chunks[1],
+            ReceivedChunk {
+                idx: 1,
+                size_bytes: 1000,
+                sha256: HASH_A.to_string()
+            }
+        );
         assert_eq!(
             recording_state(&pool, up.started.recording_id).await,
             ("recording".to_string(), None)

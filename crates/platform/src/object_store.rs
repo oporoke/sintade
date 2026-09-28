@@ -31,25 +31,47 @@ pub trait ObjectStore: Send + Sync {
 
 pub struct S3ObjectStore {
     client: Client,
+    /// Signs presigned URLs. The same as `client` unless browsers reach storage at a different
+    /// address than this process does (ADR-0010).
+    presign_client: Client,
     bucket: String,
 }
 
 impl S3ObjectStore {
     pub fn new(endpoint: &str, bucket: &str, access_key: &str, secret_key: &str) -> Self {
-        let credentials = Credentials::new(access_key, secret_key, None, None, "static");
-        let config = aws_sdk_s3::Config::builder()
-            .behavior_version(BehaviorVersion::latest())
-            .region(Region::new("us-east-1"))
-            .endpoint_url(endpoint)
-            .credentials_provider(credentials)
-            .force_path_style(true)
-            .build();
-
+        let client = s3_client(endpoint, access_key, secret_key);
         Self {
-            client: Client::from_conf(config),
+            presign_client: client.clone(),
+            client,
             bucket: bucket.to_string(),
         }
     }
+
+    /// Presigned URLs are signed for `public_endpoint` (the address browsers use, e.g. a CDN
+    /// host, or in dev the HTTPS dev server that proxies to MinIO). SigV4 covers the host, so
+    /// the URL must be signed for the host the request will carry. Everything else keeps using
+    /// the internal endpoint.
+    pub fn with_public_endpoint(
+        mut self,
+        public_endpoint: &str,
+        access_key: &str,
+        secret_key: &str,
+    ) -> Self {
+        self.presign_client = s3_client(public_endpoint, access_key, secret_key);
+        self
+    }
+}
+
+fn s3_client(endpoint: &str, access_key: &str, secret_key: &str) -> Client {
+    let credentials = Credentials::new(access_key, secret_key, None, None, "static");
+    let config = aws_sdk_s3::Config::builder()
+        .behavior_version(BehaviorVersion::latest())
+        .region(Region::new("us-east-1"))
+        .endpoint_url(endpoint)
+        .credentials_provider(credentials)
+        .force_path_style(true)
+        .build();
+    Client::from_conf(config)
 }
 
 #[async_trait::async_trait]
@@ -58,7 +80,7 @@ impl ObjectStore for S3ObjectStore {
         let presigning =
             PresigningConfig::expires_in(ttl).map_err(|e| StorageError::Request(e.to_string()))?;
         let request = self
-            .client
+            .presign_client
             .put_object()
             .bucket(&self.bucket)
             .key(key)
@@ -72,7 +94,7 @@ impl ObjectStore for S3ObjectStore {
         let presigning =
             PresigningConfig::expires_in(ttl).map_err(|e| StorageError::Request(e.to_string()))?;
         let request = self
-            .client
+            .presign_client
             .get_object()
             .bucket(&self.bucket)
             .key(key)

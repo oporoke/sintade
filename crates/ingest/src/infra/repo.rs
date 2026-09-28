@@ -64,6 +64,29 @@ pub async fn find_take_for_owner(
     }))
 }
 
+/// A chunk the server has acknowledged, with its index.
+pub struct IndexedReceipt {
+    pub idx: i32,
+    pub size_bytes: i32,
+    pub sha256: Vec<u8>,
+}
+
+/// Every acknowledged chunk of a take, ascending by index.
+pub async fn receipts(
+    executor: impl PgExecutor<'_>,
+    take_id: TakeId,
+    workspace_id: WorkspaceId,
+) -> Result<Vec<IndexedReceipt>, sqlx::Error> {
+    sqlx::query_as!(
+        IndexedReceipt,
+        "SELECT idx, size_bytes, sha256 FROM chunks WHERE take_id = $1 AND workspace_id = $2 ORDER BY idx",
+        take_id.into_uuid(),
+        workspace_id.into_uuid(),
+    )
+    .fetch_all(executor)
+    .await
+}
+
 /// A chunk the server has acknowledged.
 pub struct ChunkReceipt {
     pub size_bytes: i32,

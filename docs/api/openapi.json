@@ -1245,6 +1245,30 @@
           }
         }
       },
+      "ReceivedChunkBody": {
+        "type": "object",
+        "required": [
+          "idx",
+          "size_bytes",
+          "sha256"
+        ],
+        "properties": {
+          "idx": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string",
+            "description": "Lowercase hex."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "RecordingStateName": {
         "type": "string",
         "enum": [
@@ -1291,9 +1315,17 @@
           "take_id",
           "recording_id",
           "finalized",
-          "received"
+          "received",
+          "chunks"
         ],
         "properties": {
+          "chunks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReceivedChunkBody"
+            },
+            "description": "The acknowledged chunks with the size and SHA-256 recorded for each."
+          },
           "finalized": {
             "type": "boolean"
           },

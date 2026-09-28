@@ -209,6 +209,16 @@ pub struct TakeStatusResponse {
     pub finalized: bool,
     /// Acknowledged chunk indexes, ascending. Upload the rest.
     pub received: Vec<u32>,
+    /// The acknowledged chunks with the size and SHA-256 recorded for each.
+    pub chunks: Vec<ReceivedChunkBody>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ReceivedChunkBody {
+    pub idx: u32,
+    pub size_bytes: u32,
+    /// Lowercase hex.
+    pub sha256: String,
 }
 
 /// Which chunks the server has acknowledged, so an interrupted or recovered upload sends only
@@ -244,6 +254,15 @@ pub async fn take_status(
         recording_id: status.recording_id,
         finalized: status.finalized,
         received: status.received,
+        chunks: status
+            .chunks
+            .into_iter()
+            .map(|chunk| ReceivedChunkBody {
+                idx: chunk.idx,
+                size_bytes: chunk.size_bytes,
+                sha256: chunk.sha256,
+            })
+            .collect(),
     }))
 }
 
@@ -745,6 +764,10 @@ mod tests {
         let (status, body) = get_status(&pool, &owner).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["received"], serde_json::json!([0, 2]));
+        assert_eq!(
+            body["chunks"][1],
+            serde_json::json!({ "idx": 2, "size_bytes": 5, "sha256": HASH_A })
+        );
         assert_eq!(body["finalized"], false);
 
         let (status, body, content_type) = finalize(&pool, &owner, 4).await;

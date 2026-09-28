@@ -7,8 +7,8 @@ mod infra;
 
 pub use app::{
     AckChunk, AckError, AckOutcome, CHUNK_URL_TTL, FinalizeError, FinalizeOutcome, FinalizeTake,
-    IngestService, MAX_MISSING_LISTED, PresignChunks, PresignError, PresignedChunk, StartRecording,
-    StartRecordingError, StartedRecording, TakeStatus,
+    IngestService, MAX_MISSING_LISTED, PresignChunks, PresignError, PresignedChunk, ReceivedChunk,
+    StartRecording, StartRecordingError, StartedRecording, TakeStatus,
 };
 pub use domain::{
     ChunkRangeError, ChunkSizeError, DigestError, MAX_CHUNK_BYTES, MAX_CHUNK_INDEX,

@@ -443,6 +443,14 @@ export interface components {
             title: string;
             type: string;
         };
+        ReceivedChunkBody: {
+            /** Format: int32 */
+            idx: number;
+            /** @description Lowercase hex. */
+            sha256: string;
+            /** Format: int32 */
+            size_bytes: number;
+        };
         /** @enum {string} */
         RecordingStateName: "processing";
         RegisterBody: {
@@ -455,6 +463,8 @@ export interface components {
             token: string;
         };
         TakeStatusResponse: {
+            /** @description The acknowledged chunks with the size and SHA-256 recorded for each. */
+            chunks: components["schemas"]["ReceivedChunkBody"][];
             finalized: boolean;
             /** @description Acknowledged chunk indexes, ascending. Upload the rest. */
             received: number[];
