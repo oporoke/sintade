@@ -113,3 +113,62 @@ pub async fn insert_chunk(
     .await?;
     Ok(result.rows_affected() == 1)
 }
+
+/// Like [`find_take_for_owner`], but locks the take row until the transaction ends, so
+/// concurrent finalizes of one take run one after another.
+pub async fn lock_take_for_owner(
+    conn: &mut PgConnection,
+    take_id: TakeId,
+    workspace_id: WorkspaceId,
+    owner_id: UserId,
+) -> Result<Option<UploadableTake>, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"
+        SELECT t.recording_id, t.mime_type, t.finalized_at IS NOT NULL AS "finalized!"
+        FROM takes t
+        JOIN recordings r ON r.id = t.recording_id AND r.workspace_id = t.workspace_id
+        WHERE t.id = $1 AND t.workspace_id = $2 AND r.owner_id = $3
+        FOR UPDATE OF t
+        "#,
+        take_id.into_uuid(),
+        workspace_id.into_uuid(),
+        owner_id.into_uuid(),
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(row.map(|row| UploadableTake {
+        recording_id: RecordingId::from_uuid(row.recording_id),
+        mime_type: row.mime_type,
+        finalized: row.finalized,
+    }))
+}
+
+/// The chunk indexes the server has acknowledged for a take, ascending.
+pub async fn received_indexes(
+    executor: impl PgExecutor<'_>,
+    take_id: TakeId,
+    workspace_id: WorkspaceId,
+) -> Result<Vec<i32>, sqlx::Error> {
+    sqlx::query_scalar!(
+        "SELECT idx FROM chunks WHERE take_id = $1 AND workspace_id = $2 ORDER BY idx",
+        take_id.into_uuid(),
+        workspace_id.into_uuid(),
+    )
+    .fetch_all(executor)
+    .await
+}
+
+pub async fn mark_take_finalized(
+    conn: &mut PgConnection,
+    take_id: TakeId,
+    workspace_id: WorkspaceId,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE takes SET finalized_at = now() WHERE id = $1 AND workspace_id = $2",
+        take_id.into_uuid(),
+        workspace_id.into_uuid(),
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}

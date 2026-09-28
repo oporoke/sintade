@@ -1,14 +1,19 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
-use ingest::{AckChunk, AckError, AckOutcome, CHUNK_URL_TTL, PresignChunks, PresignError};
-use kernel::{AppError, TakeId};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use ingest::{
+    AckChunk, AckError, AckOutcome, CHUNK_URL_TTL, FinalizeError, FinalizeOutcome, FinalizeTake,
+    PresignChunks, PresignError,
+};
+use kernel::{AppError, RecordingId, TakeId};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 use crate::app::AppState;
 use crate::csrf::verify_csrf;
-use crate::error::{ApiError, Problem};
+use crate::error::{ApiError, Problem, problem_with_extensions};
 use crate::workspace_context::WorkspaceContext;
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -193,6 +198,204 @@ pub async fn ack_chunk(
             AckOutcome::AlreadyAcked => AckStatus::AlreadyAcked,
         },
     }))
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TakeStatusResponse {
+    #[schema(value_type = uuid::Uuid)]
+    pub take_id: TakeId,
+    #[schema(value_type = uuid::Uuid)]
+    pub recording_id: RecordingId,
+    pub finalized: bool,
+    /// Acknowledged chunk indexes, ascending. Upload the rest.
+    pub received: Vec<u32>,
+}
+
+/// Which chunks the server has acknowledged, so an interrupted or recovered upload sends only
+/// the missing ones. Owner only.
+#[utoipa::path(
+    get,
+    path = "/api/v1/takes/{take_id}/status",
+    tag = "takes",
+    params(("take_id" = uuid::Uuid, Path, description = "The take")),
+    responses(
+        (status = 200, description = "Upload state of the take", body = TakeStatusResponse),
+        (status = 401, description = "No valid session", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such take, or not the caller's", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+#[tracing::instrument(skip_all, fields(workspace_id = %ctx.workspace_id))]
+pub async fn take_status(
+    State(state): State<AppState>,
+    ctx: WorkspaceContext,
+    Path(take_id): Path<TakeId>,
+) -> Result<Json<TakeStatusResponse>, ApiError> {
+    let status = state
+        .ingest
+        .take_status(ctx.workspace_id, ctx.user_id, take_id)
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "take status: database error");
+            ApiError::from(AppError::Internal("database unavailable".to_string()))
+        })?
+        .ok_or(AppError::NotFound)?;
+    Ok(Json(TakeStatusResponse {
+        take_id,
+        recording_id: status.recording_id,
+        finalized: status.finalized,
+        received: status.received,
+    }))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FinalizeBody {
+    /// Number of chunks in the take; indexes `0..chunk_count` must all be acknowledged.
+    pub chunk_count: u32,
+    /// The take's length, pauses excluded.
+    pub duration_ms: u32,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordingStateName {
+    Processing,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FinalizeResponse {
+    #[schema(value_type = uuid::Uuid)]
+    pub recording_id: RecordingId,
+    pub state: RecordingStateName,
+}
+
+/// The `422` body when chunks are missing: problem details plus the indexes to upload.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MissingChunksProblem {
+    pub r#type: String,
+    pub title: String,
+    pub status: u16,
+    pub detail: String,
+    /// Missing indexes, ascending; at most 1000 listed.
+    pub missing: Vec<u32>,
+    /// How many are missing in total.
+    pub missing_count: usize,
+}
+
+pub enum FinalizeRejection {
+    Api(ApiError),
+    Missing {
+        missing: Vec<u32>,
+        missing_count: usize,
+    },
+}
+
+impl From<AppError> for FinalizeRejection {
+    fn from(error: AppError) -> Self {
+        Self::Api(error.into())
+    }
+}
+
+impl From<ApiError> for FinalizeRejection {
+    fn from(error: ApiError) -> Self {
+        Self::Api(error)
+    }
+}
+
+impl IntoResponse for FinalizeRejection {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Api(error) => error.into_response(),
+            Self::Missing {
+                missing,
+                missing_count,
+            } => {
+                let mut extensions = serde_json::Map::new();
+                extensions.insert("missing".into(), missing.into());
+                extensions.insert("missing_count".into(), missing_count.into());
+                problem_with_extensions(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "Unprocessable Entity",
+                    format!("{missing_count} chunk(s) missing"),
+                    extensions,
+                )
+            }
+        }
+    }
+}
+
+/// Declares the take complete. When every chunk `0..chunk_count` is acknowledged the take is
+/// finalized, the recording moves to `processing` and `TakeFinalized` is emitted; otherwise
+/// `422` lists the missing indexes. Retrying a successful finalize is `202` again.
+#[utoipa::path(
+    post,
+    path = "/api/v1/takes/{take_id}/finalize",
+    tag = "takes",
+    params(("take_id" = uuid::Uuid, Path, description = "The take")),
+    request_body = FinalizeBody,
+    responses(
+        (status = 202, description = "Finalized; processing starts", body = FinalizeResponse),
+        (status = 401, description = "No valid session", body = Problem, content_type = "application/problem+json"),
+        (status = 403, description = "Missing or mismatched CSRF token", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such take, or not the caller's", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "Finalized before with another count, or the recording no longer accepts uploads", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "Chunks missing (listed in `missing`), extra chunks, or invalid count/duration", body = MissingChunksProblem, content_type = "application/problem+json"),
+    )
+)]
+#[tracing::instrument(skip_all, fields(workspace_id = %ctx.workspace_id))]
+pub async fn finalize_take(
+    State(state): State<AppState>,
+    ctx: WorkspaceContext,
+    headers: HeaderMap,
+    Path(take_id): Path<TakeId>,
+    Json(body): Json<FinalizeBody>,
+) -> Result<(StatusCode, Json<FinalizeResponse>), FinalizeRejection> {
+    verify_csrf(&headers)?;
+    let outcome = state
+        .ingest
+        .finalize(FinalizeTake {
+            workspace_id: ctx.workspace_id,
+            user_id: ctx.user_id,
+            take_id,
+            chunk_count: body.chunk_count,
+            duration_ms: body.duration_ms,
+        })
+        .await
+        .map_err(|error| match error {
+            FinalizeError::NotFound => AppError::NotFound.into(),
+            FinalizeError::MissingChunks {
+                missing,
+                missing_count,
+            } => FinalizeRejection::Missing {
+                missing,
+                missing_count,
+            },
+            FinalizeError::InvalidChunkCount
+            | FinalizeError::InvalidDuration
+            | FinalizeError::UnexpectedChunks(_) => AppError::Validation(error.to_string()).into(),
+            FinalizeError::CountMismatch { .. } | FinalizeError::RecordingClosed => {
+                AppError::Conflict(error.to_string()).into()
+            }
+            FinalizeError::Outbox(source) => {
+                tracing::error!(error = %source, "finalize: outbox error");
+                AppError::Internal("database unavailable".to_string()).into()
+            }
+            FinalizeError::Database(source) => {
+                tracing::error!(error = %source, "finalize: database error");
+                AppError::Internal("database unavailable".to_string()).into()
+            }
+        })?;
+    let recording_id = match outcome {
+        FinalizeOutcome::Finalized { recording_id }
+        | FinalizeOutcome::AlreadyFinalized { recording_id } => recording_id,
+    };
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(FinalizeResponse {
+            recording_id,
+            state: RecordingStateName::Processing,
+        }),
+    ))
 }
 
 #[cfg(test)]
@@ -447,6 +650,122 @@ mod tests {
         .await
         .expect("count");
         assert_eq!(count, 1);
+        test_store()
+            .delete_prefix(&format!("ws/{}/", owner.workspace_id))
+            .await
+            .expect("clean up");
+    }
+
+    async fn get_status(pool: &PgPool, owner: &Owner) -> (StatusCode, Value) {
+        let app = build_router(
+            pool.clone(),
+            test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
+            test_ingest(pool.clone()),
+            test_rate_limiter(pool.clone()),
+            test_clock(),
+            TEST_ORIGIN,
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/takes/{}/status", owner.take_id))
+                    .header("cookie", &owner.cookie)
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    async fn finalize(
+        pool: &PgPool,
+        owner: &Owner,
+        chunk_count: u32,
+    ) -> (StatusCode, Value, Option<String>) {
+        let app = build_router(
+            pool.clone(),
+            test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
+            test_ingest(pool.clone()),
+            test_rate_limiter(pool.clone()),
+            test_clock(),
+            TEST_ORIGIN,
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/takes/{}/finalize", owner.take_id))
+                    .header("cookie", &owner.cookie)
+                    .header(CSRF_HEADER_NAME, "token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "chunk_count": chunk_count, "duration_ms": 4000 })
+                            .to_string(),
+                    ))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router call succeeds");
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            content_type,
+        )
+    }
+
+    /// Day 36's Check over HTTP: a gap → 422 listing the missing indexes; fill it → 202.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn finalize_with_a_gap_returns_the_missing_indexes(pool: PgPool) {
+        let owner = owner_with_take(&pool).await;
+        for idx in [0, 2] {
+            upload(&pool, &owner, idx, b"chunk").await;
+            let (status, body) = ack(&pool, &owner, idx, 5, HASH_A).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+
+        let (status, body) = get_status(&pool, &owner).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["received"], serde_json::json!([0, 2]));
+        assert_eq!(body["finalized"], false);
+
+        let (status, body, content_type) = finalize(&pool, &owner, 4).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(content_type.as_deref(), Some("application/problem+json"));
+        assert_eq!(body["missing"], serde_json::json!([1, 3]));
+        assert_eq!(body["missing_count"], 2);
+        assert_eq!(body["status"], 422);
+
+        for idx in [1, 3] {
+            upload(&pool, &owner, idx, b"chunk").await;
+            ack(&pool, &owner, idx, 5, HASH_A).await;
+        }
+        let (status, body, _) = finalize(&pool, &owner, 4).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        assert_eq!(body["state"], "processing");
+        let (status, _, _) = finalize(&pool, &owner, 4).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "retry is idempotent");
+        let (_, body) = get_status(&pool, &owner).await;
+        assert_eq!(body["finalized"], true);
+
         test_store()
             .delete_prefix(&format!("ws/{}/", owner.workspace_id))
             .await

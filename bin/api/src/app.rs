@@ -185,6 +185,7 @@ pub(crate) mod tests {
             pool,
             Arc::new(CatalogService::new()),
             test_store(),
+            test_clock(),
         ))
     }
 

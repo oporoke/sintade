@@ -121,22 +121,74 @@ fn tenant_table() -> Vec<(Method, &'static str, Probe)> {
                 })
             }),
         ),
+        (
+            Method::GET,
+            "/api/v1/takes/{take_id}/status",
+            Probe::Owned(|pool, workspace_id| {
+                Box::pin(async move {
+                    let take_id = take_owned_by(&pool, workspace_id).await;
+                    get(&format!("/api/v1/takes/{take_id}/status"))
+                })
+            }),
+        ),
+        (
+            Method::POST,
+            "/api/v1/takes/{take_id}/finalize",
+            Probe::Owned(|pool, workspace_id| {
+                Box::pin(async move {
+                    let take_id = take_owned_by(&pool, workspace_id).await;
+                    put_chunk(&pool, take_id, 0, b"x").await;
+                    ack_as_owner(&pool, workspace_id, take_id, 0, 1).await;
+                    post_json(
+                        &format!("/api/v1/takes/{take_id}/finalize"),
+                        r#"{"chunk_count":1,"duration_ms":2000}"#,
+                    )
+                })
+            }),
+        ),
     ]
+}
+
+async fn workspace_owner(pool: &PgPool, workspace_id: WorkspaceId) -> UserId {
+    UserId::from_uuid(
+        sqlx::query_scalar!(
+            "SELECT user_id FROM memberships WHERE workspace_id = $1 AND role = 'owner'",
+            workspace_id.into_uuid(),
+        )
+        .fetch_one(pool)
+        .await
+        .expect("workspace owner"),
+    )
+}
+
+/// Acks chunk `idx` (already PUT) through the service, as the owner.
+async fn ack_as_owner(
+    pool: &PgPool,
+    workspace_id: WorkspaceId,
+    take_id: TakeId,
+    idx: u32,
+    size: u64,
+) {
+    test_ingest(pool.clone())
+        .ack_chunk(ingest::AckChunk {
+            workspace_id,
+            user_id: workspace_owner(pool, workspace_id).await,
+            take_id,
+            idx,
+            size_bytes: size,
+            sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+        })
+        .await
+        .expect("ack");
 }
 
 /// Starts a recording in `workspace_id` as its owner, returning the take.
 async fn take_owned_by(pool: &PgPool, workspace_id: WorkspaceId) -> TakeId {
-    let owner = sqlx::query_scalar!(
-        "SELECT user_id FROM memberships WHERE workspace_id = $1 AND role = 'owner'",
-        workspace_id.into_uuid(),
-    )
-    .fetch_one(pool)
-    .await
-    .expect("workspace owner");
+    let owner = workspace_owner(pool, workspace_id).await;
     test_ingest(pool.clone())
         .start_recording(ingest::StartRecording {
             workspace_id,
-            owner_id: UserId::from_uuid(owner),
+            owner_id: owner,
             title: None,
             mime_type: "video/webm;codecs=vp9,opus".to_string(),
             sources: ingest::Sources {

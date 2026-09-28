@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use catalog::{CatalogService, NewRecording, Title, TitleError};
 use kernel::{RecordingId, TakeId, UserId, WorkspaceId};
-use platform::{ObjectStore, StorageError};
+use platform::{Clock, ObjectStore, Outbox, OutboxError, StorageError};
 use sqlx::PgPool;
 use url::Url;
 
@@ -11,6 +11,7 @@ use crate::domain::{
     ChunkRangeError, ChunkSizeError, DigestError, MAX_CHUNK_INDEX, MimeType, MimeTypeError,
     Sha256Digest, Sources, chunk_key, chunk_range, chunk_size,
 };
+use crate::events::TakeFinalized;
 use crate::infra;
 
 /// How long a presigned chunk PUT stays valid (docs/design.md §9: 5 minutes).
@@ -143,18 +144,93 @@ pub enum AckError {
     Database(#[from] sqlx::Error),
 }
 
+/// What the server has for a take, so an interrupted upload can resume (docs/design.md §9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TakeStatus {
+    pub recording_id: RecordingId,
+    pub finalized: bool,
+    /// Acknowledged chunk indexes, ascending.
+    pub received: Vec<u32>,
+}
+
+/// Declares the take complete: `chunk_count` chunks (indexes `0..chunk_count`) lasting
+/// `duration_ms` (pauses excluded).
+#[derive(Debug, Clone, Copy)]
+pub struct FinalizeTake {
+    pub workspace_id: WorkspaceId,
+    pub user_id: UserId,
+    pub take_id: TakeId,
+    pub chunk_count: u32,
+    pub duration_ms: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinalizeOutcome {
+    /// Finalized now: the recording is `processing` and `TakeFinalized` is in the outbox.
+    Finalized { recording_id: RecordingId },
+    /// Already finalized with the same chunk count: a retry, nothing changed.
+    AlreadyFinalized { recording_id: RecordingId },
+}
+
+/// Longest list of missing indexes returned; `missing_count` always has the total.
+pub const MAX_MISSING_LISTED: usize = 1000;
+
+#[derive(Debug, thiserror::Error)]
+pub enum FinalizeError {
+    #[error("take not found")]
+    NotFound,
+
+    #[error("chunk_count must be between 1 and {}", MAX_CHUNK_INDEX + 1)]
+    InvalidChunkCount,
+
+    #[error("duration_ms must be at most {}", i32::MAX)]
+    InvalidDuration,
+
+    /// Some of `0..chunk_count` were never acknowledged (docs/design.md §9: `422` with the
+    /// missing indexes). `missing` lists at most [`MAX_MISSING_LISTED`].
+    #[error("{missing_count} chunk(s) missing")]
+    MissingChunks {
+        missing: Vec<u32>,
+        missing_count: usize,
+    },
+
+    #[error("chunks at or beyond chunk_count were acknowledged: {0:?}")]
+    UnexpectedChunks(Vec<u32>),
+
+    /// Finalized earlier with a different number of chunks.
+    #[error("take was already finalized with {finalized_with} chunk(s)")]
+    CountMismatch { finalized_with: u32 },
+
+    /// The recording was abandoned or already moved on.
+    #[error("the recording no longer accepts uploads")]
+    RecordingClosed,
+
+    #[error(transparent)]
+    Outbox(#[from] OutboxError),
+
+    #[error("database error: {0}")]
+    Database(#[from] sqlx::Error),
+}
+
 pub struct IngestService {
     pool: PgPool,
     catalog: Arc<CatalogService>,
     store: Arc<dyn ObjectStore>,
+    outbox: Outbox,
 }
 
 impl IngestService {
-    pub fn new(pool: PgPool, catalog: Arc<CatalogService>, store: Arc<dyn ObjectStore>) -> Self {
+    pub fn new(
+        pool: PgPool,
+        catalog: Arc<CatalogService>,
+        store: Arc<dyn ObjectStore>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
         Self {
             pool,
             catalog,
             store,
+            outbox: Outbox::new(clock),
         }
     }
 
@@ -319,6 +395,132 @@ impl IngestService {
             .ok_or(AckError::NotFound)?;
         compare(receipt)
     }
+
+    /// Which chunks the server has, for resuming an interrupted upload. Owner only.
+    #[tracing::instrument(skip_all, fields(take_id = %take_id))]
+    pub async fn take_status(
+        &self,
+        workspace_id: WorkspaceId,
+        user_id: UserId,
+        take_id: TakeId,
+    ) -> Result<Option<TakeStatus>, sqlx::Error> {
+        let Some(take) =
+            infra::find_take_for_owner(&self.pool, take_id, workspace_id, user_id).await?
+        else {
+            return Ok(None);
+        };
+        let received = infra::received_indexes(&self.pool, take_id, workspace_id)
+            .await?
+            .into_iter()
+            .filter_map(|idx| u32::try_from(idx).ok())
+            .collect();
+        Ok(Some(TakeStatus {
+            recording_id: take.recording_id,
+            finalized: take.finalized,
+            received,
+        }))
+    }
+
+    /// Finalizes a take once every chunk `0..chunk_count` is acknowledged: marks the take
+    /// finalized, moves the recording to `processing`, and writes `TakeFinalized` to the outbox,
+    /// all in one transaction. Retrying with the same count after success is a no-op.
+    #[tracing::instrument(skip_all, fields(take_id = %request.take_id, chunk_count = request.chunk_count))]
+    pub async fn finalize(&self, request: FinalizeTake) -> Result<FinalizeOutcome, FinalizeError> {
+        if request.chunk_count == 0 || request.chunk_count > MAX_CHUNK_INDEX + 1 {
+            return Err(FinalizeError::InvalidChunkCount);
+        }
+        let duration_ms =
+            i32::try_from(request.duration_ms).map_err(|_| FinalizeError::InvalidDuration)?;
+
+        let mut tx = self.pool.begin().await?;
+        let take = infra::lock_take_for_owner(
+            &mut tx,
+            request.take_id,
+            request.workspace_id,
+            request.user_id,
+        )
+        .await?
+        .ok_or(FinalizeError::NotFound)?;
+        let received: Vec<u32> =
+            infra::received_indexes(&mut *tx, request.take_id, request.workspace_id)
+                .await?
+                .into_iter()
+                .filter_map(|idx| u32::try_from(idx).ok())
+                .collect();
+
+        if take.finalized {
+            let finalized_with = u32::try_from(received.len()).unwrap_or(u32::MAX);
+            return if finalized_with == request.chunk_count {
+                Ok(FinalizeOutcome::AlreadyFinalized {
+                    recording_id: take.recording_id,
+                })
+            } else {
+                Err(FinalizeError::CountMismatch { finalized_with })
+            };
+        }
+
+        let unexpected: Vec<u32> = received
+            .iter()
+            .copied()
+            .filter(|&idx| idx >= request.chunk_count)
+            .collect();
+        if !unexpected.is_empty() {
+            return Err(FinalizeError::UnexpectedChunks(unexpected));
+        }
+        // `received` is ascending and all below chunk_count, so walk both in step.
+        let mut have = received.iter().copied().peekable();
+        let mut missing = Vec::new();
+        let mut missing_count = 0usize;
+        for idx in 0..request.chunk_count {
+            if have.peek() == Some(&idx) {
+                have.next();
+            } else {
+                missing_count += 1;
+                if missing.len() < MAX_MISSING_LISTED {
+                    missing.push(idx);
+                }
+            }
+        }
+        if missing_count > 0 {
+            return Err(FinalizeError::MissingChunks {
+                missing,
+                missing_count,
+            });
+        }
+
+        infra::mark_take_finalized(&mut tx, request.take_id, request.workspace_id).await?;
+        if !self
+            .catalog
+            .mark_processing(
+                &mut tx,
+                take.recording_id,
+                request.workspace_id,
+                duration_ms,
+            )
+            .await?
+        {
+            return Err(FinalizeError::RecordingClosed);
+        }
+        self.outbox
+            .push(
+                &mut tx,
+                &TakeFinalized {
+                    take_id: request.take_id,
+                    recording_id: take.recording_id,
+                    workspace_id: request.workspace_id,
+                    chunk_count: request.chunk_count,
+                    duration_ms: request.duration_ms,
+                    mime: take.mime_type,
+                },
+            )
+            .await?;
+        tx.commit().await?;
+
+        tracing::info!(recording_id = %take.recording_id, "take finalized");
+        Ok(FinalizeOutcome::Finalized {
+            recording_id: take.recording_id,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -366,7 +568,12 @@ mod tests {
     }
 
     fn service_with(pool: &PgPool, store: Arc<FakeStore>) -> IngestService {
-        IngestService::new(pool.clone(), Arc::new(CatalogService::new()), store)
+        IngestService::new(
+            pool.clone(),
+            Arc::new(CatalogService::new()),
+            store,
+            Arc::new(platform::SystemClock),
+        )
     }
 
     /// Presigns deterministic fake URLs and answers `HEAD` from `objects`, so service tests
@@ -831,5 +1038,209 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    impl Uploading {
+        /// Uploads and acks each index with a 1000-byte chunk.
+        async fn upload_and_ack(&self, indexes: &[u32]) {
+            for &idx in indexes {
+                self.upload(idx, 1000);
+                self.ack(idx, 1000, HASH_A).await.expect("ack");
+            }
+        }
+
+        async fn finalize(&self, chunk_count: u32) -> Result<FinalizeOutcome, FinalizeError> {
+            self.ingest
+                .finalize(FinalizeTake {
+                    workspace_id: self.workspace,
+                    user_id: self.owner,
+                    take_id: self.started.take_id,
+                    chunk_count,
+                    duration_ms: 6_000,
+                })
+                .await
+        }
+
+        async fn status(&self) -> TakeStatus {
+            self.ingest
+                .take_status(self.workspace, self.owner, self.started.take_id)
+                .await
+                .expect("status")
+                .expect("owner sees the take")
+        }
+    }
+
+    async fn recording_state(pool: &PgPool, id: RecordingId) -> (String, Option<i32>) {
+        let row = sqlx::query!(
+            r#"SELECT state::text AS "state!", duration_ms FROM recordings WHERE id = $1"#,
+            id.into_uuid()
+        )
+        .fetch_one(pool)
+        .await
+        .expect("recording");
+        (row.state, row.duration_ms)
+    }
+
+    async fn outbox_events(pool: &PgPool, take: TakeId) -> Vec<serde_json::Value> {
+        sqlx::query_scalar!(
+            "SELECT payload FROM outbox_events WHERE event_type = 'TakeFinalized' AND aggregate_id = $1",
+            take.into_uuid()
+        )
+        .fetch_all(pool)
+        .await
+        .expect("outbox")
+    }
+
+    /// Day 36's Check: finalizing with a gap returns the missing indexes and changes nothing.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn finalize_with_a_gap_returns_the_missing_indexes(pool: PgPool) {
+        let up = uploading(&pool).await;
+        up.upload_and_ack(&[0, 1, 3, 5]).await;
+
+        match up.finalize(7).await {
+            Err(FinalizeError::MissingChunks {
+                missing,
+                missing_count,
+            }) => {
+                assert_eq!(missing, vec![2, 4, 6]);
+                assert_eq!(missing_count, 3);
+            }
+            other => panic!("expected missing chunks, got {other:?}"),
+        }
+        let status = up.status().await;
+        assert!(!status.finalized);
+        assert_eq!(status.received, vec![0, 1, 3, 5]);
+        assert_eq!(
+            recording_state(&pool, up.started.recording_id).await,
+            ("recording".to_string(), None)
+        );
+        assert!(outbox_events(&pool, up.started.take_id).await.is_empty());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn finalize_moves_the_recording_to_processing_and_emits_take_finalized(pool: PgPool) {
+        let up = uploading(&pool).await;
+        up.upload_and_ack(&[0, 1, 2]).await;
+
+        let outcome = up.finalize(3).await.expect("finalize");
+        assert_eq!(
+            outcome,
+            FinalizeOutcome::Finalized {
+                recording_id: up.started.recording_id
+            }
+        );
+        assert!(up.status().await.finalized);
+        assert_eq!(
+            recording_state(&pool, up.started.recording_id).await,
+            ("processing".to_string(), Some(6_000))
+        );
+
+        let events = outbox_events(&pool, up.started.take_id).await;
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event["event_type"], "TakeFinalized");
+        assert_eq!(event["workspace_id"], up.workspace.to_string());
+        assert_eq!(event["data"]["take_id"], up.started.take_id.to_string());
+        assert_eq!(
+            event["data"]["recording_id"],
+            up.started.recording_id.to_string()
+        );
+        assert_eq!(event["data"]["chunk_count"], 3);
+        assert_eq!(event["data"]["duration_ms"], 6_000);
+        assert_eq!(event["data"]["mime"], "video/webm;codecs=vp9,opus");
+
+        // Retrying the same finalize is a no-op; a different count conflicts.
+        assert_eq!(
+            up.finalize(3).await.expect("retry"),
+            FinalizeOutcome::AlreadyFinalized {
+                recording_id: up.started.recording_id
+            }
+        );
+        assert!(matches!(
+            up.finalize(4).await,
+            Err(FinalizeError::CountMismatch { finalized_with: 3 })
+        ));
+        assert_eq!(
+            outbox_events(&pool, up.started.take_id).await.len(),
+            1,
+            "one event only"
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn finalize_rejects_bad_counts_and_extra_chunks(pool: PgPool) {
+        let up = uploading(&pool).await;
+        up.upload_and_ack(&[0, 1, 2]).await;
+        assert!(matches!(
+            up.finalize(0).await,
+            Err(FinalizeError::InvalidChunkCount)
+        ));
+        assert!(matches!(
+            up.finalize(MAX_CHUNK_INDEX + 2).await,
+            Err(FinalizeError::InvalidChunkCount)
+        ));
+        match up.finalize(2).await {
+            Err(FinalizeError::UnexpectedChunks(extra)) => assert_eq!(extra, vec![2]),
+            other => panic!("expected unexpected chunks, got {other:?}"),
+        }
+        let many = up.finalize(MAX_CHUNK_INDEX + 1).await;
+        match many {
+            Err(FinalizeError::MissingChunks {
+                missing,
+                missing_count,
+            }) => {
+                assert_eq!(missing.len(), MAX_MISSING_LISTED);
+                assert_eq!(missing[0], 3);
+                assert_eq!(missing_count, (MAX_CHUNK_INDEX + 1 - 3) as usize);
+            }
+            other => panic!("expected missing chunks, got {other:?}"),
+        }
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn an_abandoned_recording_cannot_be_finalized(pool: PgPool) {
+        let up = uploading(&pool).await;
+        up.upload_and_ack(&[0]).await;
+        sqlx::query!(
+            "UPDATE recordings SET state = 'abandoned' WHERE id = $1",
+            up.started.recording_id.into_uuid()
+        )
+        .execute(&pool)
+        .await
+        .expect("abandon");
+
+        assert!(matches!(
+            up.finalize(1).await,
+            Err(FinalizeError::RecordingClosed)
+        ));
+        assert!(
+            !up.status().await.finalized,
+            "the take's update rolled back"
+        );
+        assert!(outbox_events(&pool, up.started.take_id).await.is_empty());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn status_and_finalize_are_owner_only(pool: PgPool) {
+        let up = uploading(&pool).await;
+        let (stranger, strangers_workspace) = owner_and_workspace(&pool).await;
+        assert!(
+            up.ingest
+                .take_status(strangers_workspace, stranger, up.started.take_id)
+                .await
+                .expect("query")
+                .is_none()
+        );
+        let result = up
+            .ingest
+            .finalize(FinalizeTake {
+                workspace_id: strangers_workspace,
+                user_id: stranger,
+                take_id: up.started.take_id,
+                chunk_count: 1,
+                duration_ms: 1,
+            })
+            .await;
+        assert!(matches!(result, Err(FinalizeError::NotFound)), "{result:?}");
     }
 }

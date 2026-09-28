@@ -22,6 +22,28 @@ pub struct Problem {
     detail: String,
 }
 
+/// A problem+json response with extension members (RFC 9457 §3.2) merged into the body, e.g.
+/// finalize's `missing` indexes.
+pub fn problem_with_extensions(
+    status: StatusCode,
+    title: &'static str,
+    detail: String,
+    extensions: serde_json::Map<String, serde_json::Value>,
+) -> Response {
+    let mut body = serde_json::Map::new();
+    body.insert("type".into(), "about:blank".into());
+    body.insert("title".into(), title.into());
+    body.insert("status".into(), status.as_u16().into());
+    body.insert("detail".into(), detail.into());
+    body.extend(extensions);
+    let mut response = (status, Json(serde_json::Value::Object(body))).into_response();
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/problem+json"),
+    );
+    response
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, title, detail) = match self.0 {

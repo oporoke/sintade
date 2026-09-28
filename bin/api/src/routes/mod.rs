@@ -123,5 +123,17 @@ pub fn table() -> Vec<Route> {
             Workspace,
             takes::ack_chunk,
         ),
+        Route::new(
+            Method::GET,
+            "/api/v1/takes/{take_id}/status",
+            Workspace,
+            takes::take_status,
+        ),
+        Route::new(
+            Method::POST,
+            "/api/v1/takes/{take_id}/finalize",
+            Workspace,
+            takes::finalize_take,
+        ),
     ]
 }
