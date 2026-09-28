@@ -10,6 +10,7 @@ type Schemas = components['schemas'];
 export type CreateRecordingBody = Schemas['CreateRecordingBody'];
 export type CreateRecordingResponse = Schemas['CreateRecordingResponse'];
 export type TakeStatusResponse = Schemas['TakeStatusResponse'];
+export type FinalizeResponse = Schemas['FinalizeResponse'];
 
 /**
  * The ingest endpoints (upload protocol v1) over the app's HTTP stack, which adds the session
@@ -41,6 +42,17 @@ export class IngestApi implements UploadApi {
         `/takes/${encodeURIComponent(takeId)}/chunks/${idx}/ack`,
         body,
       ),
+    );
+  }
+
+  finalize(takeId: string, chunkCount: number, durationMs: number): Promise<FinalizeResponse> {
+    // The recorder's timer runs on `performance.now()`, so durations can be fractional.
+    const body: Schemas['FinalizeBody'] = {
+      chunk_count: chunkCount,
+      duration_ms: Math.round(durationMs),
+    };
+    return call(
+      this.api.post<FinalizeResponse>(`/takes/${encodeURIComponent(takeId)}/finalize`, body),
     );
   }
 

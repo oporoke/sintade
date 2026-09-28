@@ -1,6 +1,7 @@
 import { Page } from '@playwright/test';
 
 import { signUpAndLogIn } from './support/auth';
+import { keepTakesOnDevice } from './support/offline';
 import { expect, test } from './support/test';
 
 /**
@@ -34,6 +35,8 @@ test('record, pause, resume and stop with the keyboard alone', async ({
 }, testInfo) => {
   test.skip(browserName === 'webkit', "Playwright's Linux WebKit has no MediaRecorder (Day 22)");
   await signUpAndLogIn(page, request);
+  // Ends by saving a copy, which only on-device takes offer (uploaded ones leave the device).
+  await keepTakesOnDevice(page);
   await page.goto('/record');
   await page.locator('body').focus();
 

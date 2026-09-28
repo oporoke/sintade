@@ -67,6 +67,7 @@ export {
 } from './uploader';
 export type {
   DigestChunk,
+  FinalizedTake,
   NetworkPort,
   PresignedUrl,
   PutChunk,

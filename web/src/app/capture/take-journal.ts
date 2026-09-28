@@ -1,4 +1,4 @@
-import { Observable, Subject } from 'rxjs';
+import { Observable, ReplaySubject, Subject } from 'rxjs';
 
 import { ChunkRecorder } from './chunk-recorder';
 import { ChunkStore, TakeMeta } from './chunk-store';
@@ -17,6 +17,9 @@ export interface PersistOptions {
 export interface PersistedTake {
   /** Emits the journal after each chunk is durably stored. */
   readonly persisted$: Observable<TakeMeta>;
+  /** Emits each chunk's index once it is durably stored (replayed to late subscribers), so
+   * uploading can start from the store (US-12: every chunk is in OPFS before it's uploaded). */
+  readonly stored$: Observable<number>;
   /** Resolves with the final journal once the recording stopped and every chunk is stored. */
   readonly done: Promise<TakeMeta>;
 }
@@ -66,6 +69,7 @@ export async function persistTake(
   await store.putMeta(meta);
 
   const persisted = new Subject<TakeMeta>();
+  const stored = new ReplaySubject<number>();
   let queue = Promise.resolve();
   const done = new Promise<TakeMeta>((resolve, reject) => {
     recorder.chunks$.subscribe({
@@ -78,12 +82,14 @@ export async function persistTake(
           meta.durationMs = Math.max(meta.durationMs, durationMs);
           await store.putMeta({ ...meta });
           persisted.next({ ...meta });
+          stored.next(index);
         });
         queue.catch(() => undefined);
       },
       error: (error: unknown) => {
         release();
         persisted.error(error);
+        stored.error(error);
         reject(error);
       },
       complete: () => {
@@ -91,11 +97,13 @@ export async function persistTake(
           () => {
             release();
             persisted.complete();
+            stored.complete();
             resolve({ ...meta });
           },
           (error: unknown) => {
             release();
             persisted.error(error);
+            stored.error(error);
             reject(error);
           },
         );
@@ -103,7 +111,7 @@ export async function persistTake(
     });
   });
   done.catch(() => undefined);
-  return { persisted$: persisted.asObservable(), done };
+  return { persisted$: persisted.asObservable(), stored$: stored.asObservable(), done };
 }
 
 /** Stored takes whose recording tab is gone (no lock held), oldest first (§10 Recover). */

@@ -2,7 +2,7 @@ import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Subject, of } from 'rxjs';
 
-import { BehaviorSubject, Subject as RxSubject } from 'rxjs';
+import { BehaviorSubject, ReplaySubject, Subject as RxSubject } from 'rxjs';
 
 import {
   AudioMixer,
@@ -13,9 +13,17 @@ import {
   SourceManager,
   TakeMeta,
   TakeSession,
+  UploadHttpError,
 } from '../../capture';
 import { CapabilityService, SystemAudioSupport } from '../../core/capability.service';
-import { AUDIO_MIXER, CHUNK_STORE, SOURCE_MANAGER, START_TAKE } from '../../core/capture.tokens';
+import {
+  AUDIO_MIXER,
+  CHUNK_STORE,
+  RECORDINGS_API,
+  RecordingsApi,
+  SOURCE_MANAGER,
+  START_TAKE,
+} from '../../core/capture.tokens';
 import { RecorderPage } from './recorder-page';
 
 function track(kind: 'audio' | 'video', label: string, settings: MediaTrackSettings = {}) {
@@ -244,6 +252,7 @@ describe('RecorderPage before mic permission (Firefox)', () => {
 function fakeSession() {
   const state = new BehaviorSubject<RecorderState>('recording');
   const elapsed = new RxSubject<number>();
+  const stored = new ReplaySubject<number>();
   let finish: (meta: TakeMeta) => void = () => undefined;
   const ended = new Promise<TakeMeta>((resolve) => (finish = resolve));
   const meta: TakeMeta = {
@@ -256,6 +265,7 @@ function fakeSession() {
   const end = () => {
     state.next('stopping');
     state.next('idle');
+    stored.complete();
     finish(meta);
   };
   const session = {
@@ -268,10 +278,12 @@ function fakeSession() {
       return meta;
     }),
     ended,
+    stored$: stored.asObservable(),
   };
   return {
     session: session as unknown as TakeSession & typeof session,
     elapsed,
+    stored,
     endFromBrowser: end,
   };
 }
@@ -283,13 +295,14 @@ describe('RecorderPage control bar', () => {
   });
   afterEach(() => vi.useRealTimers());
 
-  async function recording() {
+  async function recording(api: RecordingsApi = offlineApi()) {
     const take = fakeSession();
     const startTake = vi.fn().mockResolvedValue(take.session);
     const store = {
       getMeta: vi.fn().mockResolvedValue(null),
       indexes: vi.fn().mockResolvedValue([]),
-      get: vi.fn(),
+      get: vi.fn().mockResolvedValue(new Blob(['chunk'])),
+      deleteTake: vi.fn().mockResolvedValue(undefined),
     } as unknown as ChunkStore;
     TestBed.configureTestingModule({
       imports: [RecorderPage],
@@ -299,6 +312,7 @@ describe('RecorderPage control bar', () => {
         { provide: AUDIO_MIXER, useValue: fakeMixer() },
         { provide: CHUNK_STORE, useValue: Promise.resolve(store) },
         { provide: START_TAKE, useValue: startTake },
+        { provide: RECORDINGS_API, useValue: api },
       ],
     });
     const fixture = TestBed.createComponent(RecorderPage);
@@ -318,7 +332,7 @@ describe('RecorderPage control bar', () => {
     await settle();
     q<HTMLButtonElement>('recorder-start')?.click();
     await settle(3000); // the 3-2-1
-    return { ...take, startTake, fixture, q, settle };
+    return { ...take, startTake, store, fixture, q, settle };
   }
 
   it('starts the take after the countdown and moves focus to Pause', async () => {
@@ -356,10 +370,74 @@ describe('RecorderPage control bar', () => {
     await settle();
     expect(session.stop).toHaveBeenCalled();
     expect(q('recorder-controls')).toBeNull();
-    expect(q('recorder-done-summary')?.textContent?.trim()).toBe(
-      '12 s saved on this device. Uploading arrives soon.',
-    );
+    expect(q('recorder-done-summary')?.textContent?.trim()).toBe('12 s saved on this device.');
     expect(document.activeElement?.id).toBe('recorder-done-heading');
+  });
+
+  describe('uploading', () => {
+    beforeEach(() => {
+      vi.stubGlobal('MediaRecorder', { isTypeSupported: () => true });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(null, { status: 200 })),
+      );
+    });
+    afterEach(() => vi.unstubAllGlobals());
+
+    it('records under the server take id, uploads each stored chunk, finalizes and clears the device', async () => {
+      const api = onlineApi();
+      const { q, startTake, stored, store, settle } = await recording(api);
+      // No mic and no system audio: the video-only format.
+      expect(api.createRecording).toHaveBeenCalledWith({
+        mime_type: 'video/webm;codecs=vp9',
+        has_system_audio: false,
+        has_mic: false,
+        has_camera: false,
+      });
+      expect(startTake.mock.calls[0][0].takeId).toBe(SERVER_TAKE);
+
+      [0, 1, 2].forEach((idx) => stored.next(idx));
+      await vi.waitFor(() => expect(api.ack).toHaveBeenCalledTimes(3));
+
+      q<HTMLButtonElement>('recorder-stop')?.click();
+      await vi.waitFor(() => expect(api.finalize).toHaveBeenCalledWith(SERVER_TAKE, 3, 12_000));
+      await settle();
+      expect(store.deleteTake).toHaveBeenCalledWith(SERVER_TAKE);
+      const summary = q('recorder-done-summary');
+      expect(summary?.textContent?.trim()).toBe('12 s uploaded. Processing has started.');
+      expect(summary?.getAttribute('data-uploaded')).toBe('true');
+      expect(summary?.getAttribute('data-recording-id')).toBe('rec-1');
+      expect(summary?.getAttribute('data-stop-to-finalize-ms')).toMatch(/^\d+$/);
+      expect(q('recorder-download')).toBeNull();
+      expect(document.getElementById('recorder-done-heading')?.textContent?.trim()).toBe(
+        'Recording uploaded',
+      );
+    });
+
+    it('keeps the take on the device when the server is unreachable at the start', async () => {
+      const api = onlineApi();
+      api.createRecording.mockRejectedValue(new Error('offline'));
+      const { q, startTake, settle } = await recording(api);
+      expect(startTake.mock.calls[0][0].takeId).not.toBe(SERVER_TAKE);
+      q<HTMLButtonElement>('recorder-stop')?.click();
+      await settle();
+      expect(api.presign).not.toHaveBeenCalled();
+      expect(q('recorder-done-summary')?.textContent?.trim()).toBe('12 s saved on this device.');
+      expect(q('recorder-upload-notice')?.textContent).toContain('kept on this device');
+    });
+
+    it('keeps the take on the device when finalize is refused', async () => {
+      const api = onlineApi();
+      api.finalize.mockRejectedValue(new UploadHttpError('api', 409, 'closed'));
+      const { q, stored, store, settle } = await recording(api);
+      [0, 1, 2].forEach((idx) => stored.next(idx));
+      q<HTMLButtonElement>('recorder-stop')?.click();
+      await vi.waitFor(() => expect(api.finalize).toHaveBeenCalled());
+      await settle();
+      expect(store.deleteTake).not.toHaveBeenCalled();
+      expect(q('recorder-done-summary')?.getAttribute('data-uploaded')).toBe('false');
+      expect(q('recorder-upload-notice')?.textContent).toContain("couldn't be completed");
+    });
   });
 
   it('ends the same way when the browser stops the share', async () => {
@@ -410,3 +488,25 @@ describe('RecorderPage problems and view-only', () => {
     expect(element.querySelector('[data-testid="recorder-setup"]')).toBeNull();
   });
 });
+
+const SERVER_TAKE = '01a0e7a3-c969-756c-93d0-000000000001';
+
+/** A server that answers everything. */
+function onlineApi() {
+  return {
+    createRecording: vi.fn().mockResolvedValue({ recording_id: 'rec-1', take_id: SERVER_TAKE }),
+    presign: vi.fn(async (_take: string, idx: number, count: number) =>
+      Array.from({ length: count }, (_, i) => ({ idx: idx + i, url: `https://store/${idx + i}` })),
+    ),
+    ack: vi.fn().mockResolvedValue(undefined),
+    status: vi.fn().mockResolvedValue({ finalized: false, chunks: [] }),
+    finalize: vi.fn().mockResolvedValue({ recording_id: 'rec-1' }),
+  };
+}
+
+/** Where MediaRecorder is missing (jsdom) the page never calls the server. */
+function offlineApi(): RecordingsApi {
+  const api = onlineApi();
+  api.createRecording.mockRejectedValue(new Error('offline'));
+  return api;
+}

@@ -71,9 +71,7 @@ async function waitForVerificationToken(
     );
     const body = (await response.json()) as { messages: { ID: string }[] };
     if (body.messages.length > 0) {
-      const messageResponse = await request.get(
-        `${MAILPIT_API}/message/${body.messages[0].ID}`,
-      );
+      const messageResponse = await request.get(`${MAILPIT_API}/message/${body.messages[0].ID}`);
       const message = (await messageResponse.json()) as { Text: string };
       const match = /token=([0-9a-f]+)/.exec(message.Text);
       if (match) {

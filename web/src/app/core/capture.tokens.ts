@@ -1,4 +1,4 @@
-import { InjectionToken } from '@angular/core';
+import { InjectionToken, inject } from '@angular/core';
 
 import {
   AudioMixer,
@@ -7,7 +7,9 @@ import {
   TakeSession,
   TakeSessionOptions,
   openChunkStore,
+  UploadApi,
 } from '../capture';
+import { CreateRecordingBody, CreateRecordingResponse, IngestApi } from './ingest-api.service';
 
 /*
  * Angular's handles on the framework-free capture engine. The capture package itself knows
@@ -42,3 +44,14 @@ export const START_TAKE = new InjectionToken<(options: TakeSessionOptions) => Pr
   'StartTake',
   { providedIn: 'root', factory: () => (options) => TakeSession.start(options) },
 );
+
+/** Creating recordings plus the upload protocol: what the recorder needs from the server. */
+export interface RecordingsApi extends UploadApi {
+  createRecording(body: CreateRecordingBody): Promise<CreateRecordingResponse>;
+}
+
+/** The server side of recording (overridable so pages can be tested without HTTP). */
+export const RECORDINGS_API = new InjectionToken<RecordingsApi>('RecordingsApi', {
+  providedIn: 'root',
+  factory: () => inject(IngestApi),
+});

@@ -13,10 +13,25 @@ import {
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Subscription } from 'rxjs';
 
-import { MicDevice, TakeMeta, TakeSession, assembleTake, toCaptureError } from '../../capture';
+import {
+  MicDevice,
+  TakeMeta,
+  TakeSession,
+  UploadProgress,
+  Uploader,
+  assembleTake,
+  selectMimeType,
+  toCaptureError,
+} from '../../capture';
 import { currentBrowser } from '../../core/browser';
 import { CapabilityService } from '../../core/capability.service';
-import { AUDIO_MIXER, CHUNK_STORE, SOURCE_MANAGER, START_TAKE } from '../../core/capture.tokens';
+import {
+  AUDIO_MIXER,
+  CHUNK_STORE,
+  RECORDINGS_API,
+  SOURCE_MANAGER,
+  START_TAKE,
+} from '../../core/capture.tokens';
 import { CaptureProblem, CaptureSource, captureHelp } from './capture-help';
 import { Countdown } from './countdown';
 import { formatClock, formatDuration } from './format';
@@ -28,7 +43,13 @@ interface LiveSource {
   detail: string;
 }
 
-type Phase = 'setup' | 'countdown' | 'recording' | 'paused' | 'saving' | 'done';
+type Phase = 'setup' | 'countdown' | 'recording' | 'paused' | 'saving' | 'uploading' | 'done';
+
+interface UploadedTake {
+  recordingId: string;
+  /** From pressing Stop (or the take ending) to the server accepting finalize. */
+  stopToFinalizeMs: number;
+}
 
 const METER_INTERVAL_MS = 50;
 const TIMER_INTERVAL_MS = 250;
@@ -43,7 +64,10 @@ const ANY_MIC = 'any';
  * level and count 3-2-1 (Day 28), then record with pause, resume, stop and a pause-excluding
  * timer (Day 29). Every control is a native button with a visible label, and focus follows the
  * take (to Pause when recording starts, to the result when it ends), so it works by keyboard
- * alone. Takes are saved on this device; uploading arrives on Days 37–39.
+ * alone. While it records, every stored chunk is uploaded (Day 39): the recording is created on
+ * the server during the countdown, and on stop the page drains the upload queue, finalizes and
+ * clears the device's copy. If the server can't be reached at the start, the take is kept on
+ * this device instead, as before.
  */
 @Component({
   selector: 'app-recorder-page',
@@ -195,16 +219,44 @@ const ANY_MIC = 'any';
         </section>
       }
 
-      @if (result(); as take) {
+      @if (phase() === 'uploading') {
+        <section aria-labelledby="recorder-uploading-heading" data-testid="recorder-uploading">
+          <h2 id="recorder-uploading-heading" i18n>Uploading</h2>
+          @if (upload(); as progress) {
+            <progress
+              [max]="progress.queued || 1"
+              [value]="progress.uploaded"
+              aria-labelledby="recorder-uploading-heading"
+            ></progress>
+            <p
+              role="status"
+              data-testid="recorder-upload-status"
+              [attr.data-state]="progress.state"
+            >
+              {{ uploadStatusText(progress) }}
+            </p>
+          }
+        </section>
+      }
+
+      @if (phase() === 'done' && result(); as take) {
         <section aria-labelledby="recorder-done-heading" data-testid="recorder-done">
-          <h2 #doneHeading id="recorder-done-heading" tabindex="-1" i18n>Recording saved</h2>
+          <h2 #doneHeading id="recorder-done-heading" tabindex="-1">
+            {{ uploaded() ? uploadedHeading : savedHeading }}
+          </h2>
           <p
             data-testid="recorder-done-summary"
             [attr.data-duration-ms]="take.durationMs"
             [attr.data-take-id]="take.takeId"
+            [attr.data-uploaded]="uploaded() ? 'true' : 'false'"
+            [attr.data-recording-id]="uploaded()?.recordingId"
+            [attr.data-stop-to-finalize-ms]="uploaded()?.stopToFinalizeMs"
           >
             {{ savedSummary(take) }}
           </p>
+          @if (uploadNotice(); as notice) {
+            <p data-testid="recorder-upload-notice">{{ notice }}</p>
+          }
           @if (downloadUrl(); as url) {
             <a [href]="url" [download]="downloadName()" data-testid="recorder-download" i18n>
               Save a copy
@@ -240,6 +292,10 @@ export class RecorderPage {
   private readonly mixer = inject(AUDIO_MIXER);
   private readonly chunkStore = inject(CHUNK_STORE);
   private readonly startTake = inject(START_TAKE);
+  private readonly recordingsApi = inject(RECORDINGS_API);
+  private uploader: Uploader | null = null;
+  /** `performance.now()` when Stop was pressed. */
+  private stopPressedAt: number | null = null;
   private readonly destroyRef = inject(DestroyRef);
   private readonly injector = inject(Injector);
   private meterSubscription: Subscription | null = null;
@@ -269,6 +325,11 @@ export class RecorderPage {
   protected readonly elapsedMs = signal(0);
   protected readonly result = signal<TakeMeta | null>(null);
   protected readonly downloadUrl = signal<string | null>(null);
+  protected readonly upload = signal<UploadProgress | null>(null);
+  protected readonly uploaded = signal<UploadedTake | null>(null);
+  protected readonly uploadNotice = signal<string | null>(null);
+  protected readonly uploadedHeading = $localize`Recording uploaded`;
+  protected readonly savedHeading = $localize`Recording saved`;
   protected readonly anyMic = ANY_MIC;
   /**
    * The selector's options. The remembered mic stays choosable even when the browser hides
@@ -326,7 +387,23 @@ export class RecorderPage {
   }
 
   protected savedSummary(take: TakeMeta): string {
-    return $localize`${formatDuration(take.durationMs)}:duration: saved on this device. Uploading arrives soon.`;
+    return this.uploaded()
+      ? $localize`${formatDuration(take.durationMs)}:duration: uploaded. Processing has started.`
+      : $localize`${formatDuration(take.durationMs)}:duration: saved on this device.`;
+  }
+
+  protected uploadStatusText(progress: UploadProgress): string {
+    const counts = $localize`${progress.uploaded}:uploaded: of ${progress.queued}:queued: parts uploaded`;
+    switch (progress.state) {
+      case 'offline':
+        return $localize`${counts}:counts:. You're offline: uploading continues when the connection is back. The recording is safe on this device.`;
+      case 'retrying':
+        return $localize`${counts}:counts:. The connection is struggling; retrying.`;
+      case 'finalizing':
+        return $localize`All parts uploaded. Finishing…`;
+      default:
+        return counts;
+    }
   }
 
   protected downloadName(): string {
@@ -397,23 +474,63 @@ export class RecorderPage {
       return;
     }
     this.problem.set(null);
+    this.uploaded.set(null);
+    this.uploadNotice.set(null);
+    this.upload.set(null);
+    this.stopPressedAt = null;
     this.phase.set('countdown');
+    const mic = this.sources.currentMic;
+    const hasMic = (mic?.getAudioTracks().length ?? 0) > 0;
+    const hasSystemAudio = display.getAudioTracks().length > 0;
+    // Chosen now so the server knows the format; the mix has audio exactly when a source does.
+    const mimeType = selectMimeType(undefined, { audio: hasMic || hasSystemAudio });
+    // Created while the countdown runs (§10 Record steps 5–6). Unreachable server: record anyway.
+    const created = mimeType
+      ? this.recordingsApi
+          .createRecording({
+            mime_type: mimeType,
+            has_system_audio: hasSystemAudio,
+            has_mic: hasMic,
+            has_camera: false,
+          })
+          .catch(() => null)
+      : Promise.resolve(null);
     const outcome = await this.countdown().run();
     if (outcome === 'cancelled') {
       this.phase.set('setup');
       return;
     }
     try {
+      const recording = await created;
+      const store = await this.chunkStore;
+      const takeId = recording?.take_id ?? crypto.randomUUID();
       const session = await this.startTake({
         display,
-        mic: this.sources.currentMic,
+        mic,
         mixer: this.mixer,
-        store: await this.chunkStore,
-        takeId: crypto.randomUUID(),
+        store,
+        takeId,
+        ...(mimeType ? { mimeType } : {}),
       });
       this.session = session;
       this.phase.set('recording');
+      this.uploader = recording ? new Uploader({ api: this.recordingsApi, store, takeId }) : null;
+      const uploader = this.uploader;
+      if (!uploader) {
+        this.uploadNotice.set(
+          $localize`Couldn't reach Sintade when recording started, so this recording is kept on this device. It will be offered for upload the next time you open Sintade.`,
+        );
+      }
       this.sessionSubscriptions = [
+        ...(uploader
+          ? [
+              session.stored$.subscribe({
+                next: (idx) => uploader.enqueue(idx),
+                error: () => undefined,
+              }),
+              uploader.progress$.subscribe((progress) => this.upload.set(progress)),
+            ]
+          : []),
         session.elapsed$(TIMER_INTERVAL_MS).subscribe((ms) => this.elapsedMs.set(ms)),
         session.state$.subscribe((state) => {
           if (state === 'paused') this.phase.set('paused');
@@ -445,12 +562,16 @@ export class RecorderPage {
   }
 
   async stop(): Promise<void> {
+    this.stopPressedAt ??= performance.now();
     await this.session?.stop().catch((error: unknown) => this.showError(error, 'screen'));
   }
 
   newRecording(): void {
     this.releaseDownload();
     this.result.set(null);
+    this.uploaded.set(null);
+    this.uploadNotice.set(null);
+    this.upload.set(null);
     this.elapsedMs.set(0);
     this.phase.set('setup');
   }
@@ -459,13 +580,36 @@ export class RecorderPage {
     if (this.destroyed) {
       return; // Left the page mid-take: it's saved; there's no view to update.
     }
-    this.sessionSubscriptions.forEach((subscription) => subscription.unsubscribe());
-    this.sessionSubscriptions = [];
+    const stoppedAt = this.stopPressedAt ?? performance.now();
     this.session = null;
     this.elapsedMs.set(take.durationMs);
     this.result.set(take);
+    const uploader = this.uploader;
+    this.uploader = null;
+    if (uploader && take.chunkCount > 0) {
+      this.phase.set('uploading');
+      try {
+        const { recording_id } = await uploader.finalize(take.chunkCount, take.durationMs);
+        this.uploaded.set({
+          recordingId: recording_id,
+          stopToFinalizeMs: Math.round(performance.now() - stoppedAt),
+        });
+      } catch {
+        this.uploadNotice.set(
+          $localize`The upload couldn't be completed. The recording is kept on this device and will be offered for upload the next time you open Sintade.`,
+        );
+      }
+    }
+    this.sessionSubscriptions.forEach((subscription) => subscription.unsubscribe());
+    this.sessionSubscriptions = [];
+    if (this.destroyed) {
+      return;
+    }
     this.phase.set('done');
     this.focusAfterRender(() => this.doneHeading()?.nativeElement);
+    if (this.uploaded()) {
+      return; // The device's copy is gone; the server has the recording.
+    }
     try {
       const { blob } = await assembleTake(await this.chunkStore, take.takeId);
       this.releaseDownload();

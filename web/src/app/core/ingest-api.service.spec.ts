@@ -64,4 +64,15 @@ describe('IngestApi', () => {
     const error = await result.catch((e: unknown) => e);
     expect((error as UploadHttpError).status).toBe(0);
   });
+
+  it('finalizes with the chunk count and a whole-millisecond duration', async () => {
+    const result = api.finalize('take-1', 5, 9875.9);
+    const request = http.expectOne('/api/v1/takes/take-1/finalize');
+    expect(request.request.body).toEqual({ chunk_count: 5, duration_ms: 9876 });
+    request.flush(
+      { recording_id: 'rec-1', state: 'processing' },
+      { status: 202, statusText: 'Accepted' },
+    );
+    expect((await result).recording_id).toBe('rec-1');
+  });
 });

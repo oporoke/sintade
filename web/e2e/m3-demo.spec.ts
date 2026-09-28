@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { Page } from '@playwright/test';
 
 import { signUpAndLogIn } from './support/auth';
+import { keepTakesOnDevice } from './support/offline';
 import { expect, test } from './support/test';
 
 /**
@@ -39,6 +40,8 @@ async function keepFilm(page: Page, browserName: string, name: string): Promise<
 
 /** Chooses the screen and first mic, then starts, letting the 3-2-1 countdown run. */
 async function startTake(page: Page): Promise<boolean> {
+  // M3 shows on-device recording; since Day 39 an uploaded take leaves the device.
+  await keepTakesOnDevice(page);
   await page.goto('/record');
   await page.getByTestId('recorder-choose-screen').click();
   await expect(page.getByTestId('recorder-screen-preview')).toBeVisible();
