@@ -77,3 +77,5 @@ export type {
   UploaderOptions,
   UploaderState,
 } from './uploader';
+export { uploadRecoveredTake } from './recovery';
+export type { NewRecording, RecoverOptions, RecoveredUpload, RecoveryApi } from './recovery';

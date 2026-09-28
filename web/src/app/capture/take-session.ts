@@ -19,6 +19,8 @@ export interface TakeSessionOptions {
   store: ChunkStore;
   /** The key the chunks are stored under: the server's take id when the take is uploaded. */
   takeId: string;
+  /** Set when `takeId` is a take on the server (journaled, so recovery can resume it). */
+  serverTakeId?: string;
   /** Test seams; default to the real browser APIs. */
   recorder?: ChunkRecorder;
   mimeType?: string | null;
@@ -67,6 +69,7 @@ export class TakeSession {
       takeId: options.takeId,
       mimeType,
       locks: options.locks,
+      serverTakeId: options.serverTakeId,
     });
     recorder.start(stream, {
       mimeType,

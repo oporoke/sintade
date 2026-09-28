@@ -17,6 +17,11 @@ export interface TakeMeta {
   mimeType: string;
   chunkCount: number;
   durationMs: number;
+  /**
+   * The server's take for these chunks, once there is one: the same as `takeId` when the take
+   * was created before recording, or the one recovery created for a take recorded offline.
+   */
+  serverTakeId?: string;
 }
 
 export interface ChunkStore {

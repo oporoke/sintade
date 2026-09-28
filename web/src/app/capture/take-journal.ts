@@ -10,6 +10,8 @@ export interface PersistOptions {
   takeId: string;
   mimeType: string;
   startedAt?: number;
+  /** The server's take id, when the take was created on the server before recording. */
+  serverTakeId?: string;
   /** Defaults to `navigator.locks`; `null` records without a lock. */
   locks?: LocksPort | null;
 }
@@ -65,6 +67,7 @@ export async function persistTake(
     mimeType: options.mimeType,
     chunkCount: 0,
     durationMs: 0,
+    ...(options.serverTakeId ? { serverTakeId: options.serverTakeId } : {}),
   };
   await store.putMeta(meta);
 

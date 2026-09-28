@@ -510,6 +510,7 @@ export class RecorderPage {
         mixer: this.mixer,
         store,
         takeId,
+        ...(recording ? { serverTakeId: recording.take_id } : {}),
         ...(mimeType ? { mimeType } : {}),
       });
       this.session = session;
