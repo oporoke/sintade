@@ -52,3 +52,12 @@ export type {
 } from './take-journal';
 export { TakeSession } from './take-session';
 export type { TakeSessionOptions } from './take-session';
+export { UploadError, Uploader, fetchPut, sha256Hex } from './uploader';
+export type {
+  DigestChunk,
+  PresignedUrl,
+  PutChunk,
+  UploadApi,
+  UploadProgress,
+  UploaderOptions,
+} from './uploader';

@@ -32,6 +32,8 @@ import {
   openBackend,
   writeTestTake,
 } from './chunk-store-self-test';
+import { IngestApi } from '../../core/ingest-api.service';
+import { UploadSelfTestResult, runUploadSelfTest } from './upload-self-test';
 import { ClipAnalysis, MixSelfTestResult, runMixSelfTest } from './mix-self-test';
 import {
   RecorderScenario,
@@ -307,6 +309,46 @@ interface TrackInfo {
       </section>
     }
 
+    <h2>Upload self-test</h2>
+    <p>
+      Uploads three test chunks to the real API and storage (sign in first), then compares each
+      chunk's SHA-256 with the one the server recorded.
+    </p>
+    <button
+      type="button"
+      data-testid="upload-selftest-run"
+      (click)="runUploadSelfTest()"
+      [disabled]="uploadTestRunning()"
+    >
+      Run upload self-test
+    </button>
+    @if (uploadTestRunning()) {
+      <p>Uploading…</p>
+    }
+    @if (uploadTest(); as result) {
+      <p data-testid="upload-selftest-summary" [attr.data-take-id]="result.takeId">
+        {{ result.chunks.length }} chunks uploaded via {{ result.backend }};
+        {{ result.allMatch ? 'every hash matches the server record' : 'HASH MISMATCH' }}
+      </p>
+      <ul>
+        @for (chunk of result.chunks; track chunk.idx) {
+          <li
+            data-testid="upload-selftest-chunk"
+            [attr.data-idx]="chunk.idx"
+            [attr.data-local-sha256]="chunk.localSha256"
+            [attr.data-server-sha256]="chunk.serverSha256"
+          >
+            chunk {{ chunk.idx }}: {{ chunk.sizeBytes }} bytes, local
+            {{ chunk.localSha256.slice(0, 12) }}…, server
+            {{ chunk.serverSha256?.slice(0, 12) ?? 'none' }}…
+          </li>
+        }
+      </ul>
+    }
+    @if (uploadTestError()) {
+      <p role="alert" data-testid="upload-selftest-error">{{ uploadTestError() }}</p>
+    }
+
     <h2>Crash recovery</h2>
     <p>
       Starts a persisted recording (canvas + tone, journaled to the chunk store). Kill the tab while
@@ -374,6 +416,10 @@ export class DebugPage {
   protected readonly recorderTestRunning = signal(false);
   protected readonly recorderTestError = signal<string | null>(null);
   protected readonly countdownOutcome = signal<CountdownOutcome | null>(null);
+  private readonly ingestApi = inject(IngestApi);
+  protected readonly uploadTest = signal<UploadSelfTestResult | null>(null);
+  protected readonly uploadTestRunning = signal(false);
+  protected readonly uploadTestError = signal<string | null>(null);
   private readonly debugCountdown = viewChild.required<Countdown>('debugCountdown');
   protected readonly persistedTakeId = signal<string | null>(null);
   protected readonly persistedMs = signal(0);
@@ -465,6 +511,19 @@ export class DebugPage {
         .subscribe((levels) => this.levels.set(levels));
     } catch (error) {
       this.showError(error);
+    }
+  }
+
+  async runUploadSelfTest(): Promise<void> {
+    this.uploadTestRunning.set(true);
+    this.uploadTest.set(null);
+    this.uploadTestError.set(null);
+    try {
+      this.uploadTest.set(await runUploadSelfTest(this.ingestApi));
+    } catch (error) {
+      this.uploadTestError.set(error instanceof Error ? error.message : String(error));
+    } finally {
+      this.uploadTestRunning.set(false);
     }
   }
 
