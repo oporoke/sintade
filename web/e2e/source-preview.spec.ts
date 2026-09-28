@@ -1,15 +1,10 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './support/test';
 
 /**
  * Day 21 Check: "Debug page previews chosen screen and mic". Runs the real `SourceManager`
- * against Chromium's fake capture devices (see playwright.config.ts).
+ * on the fake-media harness (e2e/support/test.ts).
  */
-test('debug page previews the chosen screen and mic', async ({ page, browserName }, testInfo) => {
-  test.skip(
-    browserName !== 'chromium',
-    'Fake display/mic capture is wired for Chromium only; Firefox/WebKit arrive with the Day 31 harness',
-  );
-
+test('debug page previews the chosen screen and mic', async ({ page }, testInfo) => {
   await page.goto('/debug');
 
   await page.getByTestId('source-pick-screen').click();

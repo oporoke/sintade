@@ -42,11 +42,20 @@ class FakeVideoTrack extends EventTarget {
   readyState: MediaStreamTrackState = 'live';
 }
 
-function setup(options: { audio?: boolean; mimeType?: string | null } = {}) {
+function setup(
+  options: {
+    audio?: boolean;
+    mimeType?: string | null;
+    isTypeSupported?: (type: string) => boolean;
+  } = {},
+) {
   const video = new FakeVideoTrack();
   const display = { getVideoTracks: () => [video] } as unknown as MediaStream;
   const mixed = { kind: 'audio' } as MediaStreamTrack;
-  const mixer = { mix: vi.fn().mockResolvedValue(options.audio === false ? null : mixed) };
+  const mixer = {
+    mix: vi.fn().mockResolvedValue(options.audio === false ? null : mixed),
+    close: vi.fn().mockResolvedValue(undefined),
+  };
   let recorded: MediaStream | undefined;
   const create: CreateMediaRecorder = (stream) => {
     recorded = stream;
@@ -66,7 +75,13 @@ function setup(options: { audio?: boolean; mimeType?: string | null } = {}) {
       store: store as unknown as ChunkStore,
       takeId: '0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b',
       recorder: new ChunkRecorder(create),
-      mimeType: options.mimeType === undefined ? 'video/webm;codecs=vp9,opus' : options.mimeType,
+      mimeType:
+        options.isTypeSupported !== undefined
+          ? undefined
+          : options.mimeType === undefined
+            ? 'video/webm;codecs=vp9,opus'
+            : options.mimeType,
+      isTypeSupported: options.isTypeSupported,
       locks: null,
       createStream,
     });
@@ -124,5 +139,15 @@ describe('TakeSession', () => {
     const ended = setup();
     ended.video.readyState = 'ended';
     await expect(ended.start()).rejects.toMatchObject({ kind: 'aborted' });
+  });
+
+  it('chooses a MIME type with an audio codec only when the take has audio', async () => {
+    const supported = (type: string) => type.startsWith('video/webm');
+    const withAudio = await setup({ isTypeSupported: supported }).start();
+    expect(withAudio.mimeType).toBe('video/webm;codecs=vp9,opus');
+
+    // Firefox records nothing for a video-only stream typed "vp8,opus" (Day 31).
+    const videoOnly = await setup({ audio: false, isTypeSupported: supported }).start();
+    expect(videoOnly.mimeType).toBe('video/webm;codecs=vp9');
   });
 });

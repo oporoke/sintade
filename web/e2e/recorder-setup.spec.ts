@@ -1,6 +1,5 @@
-import { expect, test } from '@playwright/test';
-
 import { signUpAndLogIn } from './support/auth';
+import { expect, test } from './support/test';
 
 /** Day 27 Check: "Toggle disabled with reason on Safari/Firefox" (US-10). */
 test('system-audio toggle reflects what this browser can record', async ({
@@ -37,11 +36,7 @@ test('system-audio toggle reflects what this browser can record', async ({
   await page.screenshot({ path: test.info().outputPath('recorder-setup.png'), fullPage: true });
 });
 
-test('choose a screen and a microphone', async ({ page, request, browserName }) => {
-  test.skip(
-    browserName !== 'chromium',
-    'Fake display/mic capture is wired for Chromium only; Firefox/WebKit arrive with the Day 31 harness',
-  );
+test('choose a screen and a microphone', async ({ page, request }) => {
   await signUpAndLogIn(page, request);
   await page.goto('/record');
 
@@ -50,11 +45,12 @@ test('choose a screen and a microphone', async ({ page, request, browserName }) 
   await expect(page.getByTestId('recorder-screen-info')).toContainText('no system audio');
 
   const select = page.getByTestId('recorder-mic-select');
-  const firstMic = await select.locator('option').nth(1).getAttribute('value');
-  await select.selectOption(firstMic ?? '');
+  await select.selectOption({ index: 1 });
   await expect(page.getByTestId('recorder-mic-info')).toContainText('working');
+  // After permission the page pins the real device (Firefox lists ids only after that).
+  const chosen = await select.inputValue();
 
   // The choice is remembered on the next visit.
   await page.reload();
-  await expect(page.getByTestId('recorder-mic-select')).toHaveValue(firstMic ?? '');
+  await expect(page.getByTestId('recorder-mic-select')).toHaveValue(chosen);
 });

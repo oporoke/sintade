@@ -111,12 +111,9 @@ const ANY_MIC = 'any';
             <span i18n>Microphone</span>
             <select (change)="onMicChange($event)" data-testid="recorder-mic-select">
               <option value="" [selected]="!selectedMic()" i18n>No microphone</option>
-              @for (mic of mics(); track mic.deviceId) {
-                <option
-                  [value]="mic.deviceId || anyMic"
-                  [selected]="(mic.deviceId || anyMic) === selectedMic()"
-                >
-                  {{ mic.label }}
+              @for (option of micOptions(); track option.value) {
+                <option [value]="option.value" [selected]="option.value === selectedMic()">
+                  {{ option.label }}
                 </option>
               }
             </select>
@@ -201,7 +198,11 @@ const ANY_MIC = 'any';
       @if (result(); as take) {
         <section aria-labelledby="recorder-done-heading" data-testid="recorder-done">
           <h2 #doneHeading id="recorder-done-heading" tabindex="-1" i18n>Recording saved</h2>
-          <p data-testid="recorder-done-summary" [attr.data-duration-ms]="take.durationMs">
+          <p
+            data-testid="recorder-done-summary"
+            [attr.data-duration-ms]="take.durationMs"
+            [attr.data-take-id]="take.takeId"
+          >
             {{ savedSummary(take) }}
           </p>
           @if (downloadUrl(); as url) {
@@ -269,6 +270,21 @@ export class RecorderPage {
   protected readonly result = signal<TakeMeta | null>(null);
   protected readonly downloadUrl = signal<string | null>(null);
   protected readonly anyMic = ANY_MIC;
+  /**
+   * The selector's options. The remembered mic stays choosable even when the browser hides
+   * device ids until permission is granted again (Firefox after a reload).
+   */
+  protected readonly micOptions = computed(() => {
+    const options = this.mics().map((mic) => ({
+      value: mic.deviceId || ANY_MIC,
+      label: mic.label,
+    }));
+    const remembered = this.selectedMic();
+    if (remembered && !options.some((option) => option.value === remembered)) {
+      options.unshift({ value: remembered, label: $localize`Last used microphone` });
+    }
+    return options;
+  });
 
   protected readonly isRecording = computed(() =>
     ['recording', 'paused', 'saving'].includes(this.phase()),

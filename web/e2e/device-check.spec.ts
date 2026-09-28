@@ -1,6 +1,5 @@
-import { expect, test } from '@playwright/test';
-
 import { signUpAndLogIn } from './support/auth';
+import { expect, test } from './support/test';
 
 /** Day 28 Check: "Countdown and meter work in all engines". */
 
@@ -27,12 +26,7 @@ test('Esc skips the countdown', async ({ page }) => {
 test('the device-check meter moves with the microphone', async ({
   page,
   request,
-  context,
-  browserName,
 }) => {
-  if (browserName === 'webkit') {
-    await context.grantPermissions(['microphone']);
-  }
   await signUpAndLogIn(page, request);
   await page.goto('/record');
 

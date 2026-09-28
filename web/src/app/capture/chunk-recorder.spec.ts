@@ -96,6 +96,13 @@ describe('selectMimeType', () => {
   it('is null when nothing is supported', () => {
     expect(selectMimeType(() => false)).toBeNull();
   });
+
+  it('names no audio codec for a video-only take', () => {
+    expect(selectMimeType(() => true, { audio: false })).toBe('video/webm;codecs=vp9');
+    expect(selectMimeType((type) => type.startsWith('video/mp4'), { audio: false })).toBe(
+      'video/mp4;codecs=avc1',
+    );
+  });
 });
 
 describe('ChunkRecorder', () => {
@@ -278,5 +285,36 @@ describe('ChunkRecorder', () => {
       expect(() => videoTrack.endFromBrowser()).not.toThrow();
       expect(recorder.state).toBe('idle');
     });
+  });
+
+  it('gives up on stop after the timeout instead of waiting forever', async () => {
+    vi.useFakeTimers();
+    try {
+      let fake: FakeMediaRecorder | undefined;
+      const recorder = new ChunkRecorder(
+        (st, o) => {
+          fake = new FakeMediaRecorder(st, o);
+          fake.stop = () => undefined; // a browser that never fires "stop" (seen in Firefox)
+          return fake as unknown as MediaRecorder;
+        },
+        () => 0,
+        10_000,
+      );
+      const chunkErrors: unknown[] = [];
+      recorder.chunks$.subscribe({ error: (error: unknown) => chunkErrors.push(error) });
+      recorder.start(stream, options);
+
+      const stopped = recorder.stop();
+      const assertion = expect(stopped).rejects.toMatchObject({
+        kind: 'unknown',
+        message: expect.stringContaining('did not finish'),
+      });
+      await vi.advanceTimersByTimeAsync(10_000);
+      await assertion;
+      expect(recorder.state).toBe('idle');
+      expect(chunkErrors).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

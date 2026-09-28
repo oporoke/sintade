@@ -18,6 +18,8 @@ export {
   DEFAULT_TIMESLICE_MS,
   DEFAULT_VIDEO_BITS_PER_SECOND,
   PREFERRED_MIME_TYPES,
+  PREFERRED_VIDEO_ONLY_MIME_TYPES,
+  STOP_TIMEOUT_MS,
   selectMimeType,
 } from './chunk-recorder';
 export type {

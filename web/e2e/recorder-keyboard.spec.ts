@@ -1,15 +1,18 @@
-import { Page, expect, test } from '@playwright/test';
+import { Page } from '@playwright/test';
 
 import { signUpAndLogIn } from './support/auth';
+import { expect, test } from './support/test';
 
 /**
  * Day 29 Check: "Recorder operable by keyboard only". After logging in, the whole take is
- * driven with Tab / Enter / Escape; no pointer. Chromium only: it's the engine with a fake
- * screen to share (Firefox/WebKit: Day 31 harness).
+ * driven with Tab / Enter / Escape; no pointer. Runs on the fake-media harness; WebKit is
+ * skipped because Playwright's Linux WebKit has no MediaRecorder.
  */
 
 /** Tabs forward until the element with `testId` has focus. */
 async function tabTo(page: Page, testId: string): Promise<void> {
+  // A disabled or not-yet-rendered target is skipped by Tab, so wait until it can take focus.
+  await expect(page.getByTestId(testId)).toBeEnabled();
   for (let i = 0; i < 40; i += 1) {
     const focused = await page.evaluate(() => document.activeElement?.getAttribute('data-testid'));
     if (focused === testId) {
@@ -29,7 +32,7 @@ test('record, pause, resume and stop with the keyboard alone', async ({
   request,
   browserName,
 }, testInfo) => {
-  test.skip(browserName !== 'chromium', 'needs a fake screen to share (Chromium); see Day 31');
+  test.skip(browserName === 'webkit', "Playwright's Linux WebKit has no MediaRecorder (Day 22)");
   await signUpAndLogIn(page, request);
   await page.goto('/record');
   await page.locator('body').focus();
