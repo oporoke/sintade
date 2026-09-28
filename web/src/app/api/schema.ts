@@ -241,6 +241,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/takes/{take_id}/finalize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Declares the take complete. When every chunk `0..chunk_count` is acknowledged the take is
+         *     finalized, the recording moves to `processing` and `TakeFinalized` is emitted; otherwise
+         *     `422` lists the missing indexes. Retrying a successful finalize is `202` again.
+         */
+        post: operations["finalize_take"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/takes/{take_id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Which chunks the server has acknowledged, so an interrupted or recovered upload sends only
+         *     the missing ones. Owner only.
+         */
+        get: operations["take_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -317,6 +358,23 @@ export interface components {
             /** Format: uuid */
             take_id: string;
         };
+        FinalizeBody: {
+            /**
+             * Format: int32
+             * @description Number of chunks in the take; indexes `0..chunk_count` must all be acknowledged.
+             */
+            chunk_count: number;
+            /**
+             * Format: int32
+             * @description The take's length, pauses excluded.
+             */
+            duration_ms: number;
+        };
+        FinalizeResponse: {
+            /** Format: uuid */
+            recording_id: string;
+            state: components["schemas"]["RecordingStateName"];
+        };
         ForgotPasswordBody: {
             email: string;
         };
@@ -357,6 +415,18 @@ export interface components {
         MessageResponse: {
             message: string;
         };
+        /** @description The `422` body when chunks are missing: problem details plus the indexes to upload. */
+        MissingChunksProblem: {
+            detail: string;
+            /** @description Missing indexes, ascending; at most 1000 listed. */
+            missing: number[];
+            /** @description How many are missing in total. */
+            missing_count: number;
+            /** Format: int32 */
+            status: number;
+            title: string;
+            type: string;
+        };
         PresignChunksResponse: {
             /**
              * Format: int64
@@ -373,6 +443,8 @@ export interface components {
             title: string;
             type: string;
         };
+        /** @enum {string} */
+        RecordingStateName: "processing";
         RegisterBody: {
             display_name: string;
             email: string;
@@ -381,6 +453,15 @@ export interface components {
         ResetPasswordBody: {
             password: string;
             token: string;
+        };
+        TakeStatusResponse: {
+            finalized: boolean;
+            /** @description Acknowledged chunk indexes, ascending. Upload the rest. */
+            received: number[];
+            /** Format: uuid */
+            recording_id: string;
+            /** Format: uuid */
+            take_id: string;
         };
         UpdateProfileBody: {
             display_name: string;
@@ -961,6 +1042,119 @@ export interface operations {
             };
             /** @description count outside 1–10 or index too large */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    finalize_take: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The take */
+                take_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FinalizeBody"];
+            };
+        };
+        responses: {
+            /** @description Finalized; processing starts */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FinalizeResponse"];
+                };
+            };
+            /** @description No valid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Missing or mismatched CSRF token */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such take, or not the caller's */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Finalized before with another count, or the recording no longer accepts uploads */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Chunks missing (listed in `missing`), extra chunks, or invalid count/duration */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["MissingChunksProblem"];
+                };
+            };
+        };
+    };
+    take_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The take */
+                take_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Upload state of the take */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TakeStatusResponse"];
+                };
+            };
+            /** @description No valid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such take, or not the caller's */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

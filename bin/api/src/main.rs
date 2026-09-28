@@ -47,6 +47,7 @@ async fn main() -> anyhow::Result<()> {
         pool.clone(),
         Arc::new(catalog::CatalogService::new()),
         store,
+        clock.clone(),
     ));
     let router = app::build_router(
         pool,

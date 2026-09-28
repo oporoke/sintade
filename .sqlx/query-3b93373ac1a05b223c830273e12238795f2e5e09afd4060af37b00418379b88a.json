@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT idx FROM chunks WHERE take_id = $1 AND workspace_id = $2 ORDER BY idx",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "idx",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "chunks",
+            "name": "idx"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3b93373ac1a05b223c830273e12238795f2e5e09afd4060af37b00418379b88a"
+}

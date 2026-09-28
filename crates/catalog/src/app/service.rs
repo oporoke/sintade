@@ -41,4 +41,18 @@ impl CatalogService {
         )
         .await
     }
+
+    /// `Uploading → Processing` when ingest finalizes the current take (the Media lifecycle,
+    /// docs/design.md §4). Runs on ingest's transaction, like `create_recording`. `false` means
+    /// the recording no longer accepts uploads.
+    #[tracing::instrument(skip_all, fields(recording_id = %id, workspace_id = %workspace_id))]
+    pub async fn mark_processing(
+        &self,
+        conn: &mut PgConnection,
+        id: RecordingId,
+        workspace_id: WorkspaceId,
+        duration_ms: i32,
+    ) -> Result<bool, sqlx::Error> {
+        infra::mark_processing(conn, id, workspace_id, duration_ms).await
+    }
 }

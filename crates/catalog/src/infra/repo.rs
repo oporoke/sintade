@@ -24,3 +24,26 @@ pub async fn insert_recording(
     .await?;
     Ok(())
 }
+
+/// Moves an uploading recording to `processing` and records its duration. Returns `false` if
+/// the recording isn't in `recording`/`uploading` (e.g. abandoned) or isn't in the workspace.
+pub async fn mark_processing(
+    conn: &mut PgConnection,
+    id: RecordingId,
+    workspace_id: WorkspaceId,
+    duration_ms: i32,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        r#"
+        UPDATE recordings
+        SET state = 'processing', duration_ms = $3, updated_at = now()
+        WHERE id = $1 AND workspace_id = $2 AND state IN ('recording', 'uploading')
+        "#,
+        id.into_uuid(),
+        workspace_id.into_uuid(),
+        duration_ms,
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}

@@ -702,6 +702,152 @@
         }
       }
     },
+    "/api/v1/takes/{take_id}/finalize": {
+      "post": {
+        "tags": [
+          "takes"
+        ],
+        "summary": "Declares the take complete. When every chunk `0..chunk_count` is acknowledged the take is\nfinalized, the recording moves to `processing` and `TakeFinalized` is emitted; otherwise\n`422` lists the missing indexes. Retrying a successful finalize is `202` again.",
+        "operationId": "finalize_take",
+        "parameters": [
+          {
+            "name": "take_id",
+            "in": "path",
+            "description": "The take",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinalizeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Finalized; processing starts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FinalizeResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or mismatched CSRF token",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such take, or not the caller's",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Finalized before with another count, or the recording no longer accepts uploads",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Chunks missing (listed in `missing`), extra chunks, or invalid count/duration",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MissingChunksProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/takes/{take_id}/status": {
+      "get": {
+        "tags": [
+          "takes"
+        ],
+        "summary": "Which chunks the server has acknowledged, so an interrupted or recovered upload sends only\nthe missing ones. Owner only.",
+        "operationId": "take_status",
+        "parameters": [
+          {
+            "name": "take_id",
+            "in": "path",
+            "description": "The take",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Upload state of the take",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TakeStatusResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such take, or not the caller's",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/healthz": {
       "get": {
         "tags": [
@@ -852,6 +998,44 @@
           }
         }
       },
+      "FinalizeBody": {
+        "type": "object",
+        "required": [
+          "chunk_count",
+          "duration_ms"
+        ],
+        "properties": {
+          "chunk_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of chunks in the take; indexes `0..chunk_count` must all be acknowledged.",
+            "minimum": 0
+          },
+          "duration_ms": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The take's length, pauses excluded.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "FinalizeResponse": {
+        "type": "object",
+        "required": [
+          "recording_id",
+          "state"
+        ],
+        "properties": {
+          "recording_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RecordingStateName"
+          }
+        }
+      },
       "ForgotPasswordBody": {
         "type": "object",
         "required": [
@@ -972,6 +1156,48 @@
           }
         }
       },
+      "MissingChunksProblem": {
+        "type": "object",
+        "description": "The `422` body when chunks are missing: problem details plus the indexes to upload.",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail",
+          "missing",
+          "missing_count"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "Missing indexes, ascending; at most 1000 listed."
+          },
+          "missing_count": {
+            "type": "integer",
+            "description": "How many are missing in total.",
+            "minimum": 0
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
       "PresignChunksResponse": {
         "type": "object",
         "required": [
@@ -1019,6 +1245,12 @@
           }
         }
       },
+      "RecordingStateName": {
+        "type": "string",
+        "enum": [
+          "processing"
+        ]
+      },
       "RegisterBody": {
         "type": "object",
         "required": [
@@ -1050,6 +1282,37 @@
           },
           "token": {
             "type": "string"
+          }
+        }
+      },
+      "TakeStatusResponse": {
+        "type": "object",
+        "required": [
+          "take_id",
+          "recording_id",
+          "finalized",
+          "received"
+        ],
+        "properties": {
+          "finalized": {
+            "type": "boolean"
+          },
+          "received": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "Acknowledged chunk indexes, ascending. Upload the rest."
+          },
+          "recording_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "take_id": {
+            "type": "string",
+            "format": "uuid"
           }
         }
       },
