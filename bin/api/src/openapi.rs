@@ -7,7 +7,7 @@ use crate::routes::auth::{
 };
 use crate::routes::me::{__path_me, __path_update_me};
 use crate::routes::recordings::__path_create_recording;
-use crate::routes::takes::__path_presign_chunks;
+use crate::routes::takes::{__path_ack_chunk, __path_presign_chunks};
 use crate::routes::verify_email::__path_verify_email;
 
 /// The API contract. `api openapi` prints it; `just openapi` writes it to
@@ -30,6 +30,7 @@ use crate::routes::verify_email::__path_verify_email;
         update_me,
         create_recording,
         presign_chunks,
+        ack_chunk,
     )
 )]
 pub struct ApiDoc;

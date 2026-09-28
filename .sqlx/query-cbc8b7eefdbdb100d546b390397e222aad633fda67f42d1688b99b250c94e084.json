@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO chunks (take_id, workspace_id, idx, size_bytes, sha256)\n        VALUES ($1, $2, $3, $4, $5)\n        ON CONFLICT (take_id, idx) DO NOTHING\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Int4",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cbc8b7eefdbdb100d546b390397e222aad633fda67f42d1688b99b250c94e084"
+}

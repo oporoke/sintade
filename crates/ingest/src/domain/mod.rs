@@ -106,6 +106,71 @@ pub fn chunk_key(
     )
 }
 
+/// Largest chunk accepted, in bytes (README §4.4: max chunk 16 MB). A 2 s slice at the
+/// recorder's bitrates is well under 1 MB.
+pub const MAX_CHUNK_BYTES: u64 = 16 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ChunkSizeError {
+    #[error("size_bytes must be between 1 and {MAX_CHUNK_BYTES}")]
+    OutOfRange,
+}
+
+/// Checks a claimed chunk size.
+pub fn chunk_size(size_bytes: u64) -> Result<u64, ChunkSizeError> {
+    if (1..=MAX_CHUNK_BYTES).contains(&size_bytes) {
+        Ok(size_bytes)
+    } else {
+        Err(ChunkSizeError::OutOfRange)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DigestError {
+    #[error("sha256 must be 64 hex characters")]
+    Malformed,
+}
+
+/// A chunk's SHA-256, sent by the client as 64 hex characters (any case).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sha256Digest([u8; 32]);
+
+impl Sha256Digest {
+    pub fn parse_hex(raw: &str) -> Result<Self, DigestError> {
+        let raw = raw.as_bytes();
+        if raw.len() != 64 {
+            return Err(DigestError::Malformed);
+        }
+        let mut bytes = [0u8; 32];
+        for (byte, pair) in bytes.iter_mut().zip(raw.chunks_exact(2)) {
+            *byte = (hex_value(pair[0])? << 4) | hex_value(pair[1])?;
+        }
+        Ok(Self(bytes))
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        bytes.try_into().ok().map(Self)
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// Lowercase hex.
+    pub fn to_hex(&self) -> String {
+        self.0.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+}
+
+fn hex_value(digit: u8) -> Result<u8, DigestError> {
+    match digit {
+        b'0'..=b'9' => Ok(digit - b'0'),
+        b'a'..=b'f' => Ok(digit - b'a' + 10),
+        b'A'..=b'F' => Ok(digit - b'A' + 10),
+        _ => Err(DigestError::Malformed),
+    }
+}
+
 /// Which sources feed the take, recorded so processing and the player know what to expect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sources {
@@ -184,6 +249,39 @@ mod tests {
         assert_eq!(
             chunk_range(u32::MAX, 2),
             Err(ChunkRangeError::IndexTooLarge)
+        );
+    }
+
+    #[test]
+    fn digests_round_trip_through_hex() {
+        let hex = "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855";
+        let digest = Sha256Digest::parse_hex(hex).expect("valid");
+        assert_eq!(digest.to_hex(), hex.to_ascii_lowercase());
+        assert_eq!(digest.as_bytes()[0], 0xe3);
+        assert_eq!(Sha256Digest::from_bytes(digest.as_bytes()), Some(digest));
+        for bad in [
+            "",
+            "e3b0",
+            &"g".repeat(64),
+            &"a".repeat(63),
+            &"a".repeat(65),
+        ] {
+            assert_eq!(
+                Sha256Digest::parse_hex(bad),
+                Err(DigestError::Malformed),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn chunk_sizes_are_bounded() {
+        assert_eq!(chunk_size(1), Ok(1));
+        assert_eq!(chunk_size(MAX_CHUNK_BYTES), Ok(MAX_CHUNK_BYTES));
+        assert_eq!(chunk_size(0), Err(ChunkSizeError::OutOfRange));
+        assert_eq!(
+            chunk_size(MAX_CHUNK_BYTES + 1),
+            Err(ChunkSizeError::OutOfRange)
         );
     }
 

@@ -63,3 +63,53 @@ pub async fn find_take_for_owner(
         finalized: row.finalized,
     }))
 }
+
+/// A chunk the server has acknowledged.
+pub struct ChunkReceipt {
+    pub size_bytes: i32,
+    pub sha256: Vec<u8>,
+}
+
+pub async fn find_chunk(
+    executor: impl PgExecutor<'_>,
+    take_id: TakeId,
+    workspace_id: WorkspaceId,
+    idx: i32,
+) -> Result<Option<ChunkReceipt>, sqlx::Error> {
+    sqlx::query_as!(
+        ChunkReceipt,
+        "SELECT size_bytes, sha256 FROM chunks WHERE take_id = $1 AND workspace_id = $2 AND idx = $3",
+        take_id.into_uuid(),
+        workspace_id.into_uuid(),
+        idx,
+    )
+    .fetch_optional(executor)
+    .await
+}
+
+/// Records a chunk receipt. Returns `false` if `(take_id, idx)` was already recorded (a
+/// concurrent ack won the race); the caller re-reads and compares.
+pub async fn insert_chunk(
+    executor: impl PgExecutor<'_>,
+    take_id: TakeId,
+    workspace_id: WorkspaceId,
+    idx: i32,
+    size_bytes: i32,
+    sha256: &[u8],
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        r#"
+        INSERT INTO chunks (take_id, workspace_id, idx, size_bytes, sha256)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (take_id, idx) DO NOTHING
+        "#,
+        take_id.into_uuid(),
+        workspace_id.into_uuid(),
+        idx,
+        size_bytes,
+        sha256,
+    )
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}

@@ -117,5 +117,11 @@ pub fn table() -> Vec<Route> {
             Workspace,
             takes::presign_chunks,
         ),
+        Route::new(
+            Method::POST,
+            "/api/v1/takes/{take_id}/chunks/{idx}/ack",
+            Workspace,
+            takes::ack_chunk,
+        ),
     ]
 }

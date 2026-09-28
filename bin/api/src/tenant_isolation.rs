@@ -27,7 +27,9 @@ use kernel::{AppError, TakeId, UserId, WorkspaceId};
 use sqlx::PgPool;
 use tower::ServiceExt;
 
-use crate::app::tests::{test_clock, test_identity, test_ingest, test_rate_limiter, test_tenancy};
+use crate::app::tests::{
+    test_clock, test_identity, test_ingest, test_rate_limiter, test_store, test_tenancy,
+};
 use crate::app::{AppState, build_router_from};
 use crate::csrf::{CSRF_COOKIE_NAME, CSRF_HEADER_NAME};
 use crate::error::ApiError;
@@ -105,6 +107,20 @@ fn tenant_table() -> Vec<(Method, &'static str, Probe)> {
                 })
             }),
         ),
+        (
+            Method::POST,
+            "/api/v1/takes/{take_id}/chunks/{idx}/ack",
+            Probe::Owned(|pool, workspace_id| {
+                Box::pin(async move {
+                    let take_id = take_owned_by(&pool, workspace_id).await;
+                    put_chunk(&pool, take_id, 0, b"x").await;
+                    post_json(
+                        &format!("/api/v1/takes/{take_id}/chunks/0/ack"),
+                        r#"{"size_bytes":1,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}"#,
+                    )
+                })
+            }),
+        ),
     ]
 }
 
@@ -132,6 +148,35 @@ async fn take_owned_by(pool: &PgPool, workspace_id: WorkspaceId) -> TakeId {
         .await
         .expect("start recording")
         .take_id
+}
+
+/// PUTs `bytes` as chunk `idx` of the take, into real MinIO, as the browser would.
+async fn put_chunk(pool: &PgPool, take_id: TakeId, idx: u32, bytes: &'static [u8]) {
+    let take = sqlx::query!(
+        "SELECT workspace_id, recording_id, mime_type FROM takes WHERE id = $1",
+        take_id.into_uuid()
+    )
+    .fetch_one(pool)
+    .await
+    .expect("take");
+    let key = ingest::chunk_key(
+        WorkspaceId::from_uuid(take.workspace_id),
+        kernel::RecordingId::from_uuid(take.recording_id),
+        take_id,
+        idx,
+        &take.mime_type,
+    );
+    let url = test_store()
+        .presign_put(&key, std::time::Duration::from_secs(60))
+        .await
+        .expect("presign");
+    let put = reqwest::Client::new()
+        .put(url)
+        .body(bytes)
+        .send()
+        .await
+        .expect("PUT reaches MinIO");
+    assert!(put.status().is_success(), "PUT got {}", put.status());
 }
 
 /// Stands in for a real workspace-scoped read: the resource (here, the workspace itself) is

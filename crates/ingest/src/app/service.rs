@@ -7,7 +7,10 @@ use platform::{ObjectStore, StorageError};
 use sqlx::PgPool;
 use url::Url;
 
-use crate::domain::{ChunkRangeError, MimeType, MimeTypeError, Sources, chunk_key, chunk_range};
+use crate::domain::{
+    ChunkRangeError, ChunkSizeError, DigestError, MAX_CHUNK_INDEX, MimeType, MimeTypeError,
+    Sha256Digest, Sources, chunk_key, chunk_range, chunk_size,
+};
 use crate::infra;
 
 /// How long a presigned chunk PUT stays valid (docs/design.md §9: 5 minutes).
@@ -79,6 +82,59 @@ pub enum PresignError {
 
     #[error(transparent)]
     InvalidRange(#[from] ChunkRangeError),
+
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+
+    #[error("database error: {0}")]
+    Database(#[from] sqlx::Error),
+}
+
+/// The client's claim that chunk `idx` is uploaded: its size and SHA-256 (hex).
+#[derive(Debug, Clone)]
+pub struct AckChunk {
+    pub workspace_id: WorkspaceId,
+    pub user_id: UserId,
+    pub take_id: TakeId,
+    pub idx: u32,
+    pub size_bytes: u64,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AckOutcome {
+    /// First ack for this index: recorded now.
+    Acked,
+    /// The same size and hash were already recorded: a retry, nothing changed.
+    AlreadyAcked,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum AckError {
+    #[error("take not found")]
+    NotFound,
+
+    #[error("take is already finalized")]
+    Finalized,
+
+    /// A different size or hash is already recorded for this index (docs/design.md §9: `409`).
+    #[error("chunk {idx} was already acknowledged with a different hash or size")]
+    Mismatch { idx: u32 },
+
+    #[error("chunk index must be at most {MAX_CHUNK_INDEX}")]
+    IndexTooLarge,
+
+    #[error(transparent)]
+    InvalidDigest(#[from] DigestError),
+
+    #[error(transparent)]
+    InvalidSize(#[from] ChunkSizeError),
+
+    #[error("chunk {idx} has not been uploaded")]
+    NotUploaded { idx: u32 },
+
+    #[error("chunk {idx} is {stored} bytes in storage, not {claimed}")]
+    SizeMismatch { idx: u32, stored: u64, claimed: u64 },
 
     #[error(transparent)]
     Storage(#[from] StorageError),
@@ -180,6 +236,89 @@ impl IngestService {
         }
         Ok(chunks)
     }
+
+    /// Records that chunk `idx` is uploaded (upload protocol v1). Idempotent on
+    /// `(take_id, idx)`: the same size and hash again is a no-op (even after finalize, so a
+    /// retried ack whose response was lost still succeeds); a different one is a conflict.
+    /// A new ack must match what is actually stored: the object exists with the claimed size.
+    /// The hash is the client's; the API never reads media (CLAUDE.md rule 4).
+    #[tracing::instrument(skip_all, fields(take_id = %request.take_id, idx = request.idx))]
+    pub async fn ack_chunk(&self, request: AckChunk) -> Result<AckOutcome, AckError> {
+        if request.idx > MAX_CHUNK_INDEX {
+            return Err(AckError::IndexTooLarge);
+        }
+        let digest = Sha256Digest::parse_hex(&request.sha256)?;
+        let size = chunk_size(request.size_bytes)?;
+        // Both fit: idx <= 99 999 and size <= 16 MiB.
+        let idx = i32::try_from(request.idx).map_err(|_| AckError::IndexTooLarge)?;
+        let size_i32 = i32::try_from(size).map_err(|_| ChunkSizeError::OutOfRange)?;
+
+        let take = infra::find_take_for_owner(
+            &self.pool,
+            request.take_id,
+            request.workspace_id,
+            request.user_id,
+        )
+        .await?
+        .ok_or(AckError::NotFound)?;
+
+        let compare = |receipt: infra::ChunkReceipt| {
+            if receipt.size_bytes == size_i32
+                && Sha256Digest::from_bytes(&receipt.sha256) == Some(digest)
+            {
+                Ok(AckOutcome::AlreadyAcked)
+            } else {
+                Err(AckError::Mismatch { idx: request.idx })
+            }
+        };
+
+        if let Some(receipt) =
+            infra::find_chunk(&self.pool, request.take_id, request.workspace_id, idx).await?
+        {
+            return compare(receipt);
+        }
+        if take.finalized {
+            return Err(AckError::Finalized);
+        }
+
+        let key = chunk_key(
+            request.workspace_id,
+            take.recording_id,
+            request.take_id,
+            request.idx,
+            &take.mime_type,
+        );
+        let stored = self
+            .store
+            .head(&key)
+            .await?
+            .ok_or(AckError::NotUploaded { idx: request.idx })?;
+        if stored.size != size {
+            return Err(AckError::SizeMismatch {
+                idx: request.idx,
+                stored: stored.size,
+                claimed: size,
+            });
+        }
+
+        let inserted = infra::insert_chunk(
+            &self.pool,
+            request.take_id,
+            request.workspace_id,
+            idx,
+            size_i32,
+            digest.as_bytes(),
+        )
+        .await?;
+        if inserted {
+            return Ok(AckOutcome::Acked);
+        }
+        // A concurrent ack for the same index got there first.
+        let receipt = infra::find_chunk(&self.pool, request.take_id, request.workspace_id, idx)
+            .await?
+            .ok_or(AckError::NotFound)?;
+        compare(receipt)
+    }
 }
 
 #[cfg(test)]
@@ -223,15 +362,25 @@ mod tests {
     }
 
     fn service(pool: &PgPool) -> IngestService {
-        IngestService::new(
-            pool.clone(),
-            Arc::new(CatalogService::new()),
-            Arc::new(FakeStore),
-        )
+        service_with(pool, Arc::new(FakeStore::default()))
     }
 
-    /// Presigns deterministic fake URLs, so service tests need no MinIO.
-    struct FakeStore;
+    fn service_with(pool: &PgPool, store: Arc<FakeStore>) -> IngestService {
+        IngestService::new(pool.clone(), Arc::new(CatalogService::new()), store)
+    }
+
+    /// Presigns deterministic fake URLs and answers `HEAD` from `objects`, so service tests
+    /// need no MinIO.
+    #[derive(Default)]
+    struct FakeStore {
+        objects: std::sync::Mutex<std::collections::HashMap<String, u64>>,
+    }
+
+    impl FakeStore {
+        fn put(&self, key: String, size: u64) {
+            self.objects.lock().expect("lock").insert(key, size);
+        }
+    }
 
     #[async_trait::async_trait]
     impl ObjectStore for FakeStore {
@@ -241,8 +390,16 @@ mod tests {
         async fn presign_get(&self, key: &str, _ttl: Duration) -> Result<Url, StorageError> {
             Ok(Url::parse(&format!("http://store.test/{key}"))?)
         }
-        async fn head(&self, _key: &str) -> Result<Option<platform::ObjectMeta>, StorageError> {
-            Ok(None)
+        async fn head(&self, key: &str) -> Result<Option<platform::ObjectMeta>, StorageError> {
+            Ok(self
+                .objects
+                .lock()
+                .expect("lock")
+                .get(key)
+                .map(|&size| platform::ObjectMeta {
+                    size,
+                    content_type: None,
+                }))
         }
         async fn delete_prefix(&self, _prefix: &str) -> Result<u64, StorageError> {
             Ok(0)
@@ -436,5 +593,243 @@ mod tests {
             .presign_chunks(presign(owner, workspace, started.take_id, 0, 1))
             .await;
         assert!(matches!(result, Err(PresignError::Finalized)), "{result:?}");
+    }
+
+    const HASH_A: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    const HASH_B: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    struct Uploading {
+        store: Arc<FakeStore>,
+        ingest: IngestService,
+        owner: UserId,
+        workspace: WorkspaceId,
+        started: StartedRecording,
+    }
+
+    async fn uploading(pool: &PgPool) -> Uploading {
+        let (owner, workspace) = owner_and_workspace(pool).await;
+        let store = Arc::new(FakeStore::default());
+        let ingest = service_with(pool, store.clone());
+        let started = ingest
+            .start_recording(request(owner, workspace))
+            .await
+            .expect("start");
+        Uploading {
+            store,
+            ingest,
+            owner,
+            workspace,
+            started,
+        }
+    }
+
+    impl Uploading {
+        /// Puts chunk `idx` of `size` bytes into the fake store.
+        fn upload(&self, idx: u32, size: u64) {
+            self.store.put(
+                chunk_key(
+                    self.workspace,
+                    self.started.recording_id,
+                    self.started.take_id,
+                    idx,
+                    "video/webm",
+                ),
+                size,
+            );
+        }
+
+        async fn ack(
+            &self,
+            idx: u32,
+            size_bytes: u64,
+            sha256: &str,
+        ) -> Result<AckOutcome, AckError> {
+            self.ingest
+                .ack_chunk(AckChunk {
+                    workspace_id: self.workspace,
+                    user_id: self.owner,
+                    take_id: self.started.take_id,
+                    idx,
+                    size_bytes,
+                    sha256: sha256.to_string(),
+                })
+                .await
+        }
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn ack_is_idempotent_for_the_same_hash(pool: PgPool) {
+        let up = uploading(&pool).await;
+        up.upload(0, 1000);
+        assert_eq!(
+            up.ack(0, 1000, HASH_A).await.expect("first"),
+            AckOutcome::Acked
+        );
+        assert_eq!(
+            up.ack(0, 1000, HASH_A).await.expect("again"),
+            AckOutcome::AlreadyAcked
+        );
+        // Case of the hex doesn't matter.
+        assert_eq!(
+            up.ack(0, 1000, &HASH_A.to_ascii_uppercase())
+                .await
+                .expect("upper"),
+            AckOutcome::AlreadyAcked
+        );
+
+        let rows = sqlx::query!(
+            "SELECT idx, size_bytes, sha256, workspace_id FROM chunks WHERE take_id = $1",
+            up.started.take_id.into_uuid()
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("chunks");
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].idx, rows[0].size_bytes), (0, 1000));
+        assert_eq!(
+            Sha256Digest::from_bytes(&rows[0].sha256)
+                .expect("32 bytes")
+                .to_hex(),
+            HASH_A
+        );
+        assert_eq!(rows[0].workspace_id, up.workspace.into_uuid());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_different_hash_or_size_for_an_acked_index_conflicts(pool: PgPool) {
+        let up = uploading(&pool).await;
+        up.upload(0, 1000);
+        up.ack(0, 1000, HASH_A).await.expect("first");
+
+        assert!(matches!(
+            up.ack(0, 1000, HASH_B).await,
+            Err(AckError::Mismatch { idx: 0 })
+        ));
+        up.upload(0, 1001);
+        assert!(matches!(
+            up.ack(0, 1001, HASH_A).await,
+            Err(AckError::Mismatch { idx: 0 })
+        ));
+
+        let stored = sqlx::query_scalar!(
+            "SELECT sha256 FROM chunks WHERE take_id = $1 AND idx = 0",
+            up.started.take_id.into_uuid()
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("chunk");
+        assert_eq!(
+            Sha256Digest::from_bytes(&stored)
+                .expect("32 bytes")
+                .to_hex(),
+            HASH_A,
+            "the first ack stands"
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_new_ack_must_match_the_stored_object(pool: PgPool) {
+        let up = uploading(&pool).await;
+        assert!(matches!(
+            up.ack(0, 1000, HASH_A).await,
+            Err(AckError::NotUploaded { idx: 0 })
+        ));
+        up.upload(0, 999);
+        assert!(matches!(
+            up.ack(0, 1000, HASH_A).await,
+            Err(AckError::SizeMismatch {
+                idx: 0,
+                stored: 999,
+                claimed: 1000
+            })
+        ));
+        assert!(matches!(
+            up.ack(0, 0, HASH_A).await,
+            Err(AckError::InvalidSize(_))
+        ));
+        assert!(matches!(
+            up.ack(0, crate::domain::MAX_CHUNK_BYTES + 1, HASH_A).await,
+            Err(AckError::InvalidSize(_))
+        ));
+        assert!(matches!(
+            up.ack(0, 999, "not-hex").await,
+            Err(AckError::InvalidDigest(_))
+        ));
+        assert!(matches!(
+            up.ack(MAX_CHUNK_INDEX + 1, 999, HASH_A).await,
+            Err(AckError::IndexTooLarge)
+        ));
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn after_finalize_only_identical_retries_succeed(pool: PgPool) {
+        let up = uploading(&pool).await;
+        up.upload(0, 1000);
+        up.upload(1, 1000);
+        up.ack(0, 1000, HASH_A).await.expect("ack 0");
+        sqlx::query!(
+            "UPDATE takes SET finalized_at = now() WHERE id = $1",
+            up.started.take_id.into_uuid()
+        )
+        .execute(&pool)
+        .await
+        .expect("finalize");
+
+        assert_eq!(
+            up.ack(0, 1000, HASH_A).await.expect("retry"),
+            AckOutcome::AlreadyAcked
+        );
+        assert!(matches!(
+            up.ack(1, 1000, HASH_A).await,
+            Err(AckError::Finalized)
+        ));
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn only_the_owner_may_ack(pool: PgPool) {
+        let up = uploading(&pool).await;
+        let (stranger, strangers_workspace) = owner_and_workspace(&pool).await;
+        up.upload(0, 1000);
+        let result = up
+            .ingest
+            .ack_chunk(AckChunk {
+                workspace_id: strangers_workspace,
+                user_id: stranger,
+                take_id: up.started.take_id,
+                idx: 0,
+                size_bytes: 1000,
+                sha256: HASH_A.to_string(),
+            })
+            .await;
+        assert!(matches!(result, Err(AckError::NotFound)), "{result:?}");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn concurrent_acks_of_one_index_record_it_once(pool: PgPool) {
+        let up = uploading(&pool).await;
+        up.upload(0, 1000);
+        up.upload(1, 1000);
+
+        let (a, b) = tokio::join!(up.ack(0, 1000, HASH_A), up.ack(0, 1000, HASH_A));
+        let mut outcomes = [a.expect("a"), b.expect("b")];
+        outcomes.sort_by_key(|outcome| *outcome == AckOutcome::AlreadyAcked);
+        assert_eq!(outcomes, [AckOutcome::Acked, AckOutcome::AlreadyAcked]);
+
+        let (a, b) = tokio::join!(up.ack(1, 1000, HASH_A), up.ack(1, 1000, HASH_B));
+        let results = [a, b];
+        assert_eq!(
+            results
+                .iter()
+                .filter(|r| matches!(r, Ok(AckOutcome::Acked)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|r| matches!(r, Err(AckError::Mismatch { idx: 1 })))
+                .count(),
+            1
+        );
     }
 }

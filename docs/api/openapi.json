@@ -490,6 +490,110 @@
         }
       }
     },
+    "/api/v1/takes/{take_id}/chunks/{idx}/ack": {
+      "post": {
+        "tags": [
+          "takes"
+        ],
+        "summary": "Confirms chunk `idx` is uploaded, with its size and SHA-256. Idempotent on\n`(take_id, idx)`: the same size and hash again is a no-op; a different one is `409`.",
+        "operationId": "ack_chunk",
+        "parameters": [
+          {
+            "name": "take_id",
+            "in": "path",
+            "description": "The take",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "idx",
+            "in": "path",
+            "description": "Chunk index (0-based)",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AckChunkBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Chunk recorded (or already recorded identically)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AckChunkResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or mismatched CSRF token",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such take, or not the caller's",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Acked before with a different hash or size, or the take is finalized",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Not uploaded, size differs from storage, or invalid size/hash/index",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/takes/{take_id}/chunks/{idx}/url": {
       "post": {
         "tags": [
@@ -637,6 +741,50 @@
   },
   "components": {
     "schemas": {
+      "AckChunkBody": {
+        "type": "object",
+        "required": [
+          "size_bytes",
+          "sha256"
+        ],
+        "properties": {
+          "sha256": {
+            "type": "string",
+            "description": "SHA-256 of the chunk's bytes, 64 hex characters."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bytes PUT for this chunk (1 to 16 MiB). Must match the stored object.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "AckChunkResponse": {
+        "type": "object",
+        "required": [
+          "idx",
+          "status"
+        ],
+        "properties": {
+          "idx": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "status": {
+            "$ref": "#/components/schemas/AckStatus"
+          }
+        }
+      },
+      "AckStatus": {
+        "type": "string",
+        "enum": [
+          "acked",
+          "already_acked"
+        ]
+      },
       "ChunkUploadUrl": {
         "type": "object",
         "required": [
