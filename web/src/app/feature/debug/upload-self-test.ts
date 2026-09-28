@@ -1,4 +1,4 @@
-import { ChunkStore, Uploader, sha256Hex } from '../../capture';
+import { ChunkStore, UploadProgress, Uploader, sha256Hex } from '../../capture';
 import { IngestApi } from '../../core/ingest-api.service';
 import { openBackend } from './chunk-store-self-test';
 
@@ -20,15 +20,23 @@ export interface UploadSelfTestResult {
   allMatch: boolean;
 }
 
-const CHUNKS = 3;
+export interface UploadSelfTestOptions {
+  chunks: number;
+  /** 0: enqueue all at once. Otherwise one chunk per interval, like a recorder (Day 38). */
+  intervalMs: number;
+  onProgress?: (progress: UploadProgress) => void;
+}
 
 /**
- * Day 37 Check, "uploaded chunk hashes match server records": creates a recording on the real
+ * Day 37 Check (and, streamed, Day 38's), "uploaded chunk hashes match server records": creates a recording on the real
  * API, writes a few reproducible chunks to a diagnostics store, uploads them with the real
  * `Uploader` (SubtleCrypto hash, presign, PUT to storage, ack), then compares each local hash
  * with what the server recorded. Needs a signed-in session.
  */
-export async function runUploadSelfTest(api: IngestApi): Promise<UploadSelfTestResult> {
+export async function runUploadSelfTest(
+  api: IngestApi,
+  options: UploadSelfTestOptions = { chunks: 3, intervalMs: 0 },
+): Promise<UploadSelfTestResult> {
   const store = (await openBackend('opfs')) ?? (await openBackend('indexeddb'));
   if (!store) {
     throw new Error('no chunk store available');
@@ -42,9 +50,13 @@ export async function runUploadSelfTest(api: IngestApi): Promise<UploadSelfTestR
   });
   try {
     const uploader = new Uploader({ api, store, takeId: take_id });
+    const subscription = options.onProgress && uploader.progress$.subscribe(options.onProgress);
     const localSha256 = new Map<number, string>();
     const sizes = new Map<number, number>();
-    for (let idx = 0; idx < CHUNKS; idx += 1) {
+    for (let idx = 0; idx < options.chunks; idx += 1) {
+      if (idx > 0 && options.intervalMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, options.intervalMs));
+      }
       const blob = new Blob([chunkBytes(take_id, idx)], { type: 'video/webm' });
       await store.put(take_id, idx, blob);
       localSha256.set(idx, await sha256Hex(blob));
@@ -52,6 +64,7 @@ export async function runUploadSelfTest(api: IngestApi): Promise<UploadSelfTestR
       uploader.enqueue(idx);
     }
     await uploader.drained();
+    subscription?.unsubscribe();
 
     const status = await api.status(take_id);
     const server = new Map(status.chunks.map((chunk) => [chunk.idx, chunk.sha256]));

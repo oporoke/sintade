@@ -16,6 +16,7 @@ import {
   DEFAULT_TIMESLICE_MS,
   DEFAULT_VIDEO_BITS_PER_SECOND,
   MicDevice,
+  UploadProgress,
   openChunkStore,
   persistTake,
   selectMimeType,
@@ -322,8 +323,22 @@ interface TrackInfo {
     >
       Run upload self-test
     </button>
-    @if (uploadTestRunning()) {
-      <p>Uploading…</p>
+    <button
+      type="button"
+      data-testid="upload-selftest-stream"
+      (click)="runUploadSelfTest(true)"
+      [disabled]="uploadTestRunning()"
+    >
+      Run streamed upload (8 chunks, one every 0.7 s)
+    </button>
+    @if (uploadProgress(); as progress) {
+      <p
+        data-testid="upload-selftest-progress"
+        [attr.data-uploaded]="progress.uploaded"
+        [attr.data-state]="progress.state"
+      >
+        {{ progress.uploaded }} of {{ progress.queued }} uploaded ({{ progress.state }})
+      </p>
     }
     @if (uploadTest(); as result) {
       <p data-testid="upload-selftest-summary" [attr.data-take-id]="result.takeId">
@@ -420,6 +435,7 @@ export class DebugPage {
   protected readonly uploadTest = signal<UploadSelfTestResult | null>(null);
   protected readonly uploadTestRunning = signal(false);
   protected readonly uploadTestError = signal<string | null>(null);
+  protected readonly uploadProgress = signal<UploadProgress | null>(null);
   private readonly debugCountdown = viewChild.required<Countdown>('debugCountdown');
   protected readonly persistedTakeId = signal<string | null>(null);
   protected readonly persistedMs = signal(0);
@@ -514,12 +530,19 @@ export class DebugPage {
     }
   }
 
-  async runUploadSelfTest(): Promise<void> {
+  async runUploadSelfTest(streamed = false): Promise<void> {
     this.uploadTestRunning.set(true);
     this.uploadTest.set(null);
     this.uploadTestError.set(null);
+    this.uploadProgress.set(null);
     try {
-      this.uploadTest.set(await runUploadSelfTest(this.ingestApi));
+      this.uploadTest.set(
+        await runUploadSelfTest(this.ingestApi, {
+          chunks: streamed ? 8 : 3,
+          intervalMs: streamed ? 700 : 0,
+          onProgress: (progress) => this.uploadProgress.set(progress),
+        }),
+      );
     } catch (error) {
       this.uploadTestError.set(error instanceof Error ? error.message : String(error));
     } finally {

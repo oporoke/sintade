@@ -8,13 +8,21 @@ export interface PresignedUrl {
   url: string;
 }
 
+/** What the server has for a take (`GET /takes/{id}/status`). */
+export interface UploadStatus {
+  finalized: boolean;
+  chunks: { idx: number; size_bytes: number; sha256: string }[];
+}
+
 /**
  * The ingest endpoints the uploader needs (upload protocol v1, docs/design.md §9). The app
- * implements it over HTTP; tests and the extension supply their own.
+ * implements it over HTTP; tests and the extension supply their own. Failures should be
+ * `UploadHttpError`s so the uploader can tell a dropped connection from a refusal.
  */
 export interface UploadApi {
   presign(takeId: string, idx: number, count: number): Promise<PresignedUrl[]>;
   ack(takeId: string, idx: number, sizeBytes: number, sha256: string): Promise<void>;
+  status(takeId: string): Promise<UploadStatus>;
 }
 
 /** Sends a chunk's bytes to its presigned URL. */
@@ -23,11 +31,20 @@ export type PutChunk = (url: string, blob: Blob) => Promise<void>;
 /** Hashes a chunk: lowercase hex SHA-256. */
 export type DigestChunk = (blob: Blob) => Promise<string>;
 
+/** Whether the browser thinks it's online, and a way to wait until it is. */
+export interface NetworkPort {
+  isOnline(): boolean;
+  whenOnline(): Promise<void>;
+}
+
+export type UploaderState = 'idle' | 'uploading' | 'retrying' | 'offline' | 'failed';
+
 export interface UploadProgress {
   /** Chunks enqueued so far (uploaded or not). */
   queued: number;
   /** Chunks uploaded and acknowledged. */
   uploaded: number;
+  state: UploaderState;
 }
 
 export interface UploaderOptions {
@@ -38,9 +55,27 @@ export interface UploaderOptions {
   takeId: string;
   put?: PutChunk;
   digest?: DigestChunk;
+  network?: NetworkPort;
+  /** Waits `ms` (tests pass an instant one). */
+  delay?: (ms: number) => Promise<void>;
+  /** 0 ≤ n < 1, for backoff jitter. */
+  random?: () => number;
+  now?: () => number;
 }
 
-/** A chunk failed to upload. Retries arrive on Day 38; for now the queue stops here. */
+/** An HTTP failure from the API or storage; status 0 means no response (network down). */
+export class UploadHttpError extends Error {
+  constructor(
+    readonly source: 'api' | 'storage',
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'UploadHttpError';
+  }
+}
+
+/** A chunk can't be uploaded and retrying won't help (e.g. the server refused it). */
 export class UploadError extends Error {
   constructor(
     readonly idx: number,
@@ -53,12 +88,67 @@ export class UploadError extends Error {
   }
 }
 
-/** `PUT`s the bytes with `fetch`. Storage answers 200 on success. */
-export const fetchPut: PutChunk = async (url, blob) => {
-  const response = await fetch(url, { method: 'PUT', body: blob });
-  if (!response.ok) {
-    throw new Error(`storage answered ${response.status}`);
+/** First retry delay; doubles per attempt up to `MAX_BACKOFF_MS`. */
+export const BASE_BACKOFF_MS = 1_000;
+export const MAX_BACKOFF_MS = 30_000;
+/** Most URLs presigned in one call (the API's `?count=` limit). */
+export const PRESIGN_BATCH = 10;
+/** Presigned URLs live 5 minutes; stop using a cached one a minute early. */
+const URL_REUSE_MS = 4 * 60_000;
+/** A PUT that hasn't finished by then is abandoned and retried. */
+export const PUT_TIMEOUT_MS = 120_000;
+
+/**
+ * Whether trying again can succeed: no response, timeouts, throttling and server errors can;
+ * so can a storage `403` (the presigned URL expired: the retry presigns afresh). Other API
+ * `4xx`s are the server's considered answer.
+ */
+export function isRetryable(error: unknown): boolean {
+  if (error instanceof UploadError) {
+    return false;
   }
+  if (error instanceof UploadHttpError) {
+    const { status, source } = error;
+    return (
+      status === 0 ||
+      status === 408 ||
+      status === 429 ||
+      status >= 500 ||
+      (source === 'storage' && status === 403)
+    );
+  }
+  // fetch's TypeError, aborts and timeouts: the network, not the server.
+  return true;
+}
+
+/** `PUT`s the bytes with `fetch`, giving up after `PUT_TIMEOUT_MS`. */
+export const fetchPut: PutChunk = async (url, blob) => {
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'PUT',
+      body: blob,
+      signal: AbortSignal.timeout(PUT_TIMEOUT_MS),
+    });
+  } catch (error) {
+    throw new UploadHttpError('storage', 0, error instanceof Error ? error.message : 'network');
+  }
+  if (!response.ok) {
+    throw new UploadHttpError('storage', response.status, `storage answered ${response.status}`);
+  }
+};
+
+/** `navigator.onLine` and the `online` event, where they exist. */
+export const browserNetwork: NetworkPort = {
+  isOnline: () => globalThis.navigator?.onLine ?? true,
+  whenOnline: () =>
+    new Promise((resolve) => {
+      if (globalThis.navigator?.onLine ?? true) {
+        resolve();
+        return;
+      }
+      globalThis.addEventListener('online', () => resolve(), { once: true });
+    }),
 };
 
 /** SHA-256 of the blob's bytes via SubtleCrypto, as lowercase hex. */
@@ -69,8 +159,11 @@ export async function sha256Hex(blob: Blob, subtle: SubtleCrypto = crypto.subtle
 
 /**
  * Streams a take's chunks to storage while it records: for each enqueued index, read the chunk
- * from the local store, hash it, presign, `PUT` it straight to storage (media never passes
- * through the API), then ack its size and hash. One chunk at a time, in the order enqueued.
+ * from the local store, hash it, presign (batched when there is a backlog), `PUT` it straight to
+ * storage (media never passes through the API), then ack its size and hash. One chunk at a
+ * time, in order. Network trouble never loses a chunk: it stays in the store, the uploader
+ * waits while offline and backs off (with jitter) on transient failures, and `resume()` picks
+ * up from what the server already has.
  */
 export class Uploader {
   private readonly api: UploadApi;
@@ -78,11 +171,17 @@ export class Uploader {
   private readonly takeId: string;
   private readonly put: PutChunk;
   private readonly digest: DigestChunk;
+  private readonly network: NetworkPort;
+  private readonly delay: (ms: number) => Promise<void>;
+  private readonly random: () => number;
+  private readonly now: () => number;
 
   private readonly pending: number[] = [];
   private readonly done = new Set<number>();
-  private readonly progress = new BehaviorSubject<UploadProgress>({ queued: 0, uploaded: 0 });
+  private readonly urls = new Map<number, { url: string; fetchedAt: number }>();
+  private readonly progress: BehaviorSubject<UploadProgress>;
   private queued = 0;
+  private state: UploaderState = 'idle';
   private running: Promise<void> | null = null;
   private failure: UploadError | null = null;
 
@@ -92,6 +191,11 @@ export class Uploader {
     this.takeId = options.takeId;
     this.put = options.put ?? fetchPut;
     this.digest = options.digest ?? ((blob) => sha256Hex(blob));
+    this.network = options.network ?? browserNetwork;
+    this.delay = options.delay ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.random = options.random ?? Math.random;
+    this.now = options.now ?? Date.now;
+    this.progress = new BehaviorSubject<UploadProgress>({ queued: 0, uploaded: 0, state: 'idle' });
   }
 
   get progress$(): Observable<UploadProgress> {
@@ -111,9 +215,36 @@ export class Uploader {
     this.pending.push(idx);
     this.queued += 1;
     this.emit();
-    this.running ??= this.drain().finally(() => {
-      this.running = null;
-    });
+    this.start();
+  }
+
+  /**
+   * Continues a take uploaded earlier (after a reload, a crash or a reconnect): asks the server
+   * which chunks it has, skips those whose recorded hash matches the local copy, and queues
+   * every other chunk in the store. A server chunk that differs from the local one is a
+   * failure: the server keeps the first ack, so the take can't be completed from this device.
+   */
+  async resume(): Promise<void> {
+    const status = await this.withRetry(() => this.api.status(this.takeId));
+    const local = await this.store.indexes(this.takeId);
+    const localSet = new Set(local);
+    for (const chunk of status.chunks) {
+      if (localSet.has(chunk.idx)) {
+        const blob = await this.store.get(this.takeId, chunk.idx);
+        if (blob && (await this.digest(blob)) !== chunk.sha256) {
+          this.fail(new UploadError(chunk.idx, new Error('the server has a different copy')));
+          return;
+        }
+      }
+      if (!this.done.has(chunk.idx)) {
+        this.done.add(chunk.idx);
+        this.queued += 1;
+      }
+    }
+    this.emit();
+    if (!status.finalized) {
+      local.filter((idx) => !this.done.has(idx)).forEach((idx) => this.enqueue(idx));
+    }
   }
 
   /** Resolves once every queued chunk is uploaded; rejects with the first `UploadError`. */
@@ -126,18 +257,65 @@ export class Uploader {
     }
   }
 
+  private start(): void {
+    if (this.failure) {
+      return;
+    }
+    this.running ??= this.drain().finally(() => {
+      this.running = null;
+      if (!this.failure) {
+        this.setState('idle');
+      }
+    });
+  }
+
   private async drain(): Promise<void> {
     while (this.pending.length > 0 && !this.failure) {
       const idx = this.pending[0];
+      this.setState('uploading');
       try {
-        await this.upload(idx);
+        await this.withRetry(() => this.upload(idx));
         this.pending.shift();
         this.done.add(idx);
+        this.urls.delete(idx);
         this.emit();
       } catch (error) {
-        this.failure = error instanceof UploadError ? error : new UploadError(idx, error);
+        this.fail(error instanceof UploadError ? error : new UploadError(idx, error));
       }
     }
+  }
+
+  /** Runs `step` until it succeeds or fails for good, waiting out offline spells and backoff. */
+  private async withRetry<T>(step: () => Promise<T>): Promise<T> {
+    let attempt = 0;
+    for (;;) {
+      if (!this.network.isOnline()) {
+        this.setState('offline');
+        await this.network.whenOnline();
+        this.setState('uploading');
+      }
+      try {
+        return await step();
+      } catch (error) {
+        if (!isRetryable(error)) {
+          throw error;
+        }
+        if (!this.network.isOnline()) {
+          // Lost the connection mid-step: wait for it, don't count it as an attempt.
+          continue;
+        }
+        attempt += 1;
+        this.setState('retrying');
+        await this.delay(this.backoff(attempt));
+        this.setState('uploading');
+      }
+    }
+  }
+
+  /** Exponential backoff with "equal jitter": half fixed, half random. */
+  private backoff(attempt: number): number {
+    const ceiling = Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ** (attempt - 1));
+    return ceiling / 2 + this.random() * (ceiling / 2);
   }
 
   private async upload(idx: number): Promise<void> {
@@ -146,15 +324,52 @@ export class Uploader {
       throw new UploadError(idx, new Error('chunk is not in the local store'));
     }
     const sha256 = await this.digest(blob);
-    const [presigned] = await this.api.presign(this.takeId, idx, 1);
-    if (presigned?.idx !== idx) {
-      throw new UploadError(idx, new Error('no upload URL returned'));
+    const url = await this.urlFor(idx);
+    try {
+      await this.put(url, blob);
+    } catch (error) {
+      // Whatever went wrong, the next attempt presigns afresh (the URL may have expired).
+      this.urls.delete(idx);
+      throw error;
     }
-    await this.put(presigned.url, blob);
     await this.api.ack(this.takeId, idx, blob.size, sha256);
   }
 
+  /** A fresh-enough URL for `idx`, presigning a batch for the backlog when needed. */
+  private async urlFor(idx: number): Promise<string> {
+    const cached = this.urls.get(idx);
+    if (cached && this.now() - cached.fetchedAt < URL_REUSE_MS) {
+      return cached.url;
+    }
+    // A run of consecutive pending indexes starting at idx shares one presign call.
+    let count = 1;
+    while (count < PRESIGN_BATCH && this.pending.includes(idx + count)) {
+      count += 1;
+    }
+    const fetchedAt = this.now();
+    for (const presigned of await this.api.presign(this.takeId, idx, count)) {
+      this.urls.set(presigned.idx, { url: presigned.url, fetchedAt });
+    }
+    const fresh = this.urls.get(idx);
+    if (!fresh) {
+      throw new UploadError(idx, new Error('no upload URL returned'));
+    }
+    return fresh.url;
+  }
+
+  private fail(error: UploadError): void {
+    this.failure = error;
+    this.setState('failed');
+  }
+
+  private setState(state: UploaderState): void {
+    if (this.state !== state) {
+      this.state = state;
+      this.emit();
+    }
+  }
+
   private emit(): void {
-    this.progress.next({ queued: this.queued, uploaded: this.done.size });
+    this.progress.next({ queued: this.queued, uploaded: this.done.size, state: this.state });
   }
 }
