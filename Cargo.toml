@@ -5,6 +5,8 @@ members = [
     "crates/platform",
     "crates/identity",
     "crates/tenancy",
+    "crates/catalog",
+    "crates/ingest",
     "bin/api",
     "bin/worker",
 ]

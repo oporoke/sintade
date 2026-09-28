@@ -29,7 +29,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "catalog",
  "identity",
+ "ingest",
  "kernel",
  "platform",
  "reqwest",
@@ -593,6 +595,18 @@ checksum = "7dafe3a8757b027e2be6e4e5601ed563c55989fcf1546e933c66c8eb3a058d35"
 dependencies = [
  "bytes",
  "either",
+]
+
+[[package]]
+name = "catalog"
+version = "0.1.0"
+dependencies = [
+ "kernel",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1465,6 +1479,19 @@ dependencies = [
  "hashbrown 0.17.1",
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "ingest"
+version = "0.1.0"
+dependencies = [
+ "catalog",
+ "kernel",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
