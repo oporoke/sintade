@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod me;
 pub mod recordings;
+pub mod takes;
 pub mod verify_email;
 
 use axum::handler::Handler;
@@ -109,6 +110,12 @@ pub fn table() -> Vec<Route> {
             "/api/v1/recordings",
             Workspace,
             recordings::create_recording,
+        ),
+        Route::new(
+            Method::POST,
+            "/api/v1/takes/{take_id}/chunks/{idx}/url",
+            Workspace,
+            takes::presign_chunks,
         ),
     ]
 }

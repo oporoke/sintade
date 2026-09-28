@@ -200,6 +200,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/takes/{take_id}/chunks/{idx}/url": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Presigned `PUT` URLs for chunk `idx` (and, with `?count=`, the chunks after it). Only the
+         *     recording's owner gets them, and only until the take is finalized. The browser then `PUT`s
+         *     the bytes straight to object storage (media never passes through the API).
+         */
+        post: operations["presign_chunks"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -236,6 +257,12 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        ChunkUploadUrl: {
+            /** Format: int32 */
+            idx: number;
+            /** @description Presigned `PUT` for this chunk's bytes. A bearer credential: don't log it. */
+            url: string;
+        };
         CreateRecordingBody: {
             has_camera: boolean;
             has_mic: boolean;
@@ -293,6 +320,14 @@ export interface components {
         /** @description The body of every endpoint that only reports an outcome. */
         MessageResponse: {
             message: string;
+        };
+        PresignChunksResponse: {
+            /**
+             * Format: int64
+             * @description Seconds each URL stays valid.
+             */
+            expires_in_s: number;
+            urls: components["schemas"]["ChunkUploadUrl"][];
         };
         /** @description RFC 9457 problem details, the body of every error response. */
         Problem: {
@@ -740,6 +775,81 @@ export interface operations {
                 };
             };
             /** @description Invalid title or MIME type */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    presign_chunks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The take */
+                take_id: string;
+                /** @description First chunk index (0-based) */
+                idx: number;
+                /**
+                 * @description How many consecutive chunk URLs to return, starting at `idx` (1–10, default 1). Used to
+                 *     batch round trips after a reconnect.
+                 */
+                count: number | null;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Upload URLs */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PresignChunksResponse"];
+                };
+            };
+            /** @description No valid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Missing or mismatched CSRF token */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such take, or not the caller's */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The take is already finalized */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description count outside 1–10 or index too large */
             422: {
                 headers: {
                     [name: string]: unknown;

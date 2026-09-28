@@ -1,3 +1,6 @@
 mod service;
 
-pub use service::{IngestService, StartRecording, StartRecordingError, StartedRecording};
+pub use service::{
+    CHUNK_URL_TTL, IngestService, PresignChunks, PresignError, PresignedChunk, StartRecording,
+    StartRecordingError, StartedRecording,
+};

@@ -15,6 +15,10 @@ pub enum AppError {
     #[error("{0}")]
     Forbidden(String),
 
+    /// The request conflicts with the resource's current state (e.g. a finalized take).
+    #[error("{0}")]
+    Conflict(String),
+
     #[error("too many requests")]
     RateLimited,
 

@@ -34,6 +34,7 @@ impl IntoResponse for ApiError {
             AppError::BadRequest(detail) => (StatusCode::BAD_REQUEST, "Bad Request", detail),
             AppError::Unauthorized(detail) => (StatusCode::UNAUTHORIZED, "Unauthorized", detail),
             AppError::Forbidden(detail) => (StatusCode::FORBIDDEN, "Forbidden", detail),
+            AppError::Conflict(detail) => (StatusCode::CONFLICT, "Conflict", detail),
             AppError::RateLimited => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "Too Many Requests",

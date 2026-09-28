@@ -23,7 +23,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::Path;
 use axum::http::{Method, Request, StatusCode};
-use kernel::{AppError, UserId, WorkspaceId};
+use kernel::{AppError, TakeId, UserId, WorkspaceId};
 use sqlx::PgPool;
 use tower::ServiceExt;
 
@@ -95,7 +95,43 @@ fn tenant_table() -> Vec<(Method, &'static str, Probe)> {
                 },
             },
         ),
+        (
+            Method::POST,
+            "/api/v1/takes/{take_id}/chunks/{idx}/url",
+            Probe::Owned(|pool, workspace_id| {
+                Box::pin(async move {
+                    let take_id = take_owned_by(&pool, workspace_id).await;
+                    post_json(&format!("/api/v1/takes/{take_id}/chunks/0/url?count=2"), "")
+                })
+            }),
+        ),
     ]
+}
+
+/// Starts a recording in `workspace_id` as its owner, returning the take.
+async fn take_owned_by(pool: &PgPool, workspace_id: WorkspaceId) -> TakeId {
+    let owner = sqlx::query_scalar!(
+        "SELECT user_id FROM memberships WHERE workspace_id = $1 AND role = 'owner'",
+        workspace_id.into_uuid(),
+    )
+    .fetch_one(pool)
+    .await
+    .expect("workspace owner");
+    test_ingest(pool.clone())
+        .start_recording(ingest::StartRecording {
+            workspace_id,
+            owner_id: UserId::from_uuid(owner),
+            title: None,
+            mime_type: "video/webm;codecs=vp9,opus".to_string(),
+            sources: ingest::Sources {
+                system_audio: false,
+                mic: true,
+                camera: false,
+            },
+        })
+        .await
+        .expect("start recording")
+        .take_id
 }
 
 /// Stands in for a real workspace-scoped read: the resource (here, the workspace itself) is

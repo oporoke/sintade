@@ -37,10 +37,22 @@ async fn main() -> anyhow::Result<()> {
         tenancy.clone(),
     ));
     let rate_limiter = Arc::new(platform::RateLimiter::new(pool.clone()));
+    let store: Arc<dyn platform::ObjectStore> = Arc::new(platform::S3ObjectStore::new(
+        &config.s3_endpoint,
+        &config.s3_bucket,
+        &config.s3_access_key,
+        &config.s3_secret_key,
+    ));
+    let ingest = Arc::new(ingest::IngestService::new(
+        pool.clone(),
+        Arc::new(catalog::CatalogService::new()),
+        store,
+    ));
     let router = app::build_router(
         pool,
         identity,
         tenancy,
+        ingest,
         rate_limiter,
         clock,
         &config.public_base_url,

@@ -1,11 +1,17 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use catalog::{CatalogService, NewRecording, Title, TitleError};
 use kernel::{RecordingId, TakeId, UserId, WorkspaceId};
+use platform::{ObjectStore, StorageError};
 use sqlx::PgPool;
+use url::Url;
 
-use crate::domain::{MimeType, MimeTypeError, Sources};
+use crate::domain::{ChunkRangeError, MimeType, MimeTypeError, Sources, chunk_key, chunk_range};
 use crate::infra;
+
+/// How long a presigned chunk PUT stays valid (docs/design.md §9: 5 minutes).
+pub const CHUNK_URL_TTL: Duration = Duration::from_secs(5 * 60);
 
 /// `POST /recordings`: who is recording, where, and what the take will contain. The caller has
 /// already checked the owner may create recordings in the workspace.
@@ -36,14 +42,64 @@ pub enum StartRecordingError {
     Database(#[from] sqlx::Error),
 }
 
+/// Presigned PUT URLs for chunks `first_idx..first_idx + count` of a take.
+#[derive(Debug, Clone, Copy)]
+pub struct PresignChunks {
+    pub workspace_id: WorkspaceId,
+    pub user_id: UserId,
+    pub take_id: TakeId,
+    pub first_idx: u32,
+    pub count: u32,
+}
+
+/// One chunk's upload URL. The URL is a bearer credential: never log it.
+#[derive(Clone)]
+pub struct PresignedChunk {
+    pub idx: u32,
+    pub url: Url,
+}
+
+impl std::fmt::Debug for PresignedChunk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PresignedChunk")
+            .field("idx", &self.idx)
+            .field("url", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PresignError {
+    /// No such take, or it isn't the caller's to upload to (CLAUDE.md rule 5: `404`).
+    #[error("take not found")]
+    NotFound,
+
+    #[error("take is already finalized")]
+    Finalized,
+
+    #[error(transparent)]
+    InvalidRange(#[from] ChunkRangeError),
+
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+
+    #[error("database error: {0}")]
+    Database(#[from] sqlx::Error),
+}
+
 pub struct IngestService {
     pool: PgPool,
     catalog: Arc<CatalogService>,
+    store: Arc<dyn ObjectStore>,
 }
 
 impl IngestService {
-    pub fn new(pool: PgPool, catalog: Arc<CatalogService>) -> Self {
-        Self { pool, catalog }
+    pub fn new(pool: PgPool, catalog: Arc<CatalogService>, store: Arc<dyn ObjectStore>) -> Self {
+        Self {
+            pool,
+            catalog,
+            store,
+        }
     }
 
     /// Creates a recording (via `catalog`) and its first take in one transaction, both in the
@@ -86,6 +142,43 @@ impl IngestService {
 
         tracing::info!(recording_id = %started.recording_id, take_id = %started.take_id, "recording started");
         Ok(started)
+    }
+
+    /// Presigned PUT URLs for a run of chunk indexes (upload protocol v1). Only the recording's
+    /// owner, acting in its workspace, gets them, and only until the take is finalized.
+    /// Re-presigning an index is allowed: a retry after a lost response, and a same-hash
+    /// re-upload is a no-op at ack time.
+    #[tracing::instrument(skip_all, fields(take_id = %request.take_id, first_idx = request.first_idx, count = request.count))]
+    pub async fn presign_chunks(
+        &self,
+        request: PresignChunks,
+    ) -> Result<Vec<PresignedChunk>, PresignError> {
+        let range = chunk_range(request.first_idx, request.count)?;
+        let take = infra::find_take_for_owner(
+            &self.pool,
+            request.take_id,
+            request.workspace_id,
+            request.user_id,
+        )
+        .await?
+        .ok_or(PresignError::NotFound)?;
+        if take.finalized {
+            return Err(PresignError::Finalized);
+        }
+
+        let mut chunks = Vec::with_capacity(range.len());
+        for idx in range {
+            let key = chunk_key(
+                request.workspace_id,
+                take.recording_id,
+                request.take_id,
+                idx,
+                &take.mime_type,
+            );
+            let url = self.store.presign_put(&key, CHUNK_URL_TTL).await?;
+            chunks.push(PresignedChunk { idx, url });
+        }
+        Ok(chunks)
     }
 }
 
@@ -130,7 +223,30 @@ mod tests {
     }
 
     fn service(pool: &PgPool) -> IngestService {
-        IngestService::new(pool.clone(), Arc::new(CatalogService::new()))
+        IngestService::new(
+            pool.clone(),
+            Arc::new(CatalogService::new()),
+            Arc::new(FakeStore),
+        )
+    }
+
+    /// Presigns deterministic fake URLs, so service tests need no MinIO.
+    struct FakeStore;
+
+    #[async_trait::async_trait]
+    impl ObjectStore for FakeStore {
+        async fn presign_put(&self, key: &str, _ttl: Duration) -> Result<Url, StorageError> {
+            Ok(Url::parse(&format!("http://store.test/{key}"))?)
+        }
+        async fn presign_get(&self, key: &str, _ttl: Duration) -> Result<Url, StorageError> {
+            Ok(Url::parse(&format!("http://store.test/{key}"))?)
+        }
+        async fn head(&self, _key: &str) -> Result<Option<platform::ObjectMeta>, StorageError> {
+            Ok(None)
+        }
+        async fn delete_prefix(&self, _prefix: &str) -> Result<u64, StorageError> {
+            Ok(0)
+        }
     }
 
     #[sqlx::test(migrations = "../../migrations")]
@@ -222,5 +338,103 @@ mod tests {
             .await
             .expect("count");
         assert_eq!(recordings, 0, "the recording must roll back with its take");
+    }
+
+    fn presign(
+        owner: UserId,
+        workspace: WorkspaceId,
+        take: TakeId,
+        first_idx: u32,
+        count: u32,
+    ) -> PresignChunks {
+        PresignChunks {
+            workspace_id: workspace,
+            user_id: owner,
+            take_id: take,
+            first_idx,
+            count,
+        }
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn presigns_a_batch_of_chunk_keys_under_the_recording(pool: PgPool) {
+        let (owner, workspace) = owner_and_workspace(&pool).await;
+        let ingest = service(&pool);
+        let started = ingest
+            .start_recording(request(owner, workspace))
+            .await
+            .expect("start");
+
+        let chunks = ingest
+            .presign_chunks(presign(owner, workspace, started.take_id, 3, 3))
+            .await
+            .expect("presign");
+        let keys: Vec<String> = chunks
+            .iter()
+            .map(|chunk| format!("{}:{}", chunk.idx, chunk.url.path()))
+            .collect();
+        let prefix = format!(
+            "/ws/{workspace}/rec/{}/takes/{}/chunks",
+            started.recording_id, started.take_id
+        );
+        assert_eq!(
+            keys,
+            vec![
+                format!("3:{prefix}/000003.webm"),
+                format!("4:{prefix}/000004.webm"),
+                format!("5:{prefix}/000005.webm"),
+            ]
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn only_the_owner_in_the_takes_workspace_may_presign(pool: PgPool) {
+        let (owner, workspace) = owner_and_workspace(&pool).await;
+        let (stranger, strangers_workspace) = owner_and_workspace(&pool).await;
+        let ingest = service(&pool);
+        let started = ingest
+            .start_recording(request(owner, workspace))
+            .await
+            .expect("start");
+
+        for (user, ws) in [
+            (stranger, strangers_workspace),
+            (stranger, workspace),
+            (owner, strangers_workspace),
+        ] {
+            let result = ingest
+                .presign_chunks(presign(user, ws, started.take_id, 0, 1))
+                .await;
+            assert!(matches!(result, Err(PresignError::NotFound)), "{result:?}");
+        }
+        let unknown = ingest
+            .presign_chunks(presign(owner, workspace, TakeId::new_v7(), 0, 1))
+            .await;
+        assert!(
+            matches!(unknown, Err(PresignError::NotFound)),
+            "{unknown:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_finalized_take_gets_no_more_urls(pool: PgPool) {
+        let (owner, workspace) = owner_and_workspace(&pool).await;
+        let ingest = service(&pool);
+        let started = ingest
+            .start_recording(request(owner, workspace))
+            .await
+            .expect("start");
+        sqlx::query!(
+            "UPDATE takes SET finalized_at = now() WHERE id = $1",
+            started.take_id.into_uuid()
+        )
+        .execute(&pool)
+        .await
+        .expect("finalize");
+
+        let result = ingest
+            .presign_chunks(presign(owner, workspace, started.take_id, 0, 1))
+            .await;
+        assert!(matches!(result, Err(PresignError::Finalized)), "{result:?}");
     }
 }
