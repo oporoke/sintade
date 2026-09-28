@@ -10,4 +10,6 @@ pub use access::{Permission, Role, UnknownRole};
 pub use error::AppError;
 pub use event::{DomainEvent, EventEnvelope};
 pub use id::Id;
-pub use ids::{Session, SessionId, User, UserId, Workspace, WorkspaceId};
+pub use ids::{
+    Recording, RecordingId, Session, SessionId, Take, TakeId, User, UserId, Workspace, WorkspaceId,
+};
