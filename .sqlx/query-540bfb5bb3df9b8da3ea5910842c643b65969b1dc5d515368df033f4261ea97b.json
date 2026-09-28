@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT size_bytes, sha256 FROM chunks WHERE take_id = $1 AND workspace_id = $2 AND idx = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "size_bytes",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "chunks",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "sha256",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "chunks",
+            "name": "sha256"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "540bfb5bb3df9b8da3ea5910842c643b65969b1dc5d515368df033f4261ea97b"
+}

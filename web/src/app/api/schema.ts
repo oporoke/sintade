@@ -200,6 +200,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/takes/{take_id}/chunks/{idx}/ack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirms chunk `idx` is uploaded, with its size and SHA-256. Idempotent on
+         *     `(take_id, idx)`: the same size and hash again is a no-op; a different one is `409`.
+         */
+        post: operations["ack_chunk"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/takes/{take_id}/chunks/{idx}/url": {
         parameters: {
             query?: never;
@@ -257,6 +277,22 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AckChunkBody: {
+            /** @description SHA-256 of the chunk's bytes, 64 hex characters. */
+            sha256: string;
+            /**
+             * Format: int64
+             * @description Bytes PUT for this chunk (1 to 16 MiB). Must match the stored object.
+             */
+            size_bytes: number;
+        };
+        AckChunkResponse: {
+            /** Format: int32 */
+            idx: number;
+            status: components["schemas"]["AckStatus"];
+        };
+        /** @enum {string} */
+        AckStatus: "acked" | "already_acked";
         ChunkUploadUrl: {
             /** Format: int32 */
             idx: number;
@@ -775,6 +811,80 @@ export interface operations {
                 };
             };
             /** @description Invalid title or MIME type */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    ack_chunk: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The take */
+                take_id: string;
+                /** @description Chunk index (0-based) */
+                idx: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AckChunkBody"];
+            };
+        };
+        responses: {
+            /** @description Chunk recorded (or already recorded identically) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AckChunkResponse"];
+                };
+            };
+            /** @description No valid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Missing or mismatched CSRF token */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such take, or not the caller's */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Acked before with a different hash or size, or the take is finalized */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not uploaded, size differs from storage, or invalid size/hash/index */
             422: {
                 headers: {
                     [name: string]: unknown;

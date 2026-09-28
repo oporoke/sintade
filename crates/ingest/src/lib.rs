@@ -6,10 +6,11 @@ pub mod events;
 mod infra;
 
 pub use app::{
-    CHUNK_URL_TTL, IngestService, PresignChunks, PresignError, PresignedChunk, StartRecording,
-    StartRecordingError, StartedRecording,
+    AckChunk, AckError, AckOutcome, CHUNK_URL_TTL, IngestService, PresignChunks, PresignError,
+    PresignedChunk, StartRecording, StartRecordingError, StartedRecording,
 };
 pub use domain::{
-    ChunkRangeError, MAX_CHUNK_INDEX, MAX_MIME_TYPE_LEN, MAX_PRESIGN_BATCH, MimeType,
-    MimeTypeError, Sources, chunk_key,
+    ChunkRangeError, ChunkSizeError, DigestError, MAX_CHUNK_BYTES, MAX_CHUNK_INDEX,
+    MAX_MIME_TYPE_LEN, MAX_PRESIGN_BATCH, MimeType, MimeTypeError, Sha256Digest, Sources,
+    chunk_key,
 };

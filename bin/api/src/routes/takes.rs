@@ -1,7 +1,7 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
-use ingest::{CHUNK_URL_TTL, PresignChunks, PresignError};
+use ingest::{AckChunk, AckError, AckOutcome, CHUNK_URL_TTL, PresignChunks, PresignError};
 use kernel::{AppError, TakeId};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -101,6 +101,100 @@ pub async fn presign_chunks(
     }))
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AckChunkBody {
+    /// Bytes PUT for this chunk (1 to 16 MiB). Must match the stored object.
+    pub size_bytes: u64,
+    /// SHA-256 of the chunk's bytes, 64 hex characters.
+    pub sha256: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AckStatus {
+    /// Recorded now.
+    Acked,
+    /// The same size and hash were already recorded; nothing changed.
+    AlreadyAcked,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AckChunkResponse {
+    pub idx: u32,
+    pub status: AckStatus,
+}
+
+/// Confirms chunk `idx` is uploaded, with its size and SHA-256. Idempotent on
+/// `(take_id, idx)`: the same size and hash again is a no-op; a different one is `409`.
+#[utoipa::path(
+    post,
+    path = "/api/v1/takes/{take_id}/chunks/{idx}/ack",
+    tag = "takes",
+    params(
+        ("take_id" = uuid::Uuid, Path, description = "The take"),
+        ("idx" = u32, Path, description = "Chunk index (0-based)"),
+    ),
+    request_body = AckChunkBody,
+    responses(
+        (status = 200, description = "Chunk recorded (or already recorded identically)", body = AckChunkResponse),
+        (status = 401, description = "No valid session", body = Problem, content_type = "application/problem+json"),
+        (status = 403, description = "Missing or mismatched CSRF token", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such take, or not the caller's", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "Acked before with a different hash or size, or the take is finalized", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "Not uploaded, size differs from storage, or invalid size/hash/index", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+#[tracing::instrument(skip_all, fields(workspace_id = %ctx.workspace_id))]
+pub async fn ack_chunk(
+    State(state): State<AppState>,
+    ctx: WorkspaceContext,
+    headers: HeaderMap,
+    Path((take_id, idx)): Path<(TakeId, u32)>,
+    Json(body): Json<AckChunkBody>,
+) -> Result<Json<AckChunkResponse>, ApiError> {
+    verify_csrf(&headers)?;
+    let outcome = state
+        .ingest
+        .ack_chunk(AckChunk {
+            workspace_id: ctx.workspace_id,
+            user_id: ctx.user_id,
+            take_id,
+            idx,
+            size_bytes: body.size_bytes,
+            sha256: body.sha256,
+        })
+        .await
+        .map_err(|error| match error {
+            AckError::NotFound => ApiError::from(AppError::NotFound),
+            AckError::Finalized | AckError::Mismatch { .. } => {
+                ApiError::from(AppError::Conflict(error.to_string()))
+            }
+            AckError::IndexTooLarge
+            | AckError::InvalidDigest(_)
+            | AckError::InvalidSize(_)
+            | AckError::NotUploaded { .. }
+            | AckError::SizeMismatch { .. } => {
+                ApiError::from(AppError::Validation(error.to_string()))
+            }
+            AckError::Storage(source) => {
+                tracing::error!(error = %source, "ack: object store error");
+                ApiError::from(AppError::Internal("storage unavailable".to_string()))
+            }
+            AckError::Database(source) => {
+                tracing::error!(error = %source, "ack: database error");
+                ApiError::from(AppError::Internal("database unavailable".to_string()))
+            }
+        })?;
+    Ok(Json(AckChunkResponse {
+        idx,
+        status: match outcome {
+            AckOutcome::Acked => AckStatus::Acked,
+            AckOutcome::AlreadyAcked => AckStatus::AlreadyAcked,
+        },
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use axum::body::Body;
@@ -171,6 +265,15 @@ mod tests {
     }
 
     async fn presign(pool: &PgPool, owner: &Owner, path_suffix: &str) -> (StatusCode, Value) {
+        call(pool, owner, path_suffix, Body::empty()).await
+    }
+
+    async fn call(
+        pool: &PgPool,
+        owner: &Owner,
+        path_suffix: &str,
+        body: Body,
+    ) -> (StatusCode, Value) {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
@@ -190,7 +293,8 @@ mod tests {
                     ))
                     .header("cookie", &owner.cookie)
                     .header(CSRF_HEADER_NAME, "token")
-                    .body(Body::empty())
+                    .header("content-type", "application/json")
+                    .body(body)
                     .expect("valid request"),
             )
             .await
@@ -269,5 +373,83 @@ mod tests {
         let (status, body) = presign(&pool, &owner, "0/url").await;
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
         assert_eq!(body["status"], 409);
+    }
+
+    async fn ack(
+        pool: &PgPool,
+        owner: &Owner,
+        idx: u32,
+        size: usize,
+        sha256: &str,
+    ) -> (StatusCode, Value) {
+        call(
+            pool,
+            owner,
+            &format!("{idx}/ack"),
+            Body::from(serde_json::json!({ "size_bytes": size, "sha256": sha256 }).to_string()),
+        )
+        .await
+    }
+
+    /// Presigns chunk `idx` and PUTs `bytes` to it in real MinIO.
+    async fn upload(pool: &PgPool, owner: &Owner, idx: u32, bytes: &[u8]) {
+        let (status, body) = presign(pool, owner, &format!("{idx}/url")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let put = reqwest::Client::new()
+            .put(body["urls"][0]["url"].as_str().expect("url"))
+            .body(bytes.to_vec())
+            .send()
+            .await
+            .expect("PUT reaches MinIO");
+        assert!(put.status().is_success(), "PUT got {}", put.status());
+    }
+
+    const HASH_A: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    const HASH_B: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    /// Day 35's Check: idempotency and conflict over HTTP, against real storage.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn ack_is_idempotent_and_a_different_hash_is_409(pool: PgPool) {
+        let owner = owner_with_take(&pool).await;
+        let bytes = vec![1u8; 2048];
+
+        let (status, body) = ack(&pool, &owner, 0, bytes.len(), HASH_A).await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "not uploaded yet: {body}"
+        );
+
+        upload(&pool, &owner, 0, &bytes).await;
+        let (status, body) = ack(&pool, &owner, 0, bytes.len() + 1, HASH_A).await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "size differs from storage: {body}"
+        );
+
+        let (status, body) = ack(&pool, &owner, 0, bytes.len(), HASH_A).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["status"], "acked");
+        let (status, body) = ack(&pool, &owner, 0, bytes.len(), HASH_A).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["status"], "already_acked");
+
+        let (status, body) = ack(&pool, &owner, 0, bytes.len(), HASH_B).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["status"], 409);
+
+        let count = sqlx::query_scalar!(
+            r#"SELECT count(*) AS "n!" FROM chunks WHERE take_id = $1"#,
+            owner.take_id.into_uuid()
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(count, 1);
+        test_store()
+            .delete_prefix(&format!("ws/{}/", owner.workspace_id))
+            .await
+            .expect("clean up");
     }
 }
