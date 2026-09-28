@@ -1088,10 +1088,10 @@ Rules: one row = one mergeable unit of work. `In progress` must name the branch 
 | MVP | Identity: register, login, refresh rotation, logout | 12 | In progress | Merged Days 12–14, 16–17, 19 (incl. logout everywhere, Angular screens). US-01/US-02 criteria pass. Local demo `docs/demos/M02-identity.md` (2026-09-26); not *Done*, since no staging/prod deploy exists yet |
 | MVP | Identity: email verification, password reset | 12 | In progress | Merged Day 15. US-01 (verification) / US-03 criteria pass. Local demo `docs/demos/M02-identity.md` (2026-09-26); not *Done*, since no staging/prod deploy exists yet |
 | MVP | Personal workspace auto-created on signup | 13 | In progress | Day 12, moved behind the `tenancy` crate on Day 18 (ADR-0007). Same-transaction creation verified. Local demo `docs/demos/M02-identity.md` (2026-09-26); not *Done*, since no staging/prod deploy exists yet |
-| MVP | Capture: source selection + device picker | 1 | In progress | Day 21 (`feat/day-021-capture-source-manager`): framework-free `SourceManager` (display + mic, device list, `CaptureError`), previewed on `/debug`. Day 27 (`feat/day-027-recorder-ui`): `/record` page with source picker, mic selector (remembered), system-audio toggle disabled with a reason where unsupported |
+| MVP | Capture: source selection + device picker | 1 | In progress | Day 21 (`feat/day-021-capture-source-manager`): framework-free `SourceManager` (display + mic, device list, `CaptureError`), previewed on `/debug`. Day 27 (`feat/day-027-recorder-ui`): `/record` page with source picker, mic selector (remembered), system-audio toggle disabled with a reason where unsupported. M3 demo (local, 2026-09-28, `docs/demos/M03-capture-engine.md`): 2-minute recording + crash recovery on Chromium + Firefox; WebKit recording deferred to macOS (Playwright's Linux WebKit has no `MediaRecorder`) |
 | MVP | Capture: `AudioMixer` (mic + system audio) | 1 | In progress | Day 22 (`feat/day-022-audio-mixer`): mic + display → one `MediaStreamDestination` track, RMS meters per input + mix; the cross-engine self-test proves both sources in a recorded clip. Wired into the recorder on Day 39 |
-| MVP | Capture: `ChunkRecorder`, controls, countdown | 2 | In progress | Day 23 (`feat/day-023-chunk-recorder`): `ChunkRecorder` per the §5 contract, incl. pause/resume, pause-excluding timer and auto-stop on track end (Day 24); concatenated and paused clips proven playable on Chromium + Firefox. Day 28 countdown + device meter; Day 29 control bar (Pause/Resume, Stop, timer; keyboard-only operable) driving a framework-free `TakeSession` |
-| MVP | Capture: OPFS `ChunkStore` + recovery dialog | 3 | In progress | Day 25 (`feat/day-025-chunk-store`): `ChunkStore` on OPFS with IndexedDB fallback; chunks survive a reload on both backends. Day 26 (`feat/day-026-orphan-recovery`): take journal, Web-Lock-based orphan detection, recovery dialog (Save a copy / Discard; Upload disabled until Days 37–39) |
+| MVP | Capture: `ChunkRecorder`, controls, countdown | 2 | In progress | Day 23 (`feat/day-023-chunk-recorder`): `ChunkRecorder` per the §5 contract, incl. pause/resume, pause-excluding timer and auto-stop on track end (Day 24); concatenated and paused clips proven playable on Chromium + Firefox. Day 28 countdown + device meter; Day 29 control bar (Pause/Resume, Stop, timer; keyboard-only operable) driving a framework-free `TakeSession`. M3 demo (local, 2026-09-28, `docs/demos/M03-capture-engine.md`): 2-minute recording + crash recovery on Chromium + Firefox; WebKit recording deferred to macOS (Playwright's Linux WebKit has no `MediaRecorder`) |
+| MVP | Capture: OPFS `ChunkStore` + recovery dialog | 3 | In progress | Day 25 (`feat/day-025-chunk-store`): `ChunkStore` on OPFS with IndexedDB fallback; chunks survive a reload on both backends. Day 26 (`feat/day-026-orphan-recovery`): take journal, Web-Lock-based orphan detection, recovery dialog (Save a copy / Discard; Upload disabled until Days 37–39). M3 demo (local, 2026-09-28, `docs/demos/M03-capture-engine.md`): 2-minute recording + crash recovery on Chromium + Firefox; WebKit recording deferred to macOS (Playwright's Linux WebKit has no `MediaRecorder`) |
 | MVP | Ingest: recording, take, upload-session creation | 4 | Not started |  |
 | MVP | Ingest: presign, ack, status, finalize | 4 | Not started |  |
 | MVP | Client `Uploader`: streaming queue + retry | 3, 4 | Not started |  |
@@ -1157,14 +1157,14 @@ _Verified locally 2026-09-26, `docs/demos/M02-identity.md`; staging pending._
 
 **US-10 — As a creator, I want to choose screen, window or tab plus mic and system audio, so that I record exactly what I need.**
 
-- [ ] Mic list populated after permission; last choice remembered
-- [ ] Given the browser lacks system audio, when the recorder opens, then the option is disabled with a one-line reason
-- [ ] Denied permissions show recovery instructions per browser, not a blank screen
+- [x] Mic list populated after permission; last choice remembered (verified locally, M3 demo `docs/demos/M03-capture-engine.md`)
+- [x] Given the browser lacks system audio, when the recorder opens, then the option is disabled with a one-line reason (verified locally, M3 demo `docs/demos/M03-capture-engine.md`)
+- [x] Denied permissions show recovery instructions per browser, not a blank screen (verified locally, M3 demo `docs/demos/M03-capture-engine.md`)
 
 **US-11 — As a creator, I want start, pause, resume and stop with a countdown, so that I control the take.**
 
-- [ ] 3-2-1 countdown, skippable with `Esc`
-- [ ] Timer excludes paused time
+- [x] 3-2-1 countdown, skippable with `Esc` (verified locally, M3 demo `docs/demos/M03-capture-engine.md`)
+- [x] Timer excludes paused time (verified locally, M3 demo `docs/demos/M03-capture-engine.md`)
 - [ ] Given the user clicks the browser's "Stop sharing", then recording stops and upload completes as with the Stop button
 
 **US-12 — As a creator, I want my recording to survive a crash, so that I never lose work.**
