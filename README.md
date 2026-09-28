@@ -732,7 +732,7 @@ Validation: password ≥ 10 characters, checked against a top-100k breached-pass
 
 **Hardening (§11):** login (5/min/IP+email) and signup (3/hour/IP) rate limits are enforced by a Postgres-backed fixed-window `RateLimiter`, keyed off `X-Forwarded-For` (the architecture always puts a CDN in front — see §2); a `429` is returned once the window's limit is reached. CSRF double-submit (`sintade_csrf` cookie, readable by JS, echoed back as `X-CSRF-Token`) protects `/auth/refresh` and `/auth/logout` specifically — the only two routes that act on an *ambient* cookie without a body secret, which is the actual CSRF threat surface; register/login/verify-email/forgot/reset all require a password or token in the body that a cross-site attacker can't supply on a victim's behalf, so double-submit adds nothing there. Every response carries `Strict-Transport-Security`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, a `Content-Security-Policy` with no inline scripts, and `Permissions-Policy: display-capture=(self)`.
 
-### Recordings and ingest — 🟡 MVP (Days 33–36: the server side of upload protocol v1 is implemented — create, presign, ack, status, finalize; client uploader planned)
+### Recordings and ingest — 🟡 MVP (Days 33–37: the server side of upload protocol v1 — create, presign, ack, status, finalize — and the browser `Uploader` are implemented; retry and recorder wiring planned)
 
 | Method | Path | Auth | Description | Notable statuses |
 | --- | --- | --- | --- | --- |
@@ -883,6 +883,7 @@ Configuration is environment-variable based, loaded by the `platform` crate. Fea
 | --- | --- | --- | --- | --- |
 | `DATABASE_URL` | Yes | Postgres connection string | `postgres://<user>:<password>@localhost:5432/sintade` | Yes |
 | `S3_ENDPOINT` | Yes | MinIO endpoint | `http://localhost:9000` | No |
+| `S3_PUBLIC_ENDPOINT` | No | Host browsers `PUT` chunks to; presigned URLs are signed for it (ADR-0010). Dev: the HTTPS dev server, which proxies `/<bucket>` to MinIO | `https://localhost:4200` | No |
 | `S3_BUCKET` | Yes | Private media bucket | `sintade-dev` | No |
 | `S3_ACCESS_KEY` | Yes | Storage access key | `<your-access-key>` | Yes |
 | `S3_SECRET_KEY` | Yes | Storage secret key | `<your-secret-key>` | Yes |
@@ -1786,7 +1787,7 @@ Architectural limitations: single-node MinIO and single Postgres primary in MVP;
 - **M3 — Capture engine (Days 21–32, weeks 5–7).** Framework-free `capture` package: `SourceManager`, `AudioMixer` with level meters, `ChunkRecorder` (2 s slices, pause/resume, pause-excluding timer, auto-stop on "Stop sharing"), OPFS `ChunkStore` with IndexedDB fallback, take journal + Web-Lock crash recovery, `TakeSession`; the `/record` page with source picker, remembered mic, system-audio toggle with reasons, device meter, 3-2-1 countdown, keyboard-operable control bar, per-browser permission help and a mobile view-only notice; a fake-media Playwright harness on all three engines. Demo (local): a 2-minute recording with a pause and crash recovery on Chromium and Firefox, `docs/demos/M03-capture-engine.md`. **WebKit recording is not yet demonstrated** (Playwright's Linux WebKit has no `MediaRecorder`); a macOS/Safari check is carried over. Recordings stay on the device until M4's uploader.
 
 ### In Progress
-- M4 — Ingest (Days 33–42, weeks 7–8): in progress. `catalog` and `ingest` crates, `recordings`/`takes`/`chunks` tables and `POST /api/v1/recordings` (creates a recording and its first take in the caller's workspace) done (Day 33); chunk presigning (`POST /takes/{id}/chunks/{idx}/url`, batches of up to 10, owner only) done (Day 34); idempotent chunk ack with size check against storage done (Day 35); take status and finalize (`422` listing missing chunks; recording → `processing`; `TakeFinalized` in the outbox) done (Day 36); the browser `Uploader` next (Day 37).
+- M4 — Ingest (Days 33–42, weeks 7–8): in progress. `catalog` and `ingest` crates, `recordings`/`takes`/`chunks` tables and `POST /api/v1/recordings` (creates a recording and its first take in the caller's workspace) done (Day 33); chunk presigning (`POST /takes/{id}/chunks/{idx}/url`, batches of up to 10, owner only) done (Day 34); idempotent chunk ack with size check against storage done (Day 35); take status and finalize (`422` listing missing chunks; recording → `processing`; `TakeFinalized` in the outbox) done (Day 36); the browser `Uploader` (SubtleCrypto SHA-256, presign → `PUT` → ack, verified on all three engines; same-origin storage proxy in dev per ADR-0010) done (Day 37); retry/offline/resume next (Day 38).
 
 ### Planned — MVP (weeks 1–14)
 
