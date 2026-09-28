@@ -5,7 +5,6 @@ use axum::Router;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderValue, Method, StatusCode};
 use axum::middleware;
-use catalog::CatalogService;
 use identity::IdentityService;
 use ingest::IngestService;
 use kernel::AppError;
@@ -39,6 +38,7 @@ pub fn build_router(
     pool: PgPool,
     identity: Arc<IdentityService>,
     tenancy: Arc<TenancyService>,
+    ingest: Arc<IngestService>,
     rate_limiter: Arc<RateLimiter>,
     clock: Arc<dyn Clock>,
     public_base_url: &str,
@@ -46,10 +46,7 @@ pub fn build_router(
     build_router_from(
         routes::table(),
         AppState {
-            ingest: Arc::new(IngestService::new(
-                pool.clone(),
-                Arc::new(CatalogService::new()),
-            )),
+            ingest,
             pool,
             identity,
             tenancy,
@@ -150,6 +147,7 @@ pub(crate) mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
+    use catalog::CatalogService;
     use tower::ServiceExt;
 
     const TEST_ORIGIN: &str = "http://localhost:4200";
@@ -171,8 +169,23 @@ pub(crate) mod tests {
         Arc::new(TenancyService::new(pool))
     }
 
+    /// Real MinIO settings from the environment (as `platform`'s store tests use). Presigning
+    /// is computed locally, so only tests that PUT/HEAD actually reach MinIO.
+    pub(crate) fn test_store() -> Arc<dyn platform::ObjectStore> {
+        Arc::new(platform::S3ObjectStore::new(
+            &std::env::var("S3_ENDPOINT").expect("S3_ENDPOINT set"),
+            &std::env::var("S3_BUCKET").expect("S3_BUCKET set"),
+            &std::env::var("S3_ACCESS_KEY").expect("S3_ACCESS_KEY set"),
+            &std::env::var("S3_SECRET_KEY").expect("S3_SECRET_KEY set"),
+        ))
+    }
+
     pub(crate) fn test_ingest(pool: PgPool) -> Arc<IngestService> {
-        Arc::new(IngestService::new(pool, Arc::new(CatalogService::new())))
+        Arc::new(IngestService::new(
+            pool,
+            Arc::new(CatalogService::new()),
+            test_store(),
+        ))
     }
 
     pub(crate) fn test_rate_limiter(pool: PgPool) -> Arc<RateLimiter> {
@@ -198,6 +211,7 @@ pub(crate) mod tests {
             pool.clone(),
             test_identity(pool.clone()),
             test_tenancy(pool.clone()),
+            test_ingest(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -220,6 +234,7 @@ pub(crate) mod tests {
             pool.clone(),
             test_identity(pool.clone()),
             test_tenancy(pool.clone()),
+            test_ingest(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -242,6 +257,7 @@ pub(crate) mod tests {
             pool.clone(),
             test_identity(pool.clone()),
             test_tenancy(pool.clone()),
+            test_ingest(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,

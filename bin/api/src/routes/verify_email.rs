@@ -63,7 +63,9 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::build_router;
-    use crate::app::tests::{test_clock, test_identity, test_rate_limiter, test_tenancy};
+    use crate::app::tests::{
+        test_clock, test_identity, test_ingest, test_rate_limiter, test_tenancy,
+    };
 
     const TEST_ORIGIN: &str = "http://localhost:4200";
 
@@ -97,6 +99,7 @@ mod tests {
             pool.clone(),
             test_identity(pool.clone()),
             test_tenancy(pool.clone()),
+            test_ingest(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -124,6 +127,7 @@ mod tests {
             pool.clone(),
             test_identity(pool.clone()),
             test_tenancy(pool.clone()),
+            test_ingest(pool.clone()),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,

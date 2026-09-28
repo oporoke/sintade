@@ -732,12 +732,12 @@ Validation: password ≥ 10 characters, checked against a top-100k breached-pass
 
 **Hardening (§11):** login (5/min/IP+email) and signup (3/hour/IP) rate limits are enforced by a Postgres-backed fixed-window `RateLimiter`, keyed off `X-Forwarded-For` (the architecture always puts a CDN in front — see §2); a `429` is returned once the window's limit is reached. CSRF double-submit (`sintade_csrf` cookie, readable by JS, echoed back as `X-CSRF-Token`) protects `/auth/refresh` and `/auth/logout` specifically — the only two routes that act on an *ambient* cookie without a body secret, which is the actual CSRF threat surface; register/login/verify-email/forgot/reset all require a password or token in the body that a cross-site attacker can't supply on a victim's behalf, so double-submit adds nothing there. Every response carries `Strict-Transport-Security`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, a `Content-Security-Policy` with no inline scripts, and `Permissions-Policy: display-capture=(self)`.
 
-### Recordings and ingest — 🟡 MVP (Day 33: `POST /recordings` implemented; the rest planned)
+### Recordings and ingest — 🟡 MVP (Days 33–34: `POST /recordings` and chunk presigning implemented; the rest planned)
 
 | Method | Path | Auth | Description | Notable statuses |
 | --- | --- | --- | --- | --- |
 | POST | `/recordings` | Session (workspace member with `CreateRecording`, CSRF) | ✅ Create recording + take in the session's workspace; returns `recording_id`, `take_id` (Day 33). Upload session and entitlement checks not yet (`upload_sessions` deferred; entitlements Day 41) | 201, 403 (CSRF or viewer role), 422 (title or MIME type), 402/403 on entitlement (`TODO: Verify`, Day 41) |
-| POST | `/takes/{id}/chunks/{idx}/url` | Session (owner) | Presigned PUT (5 min); `?count=` for batches | 200 |
+| POST | `/takes/{id}/chunks/{idx}/url` | Session (owner) | ✅ Presigned PUT (5 min); `?count=1..10` for batches (Day 34) | 200, 404 (not the owner's take), 409 (finalized), 422 (range) |
 | POST | `/takes/{id}/chunks/{idx}/ack` | Session (owner) | Confirm size + SHA-256 | 200, 409 (hash mismatch) |
 | POST | `/takes/{id}/finalize` | Session (owner) | Declare chunk count and duration; enqueue processing | 202, 422 (missing indexes) |
 | GET | `/takes/{id}/status` | Session (owner) | Received chunk indexes (resume) | 200 |
@@ -1786,7 +1786,7 @@ Architectural limitations: single-node MinIO and single Postgres primary in MVP;
 - **M3 — Capture engine (Days 21–32, weeks 5–7).** Framework-free `capture` package: `SourceManager`, `AudioMixer` with level meters, `ChunkRecorder` (2 s slices, pause/resume, pause-excluding timer, auto-stop on "Stop sharing"), OPFS `ChunkStore` with IndexedDB fallback, take journal + Web-Lock crash recovery, `TakeSession`; the `/record` page with source picker, remembered mic, system-audio toggle with reasons, device meter, 3-2-1 countdown, keyboard-operable control bar, per-browser permission help and a mobile view-only notice; a fake-media Playwright harness on all three engines. Demo (local): a 2-minute recording with a pause and crash recovery on Chromium and Firefox, `docs/demos/M03-capture-engine.md`. **WebKit recording is not yet demonstrated** (Playwright's Linux WebKit has no `MediaRecorder`); a macOS/Safari check is carried over. Recordings stay on the device until M4's uploader.
 
 ### In Progress
-- M4 — Ingest (Days 33–42, weeks 7–8): in progress. `catalog` and `ingest` crates, `recordings`/`takes`/`chunks` tables and `POST /api/v1/recordings` (creates a recording and its first take in the caller's workspace) done (Day 33); chunk presigning next (Day 34).
+- M4 — Ingest (Days 33–42, weeks 7–8): in progress. `catalog` and `ingest` crates, `recordings`/`takes`/`chunks` tables and `POST /api/v1/recordings` (creates a recording and its first take in the caller's workspace) done (Day 33); chunk presigning (`POST /takes/{id}/chunks/{idx}/url`, batches of up to 10, owner only) done (Day 34); chunk ack next (Day 35).
 
 ### Planned — MVP (weeks 1–14)
 

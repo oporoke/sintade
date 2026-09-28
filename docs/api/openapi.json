@@ -490,6 +490,114 @@
         }
       }
     },
+    "/api/v1/takes/{take_id}/chunks/{idx}/url": {
+      "post": {
+        "tags": [
+          "takes"
+        ],
+        "summary": "Presigned `PUT` URLs for chunk `idx` (and, with `?count=`, the chunks after it). Only the\nrecording's owner gets them, and only until the take is finalized. The browser then `PUT`s\nthe bytes straight to object storage (media never passes through the API).",
+        "operationId": "presign_chunks",
+        "parameters": [
+          {
+            "name": "take_id",
+            "in": "path",
+            "description": "The take",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "idx",
+            "in": "path",
+            "description": "First chunk index (0-based)",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "count",
+            "in": "path",
+            "description": "How many consecutive chunk URLs to return, starting at `idx` (1–10, default 1). Used to\nbatch round trips after a reconnect.",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Upload URLs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresignChunksResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or mismatched CSRF token",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such take, or not the caller's",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The take is already finalized",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "count outside 1–10 or index too large",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/healthz": {
       "get": {
         "tags": [
@@ -529,6 +637,24 @@
   },
   "components": {
     "schemas": {
+      "ChunkUploadUrl": {
+        "type": "object",
+        "required": [
+          "idx",
+          "url"
+        ],
+        "properties": {
+          "idx": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "url": {
+            "type": "string",
+            "description": "Presigned `PUT` for this chunk's bytes. A bearer credential: don't log it."
+          }
+        }
+      },
       "CreateRecordingBody": {
         "type": "object",
         "required": [
@@ -695,6 +821,27 @@
         "properties": {
           "message": {
             "type": "string"
+          }
+        }
+      },
+      "PresignChunksResponse": {
+        "type": "object",
+        "required": [
+          "urls",
+          "expires_in_s"
+        ],
+        "properties": {
+          "expires_in_s": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds each URL stays valid.",
+            "minimum": 0
+          },
+          "urls": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChunkUploadUrl"
+            }
           }
         }
       },
