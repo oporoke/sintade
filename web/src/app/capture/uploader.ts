@@ -58,8 +58,10 @@ export interface UploaderOptions {
   api: UploadApi;
   /** Where the chunks are: every chunk is in the store before it is uploaded (US-12). */
   store: ChunkStore;
-  /** The server's take id, also the key the chunks are stored under. */
+  /** The server's take id. */
   takeId: string;
+  /** The key the chunks are stored under, when it isn't `takeId` (a take recorded offline). */
+  storeTakeId?: string;
   put?: PutChunk;
   digest?: DigestChunk;
   network?: NetworkPort;
@@ -176,6 +178,7 @@ export class Uploader {
   private readonly api: UploadApi;
   private readonly store: ChunkStore;
   private readonly takeId: string;
+  private readonly storeTakeId: string;
   private readonly put: PutChunk;
   private readonly digest: DigestChunk;
   private readonly network: NetworkPort;
@@ -196,6 +199,7 @@ export class Uploader {
     this.api = options.api;
     this.store = options.store;
     this.takeId = options.takeId;
+    this.storeTakeId = options.storeTakeId ?? options.takeId;
     this.put = options.put ?? fetchPut;
     this.digest = options.digest ?? ((blob) => sha256Hex(blob));
     this.network = options.network ?? browserNetwork;
@@ -230,14 +234,15 @@ export class Uploader {
    * which chunks it has, skips those whose recorded hash matches the local copy, and queues
    * every other chunk in the store. A server chunk that differs from the local one is a
    * failure: the server keeps the first ack, so the take can't be completed from this device.
+   * With `upTo`, only chunks below that index are queued.
    */
-  async resume(): Promise<void> {
+  async resume(upTo = Number.POSITIVE_INFINITY): Promise<void> {
     const status = await this.withRetry(() => this.api.status(this.takeId));
-    const local = await this.store.indexes(this.takeId);
+    const local = (await this.store.indexes(this.storeTakeId)).filter((idx) => idx < upTo);
     const localSet = new Set(local);
     for (const chunk of status.chunks) {
       if (localSet.has(chunk.idx)) {
-        const blob = await this.store.get(this.takeId, chunk.idx);
+        const blob = await this.store.get(this.storeTakeId, chunk.idx);
         if (blob && (await this.digest(blob)) !== chunk.sha256) {
           this.fail(new UploadError(chunk.idx, new Error('the server has a different copy')));
           return;
@@ -269,7 +274,7 @@ export class Uploader {
         const finalized = await this.withRetry(() =>
           this.api.finalize(this.takeId, chunkCount, durationMs),
         );
-        await this.store.deleteTake(this.takeId);
+        await this.store.deleteTake(this.storeTakeId);
         this.setState('finalized');
         return finalized;
       } catch (error) {
@@ -279,7 +284,7 @@ export class Uploader {
           this.fail(failure);
           throw failure;
         }
-        await this.resume();
+        await this.resume(chunkCount);
       }
     }
   }
@@ -356,7 +361,7 @@ export class Uploader {
   }
 
   private async upload(idx: number): Promise<void> {
-    const blob = await this.store.get(this.takeId, idx);
+    const blob = await this.store.get(this.storeTakeId, idx);
     if (!blob) {
       throw new UploadError(idx, new Error('chunk is not in the local store'));
     }

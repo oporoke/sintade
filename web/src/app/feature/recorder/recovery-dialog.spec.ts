@@ -1,7 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 
-import { ChunkStore, TakeMeta } from '../../capture';
-import { CHUNK_STORE } from '../../core/capture.tokens';
+import { ChunkStore, TakeMeta, UploadHttpError } from '../../capture';
+import { CHUNK_STORE, RECORDINGS_API, RecordingsApi } from '../../core/capture.tokens';
 import { RecoveryDialog } from './recovery-dialog';
 
 const TAKE = '0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b';
@@ -31,10 +31,25 @@ async function settle(fixture: { detectChanges(): void }) {
   }
 }
 
-async function setup(store: ChunkStore) {
+function fakeApi() {
+  return {
+    createRecording: vi.fn().mockResolvedValue({ recording_id: 'rec-new', take_id: 'server-new' }),
+    presign: vi.fn(async (_take: string, idx: number, count: number) =>
+      Array.from({ length: count }, (_, i) => ({ idx: idx + i, url: `https://store/${idx + i}` })),
+    ),
+    ack: vi.fn().mockResolvedValue(undefined),
+    status: vi.fn().mockResolvedValue({ finalized: false, chunks: [] }),
+    finalize: vi.fn().mockResolvedValue({ recording_id: 'rec-1' }),
+  };
+}
+
+async function setup(store: ChunkStore, api: RecordingsApi = fakeApi()) {
   TestBed.configureTestingModule({
     imports: [RecoveryDialog],
-    providers: [{ provide: CHUNK_STORE, useValue: Promise.resolve(store) }],
+    providers: [
+      { provide: CHUNK_STORE, useValue: Promise.resolve(store) },
+      { provide: RECORDINGS_API, useValue: api },
+    ],
   });
   const fixture = TestBed.createComponent(RecoveryDialog);
   await settle(fixture);
@@ -89,11 +104,69 @@ describe('RecoveryDialog', () => {
     expect(dialog?.open).toBe(false);
   });
 
-  it('keeps Upload disabled until uploads exist', async () => {
-    const { element } = await setup(fakeStore({ [TAKE]: { meta: null, chunks: ['a'] } }));
-    const upload = [...element.querySelectorAll('button')].find(
-      (button) => button.textContent?.trim() === 'Upload',
+  describe('upload', () => {
+    beforeEach(() =>
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(null, { status: 200 })),
+      ),
     );
-    expect(upload?.disabled).toBe(true);
+    afterEach(() => vi.unstubAllGlobals());
+
+    const meta = (serverTakeId?: string): TakeMeta => ({
+      takeId: TAKE,
+      startedAt: 0,
+      mimeType: 'video/webm;codecs=vp9,opus',
+      chunkCount: 2,
+      durationMs: 4_000,
+      ...(serverTakeId ? { serverTakeId } : {}),
+    });
+
+    it('uploads a server take, finalizes it, and confirms', async () => {
+      const store = fakeStore({ [TAKE]: { meta: meta(TAKE), chunks: ['a', 'b'] } });
+      const api = fakeApi();
+      const { fixture, element, dialog } = await setup(store, api);
+      element.querySelector<HTMLButtonElement>('[data-testid="recovery-upload"]')?.click();
+      await vi.waitFor(() => expect(api.finalize).toHaveBeenCalledWith(TAKE, 2, 4_000));
+      await settle(fixture);
+
+      expect(api.createRecording).not.toHaveBeenCalled();
+      expect(api.ack).toHaveBeenCalledTimes(2);
+      expect(store.deleteTake).toHaveBeenCalledWith(TAKE);
+      const done = element.querySelector('[data-testid="recovery-uploaded"]');
+      expect(done?.getAttribute('data-server-take-id')).toBe(TAKE);
+      expect(done?.textContent?.trim()).toBe('Uploaded. Processing has started.');
+      expect(element.querySelectorAll('[data-testid="recovery-take"]')).toHaveLength(0);
+      expect(dialog?.open).toBe(true);
+    });
+
+    it('creates a recording for a take made offline', async () => {
+      const store = fakeStore({ [TAKE]: { meta: meta(), chunks: ['a', 'b'] } });
+      const api = fakeApi();
+      const { fixture, element } = await setup(store, api);
+      element.querySelector<HTMLButtonElement>('[data-testid="recovery-upload"]')?.click();
+      await vi.waitFor(() => expect(api.finalize).toHaveBeenCalled());
+      await settle(fixture);
+      expect(api.createRecording).toHaveBeenCalledWith(
+        expect.objectContaining({ mime_type: 'video/webm;codecs=vp9,opus' }),
+      );
+      expect(api.finalize).toHaveBeenCalledWith('server-new', 2, 4_000);
+      expect(store.putMeta).toHaveBeenCalledWith(
+        expect.objectContaining({ serverTakeId: 'server-new' }),
+      );
+    });
+
+    it('shows the problem and keeps the take when the upload is refused', async () => {
+      const store = fakeStore({ [TAKE]: { meta: meta(TAKE), chunks: ['a'] } });
+      const api = fakeApi();
+      api.status.mockRejectedValue(new UploadHttpError('api', 404, 'not found'));
+      const { fixture, element } = await setup(store, api);
+      element.querySelector<HTMLButtonElement>('[data-testid="recovery-upload"]')?.click();
+      await vi.waitFor(() => expect(api.status).toHaveBeenCalled());
+      await settle(fixture);
+      expect(element.querySelector('[data-testid="recovery-error"]')).not.toBeNull();
+      expect(element.querySelectorAll('[data-testid="recovery-take"]')).toHaveLength(1);
+      expect(store.deleteTake).not.toHaveBeenCalled();
+    });
   });
 });

@@ -8,15 +8,23 @@ import {
   viewChild,
 } from '@angular/core';
 
-import { ChunkStore, OrphanTake, assembleTake, listOrphans } from '../../capture';
-import { CHUNK_STORE } from '../../core/capture.tokens';
+import {
+  ChunkStore,
+  OrphanTake,
+  UploadProgress,
+  assembleTake,
+  listOrphans,
+  uploadRecoveredTake,
+} from '../../capture';
+import { CHUNK_STORE, RECORDINGS_API } from '../../core/capture.tokens';
 import { formatDuration, formatStart } from './format';
 
 /**
  * On app load, offers every unfinished recording left behind by a crashed or closed tab
- * (§10 Recover, US-12): "Unfinished recording from 14:02, 6 min 20 s". Discard deletes it; Save
- * a copy downloads the reassembled file. Upload arrives with streaming upload (Days 37–39),
- * so it is shown but disabled until then.
+ * (§10 Recover, US-12): "Unfinished recording from 14:02, 6 min 20 s". Upload sends what the
+ * server doesn't have yet (or creates a recording for a take made offline), finalizes and
+ * clears it from the device (Day 40); Save a copy downloads the reassembled file; Discard
+ * deletes it.
  */
 @Component({
   selector: 'app-recovery-dialog',
@@ -34,20 +42,49 @@ import { formatDuration, formatStart } from './format';
           [attr.data-duration-ms]="orphan.durationMs"
         >
           <p data-testid="recovery-summary">{{ summary(orphan) }}</p>
-          <button type="button" disabled aria-describedby="recovery-upload-note" i18n>
+          <button
+            type="button"
+            (click)="upload(orphan)"
+            [disabled]="busy() !== null"
+            data-testid="recovery-upload"
+            i18n
+          >
             Upload
           </button>
-          <button type="button" (click)="save(orphan)" data-testid="recovery-save" i18n>
+          <button
+            type="button"
+            (click)="save(orphan)"
+            [disabled]="busy() !== null"
+            data-testid="recovery-save"
+            i18n
+          >
             Save a copy
           </button>
-          <button type="button" (click)="discard(orphan)" data-testid="recovery-discard" i18n>
+          <button
+            type="button"
+            (click)="discard(orphan)"
+            [disabled]="busy() !== null"
+            data-testid="recovery-discard"
+            i18n
+          >
             Discard
           </button>
+          @if (busy() === orphan.takeId) {
+            <p role="status" data-testid="recovery-progress">{{ progressText() }}</p>
+          }
         </section>
       }
-      <p id="recovery-upload-note" i18n>
-        Uploading a recovered recording will be available once uploads are enabled.
-      </p>
+      @if (uploaded(); as done) {
+        <p
+          role="status"
+          data-testid="recovery-uploaded"
+          [attr.data-take-id]="done.takeId"
+          [attr.data-server-take-id]="done.serverTakeId"
+          [attr.data-chunk-count]="done.chunkCount"
+        >
+          {{ uploadedText }}
+        </p>
+      }
       @if (error()) {
         <p role="alert" data-testid="recovery-error">{{ error() }}</p>
       }
@@ -59,16 +96,27 @@ import { formatDuration, formatStart } from './format';
 })
 export class RecoveryDialog {
   private readonly storePromise = inject(CHUNK_STORE);
+  private readonly api = inject(RECORDINGS_API);
   private readonly dialog = viewChild.required<ElementRef<HTMLDialogElement>>('dialog');
   private store: ChunkStore | null = null;
 
   protected readonly orphans = signal<OrphanTake[]>([]);
   protected readonly error = signal<string | null>(null);
+  /** The take being uploaded, if any: one at a time. */
+  protected readonly busy = signal<string | null>(null);
+  private readonly progress = signal<UploadProgress | null>(null);
+  protected readonly uploaded = signal<{
+    takeId: string;
+    serverTakeId: string;
+    chunkCount: number;
+  } | null>(null);
+  protected readonly uploadedText = $localize`Uploaded. Processing has started.`;
 
   constructor() {
     effect(() => {
       const element = this.dialog().nativeElement;
-      if (this.orphans().length > 0) {
+      // Stays open to confirm an upload even when it was the last unfinished recording.
+      if (this.orphans().length > 0 || this.uploaded()) {
         if (!element.open) {
           open(element);
         }
@@ -84,6 +132,38 @@ export class RecoveryDialog {
       return $localize`Unfinished recording (start time and length unknown)`;
     }
     return $localize`Unfinished recording from ${formatStart(orphan.startedAt)}:start:, ${formatDuration(orphan.durationMs)}:duration:`;
+  }
+
+  protected progressText(): string {
+    const progress = this.progress();
+    if (!progress) {
+      return $localize`Uploading…`;
+    }
+    if (progress.state === 'offline') {
+      return $localize`You're offline: uploading continues when the connection is back.`;
+    }
+    return $localize`Uploading: ${progress.uploaded}:uploaded: of ${progress.queued}:queued: parts`;
+  }
+
+  async upload(orphan: OrphanTake): Promise<void> {
+    this.busy.set(orphan.takeId);
+    this.progress.set(null);
+    this.uploaded.set(null);
+    await this.act(async (store) => {
+      const result = await uploadRecoveredTake({
+        api: this.api,
+        store,
+        takeId: orphan.takeId,
+        onProgress: (progress) => this.progress.set(progress),
+      });
+      this.uploaded.set({
+        takeId: orphan.takeId,
+        serverTakeId: result.take_id,
+        chunkCount: result.chunkCount,
+      });
+      this.orphans.update((orphans) => orphans.filter((o) => o.takeId !== orphan.takeId));
+    });
+    this.busy.set(null);
   }
 
   async save(orphan: OrphanTake): Promise<void> {
@@ -106,6 +186,7 @@ export class RecoveryDialog {
   }
 
   close(): void {
+    this.uploaded.set(null);
     shut(this.dialog().nativeElement);
   }
 
