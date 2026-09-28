@@ -5,7 +5,9 @@ use axum::Router;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderValue, Method, StatusCode};
 use axum::middleware;
+use catalog::CatalogService;
 use identity::IdentityService;
+use ingest::IngestService;
 use kernel::AppError;
 use platform::{Clock, RateLimiter};
 use sqlx::PgPool;
@@ -28,6 +30,7 @@ pub struct AppState {
     pub pool: PgPool,
     pub identity: Arc<IdentityService>,
     pub tenancy: Arc<TenancyService>,
+    pub ingest: Arc<IngestService>,
     pub rate_limiter: Arc<RateLimiter>,
     pub clock: Arc<dyn Clock>,
 }
@@ -43,6 +46,10 @@ pub fn build_router(
     build_router_from(
         routes::table(),
         AppState {
+            ingest: Arc::new(IngestService::new(
+                pool.clone(),
+                Arc::new(CatalogService::new()),
+            )),
             pool,
             identity,
             tenancy,
@@ -162,6 +169,10 @@ pub(crate) mod tests {
 
     pub(crate) fn test_tenancy(pool: PgPool) -> Arc<TenancyService> {
         Arc::new(TenancyService::new(pool))
+    }
+
+    pub(crate) fn test_ingest(pool: PgPool) -> Arc<IngestService> {
+        Arc::new(IngestService::new(pool, Arc::new(CatalogService::new())))
     }
 
     pub(crate) fn test_rate_limiter(pool: PgPool) -> Arc<RateLimiter> {

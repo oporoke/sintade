@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod me;
+pub mod recordings;
 pub mod verify_email;
 
 use axum::handler::Handler;
@@ -27,13 +28,6 @@ pub enum Access {
     Session,
     /// Touches workspace-owned resources (`WorkspaceContext`). Needs a cross-tenant probe in
     /// the tenant-isolation table.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no workspace-scoped route until Day 33; the tenant-isolation harness uses it"
-        )
-    )]
     Workspace,
 }
 
@@ -71,7 +65,7 @@ impl Route {
 
 /// The single list of API routes. `build_router` mounts exactly these.
 pub fn table() -> Vec<Route> {
-    use Access::{Public, Session};
+    use Access::{Public, Session, Workspace};
     vec![
         Route::new(Method::GET, "/healthz", Public, healthz),
         Route::new(Method::GET, "/readyz", Public, readyz),
@@ -110,5 +104,11 @@ pub fn table() -> Vec<Route> {
         ),
         Route::new(Method::GET, "/api/v1/me", Session, me::me),
         Route::new(Method::PATCH, "/api/v1/me", Session, me::update_me),
+        Route::new(
+            Method::POST,
+            "/api/v1/recordings",
+            Workspace,
+            recordings::create_recording,
+        ),
     ]
 }

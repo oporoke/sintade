@@ -10,7 +10,9 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0.104"
 axum = "0.8.9"
+catalog = { path = "../../crates/catalog" }
 identity = { path = "../../crates/identity" }
+ingest = { path = "../../crates/ingest" }
 kernel = { path = "../../crates/kernel" }
 platform = { path = "../../crates/platform" }
 tenancy = { path = "../../crates/tenancy" }
