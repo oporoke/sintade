@@ -32,6 +32,18 @@ pub type ObjectReader = Pin<Box<dyn AsyncRead + Send>>;
 pub trait ObjectStore: Send + Sync {
     async fn presign_put(&self, key: &str, ttl: Duration) -> Result<Url, StorageError>;
     async fn presign_get(&self, key: &str, ttl: Duration) -> Result<Url, StorageError>;
+    /// Like `presign_get`, but the response asks the browser to save the object as
+    /// `filename` (`Content-Disposition: attachment`). `filename` must be plain ASCII without
+    /// quotes or control characters (see `delivery`'s sanitiser).
+    async fn presign_download(
+        &self,
+        key: &str,
+        ttl: Duration,
+        filename: &str,
+    ) -> Result<Url, StorageError> {
+        let _ = filename;
+        self.presign_get(key, ttl).await
+    }
     async fn head(&self, key: &str) -> Result<Option<ObjectMeta>, StorageError>;
     async fn delete_prefix(&self, prefix: &str) -> Result<u64, StorageError>;
     /// Streams the object at `key`, or `None` if there is none.
@@ -114,6 +126,26 @@ impl ObjectStore for S3ObjectStore {
             .get_object()
             .bucket(&self.bucket)
             .key(key)
+            .presigned(presigning)
+            .await
+            .map_err(|e| StorageError::Request(e.to_string()))?;
+        Ok(Url::parse(request.uri())?)
+    }
+
+    async fn presign_download(
+        &self,
+        key: &str,
+        ttl: Duration,
+        filename: &str,
+    ) -> Result<Url, StorageError> {
+        let presigning =
+            PresigningConfig::expires_in(ttl).map_err(|e| StorageError::Request(e.to_string()))?;
+        let request = self
+            .presign_client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .response_content_disposition(format!("attachment; filename=\"{filename}\""))
             .presigned(presigning)
             .await
             .map_err(|e| StorageError::Request(e.to_string()))?;

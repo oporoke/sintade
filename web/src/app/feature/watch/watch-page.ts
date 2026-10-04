@@ -136,6 +136,16 @@ type View =
             <button type="button" data-testid="watch-fullscreen" (click)="toggleFullscreen()" i18n>
               Fullscreen
             </button>
+            @if (page.watch.can_download) {
+              <button type="button" data-testid="watch-download" (click)="download()" i18n>
+                Download
+              </button>
+            }
+            @if (downloadError()) {
+              <span role="alert" data-testid="watch-download-error" i18n>
+                The download couldn't start. Try again.
+              </span>
+            }
             <span class="meta" i18n>Keys: ← → seek 5 s, space play/pause, F fullscreen</span>
           </div>
         </div>
@@ -152,6 +162,7 @@ export class WatchPage implements OnInit {
   protected readonly speed = signal<number>(1);
   /** Milliseconds from opening the page to the first decoded frame (`loadeddata`). */
   protected readonly firstFrameMs = signal<number | null>(null);
+  protected readonly downloadError = signal(false);
 
   private readonly video = viewChild<ElementRef<HTMLVideoElement>>('video');
   private readonly player = viewChild<ElementRef<HTMLElement>>('player');
@@ -207,6 +218,23 @@ export class WatchPage implements OnInit {
     const video = this.video()?.nativeElement;
     if (video) {
       video.playbackRate = value;
+    }
+  }
+
+  /** Asks for a signed download URL and lets the browser save it (it arrives as an attachment). */
+  protected async download(): Promise<void> {
+    this.downloadError.set(false);
+    try {
+      const grant = await this.api.download(this.route.snapshot.paramMap.get('slug') ?? '');
+      const link = document.createElement('a');
+      link.href = grant.url;
+      link.download = grant.filename;
+      link.rel = 'noopener';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch {
+      this.downloadError.set(true);
     }
   }
 

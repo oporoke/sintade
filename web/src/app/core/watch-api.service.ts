@@ -8,6 +8,7 @@ import { ApiClient } from './api-client.service';
 type Schemas = components['schemas'];
 export type WatchData = Schemas['WatchResponse'];
 export type PlaybackData = Schemas['PlaybackResponse'];
+export type DownloadData = Schemas['DownloadResponse'];
 
 /** `status` is the HTTP status (0: no response). */
 export class WatchHttpError extends Error {
@@ -27,6 +28,10 @@ export class WatchApi {
 
   playback(slug: string): Promise<PlaybackData> {
     return call(this.api.get<PlaybackData>(`/s/${encodeURIComponent(slug)}/playback`));
+  }
+
+  download(slug: string): Promise<DownloadData> {
+    return call(this.api.get<DownloadData>(`/s/${encodeURIComponent(slug)}/download`));
   }
 }
 
