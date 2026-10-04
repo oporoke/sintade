@@ -15,7 +15,7 @@ test:
 
 e2e:
     cd web && npx playwright test
-    cd extension && npm run build && npx playwright test
+    cd extension && npm run e2e
 
 # M3 demo: films a 2-minute recording and a crash/recovery per browser into web/demo-output/
 demo-m3 *args:

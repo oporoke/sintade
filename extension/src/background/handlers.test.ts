@@ -7,6 +7,11 @@ function env(whoAmI: WhoAmIReply = { state: 'signed-out' }) {
   return {
     version: '1.2.3',
     api: { whoAmI: vi.fn().mockResolvedValue(whoAmI), signInUrl: () => 'https://app.test/login' },
+    recorder: {
+      start: vi.fn().mockResolvedValue({ phase: 'starting' }),
+      stop: vi.fn().mockResolvedValue({ phase: 'uploading' }),
+      status: vi.fn().mockResolvedValue({ phase: 'idle' }),
+    },
     openTab: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -30,6 +35,27 @@ describe('handleMessage', () => {
     const e = env();
     expect(await handleMessage({ type: 'open-sign-in' }, e)).toEqual({ ok: true });
     expect(e.openTab).toHaveBeenCalledWith('https://app.test/login');
+  });
+
+  it('starts, stops and reports the recording', async () => {
+    const e = env();
+    expect(await handleMessage({ type: 'start-recording', tabId: 7 }, e)).toEqual({
+      state: { phase: 'starting' },
+    });
+    expect(e.recorder.start).toHaveBeenCalledWith(7);
+    expect(await handleMessage({ type: 'stop-recording' }, e)).toEqual({
+      state: { phase: 'uploading' },
+    });
+    expect(await handleMessage({ type: 'recording-status' }, e)).toEqual({
+      state: { phase: 'idle' },
+    });
+  });
+
+  it('refuses a start without a tab id', async () => {
+    const e = env();
+    expect(await handleMessage({ type: 'start-recording' }, e)).toBeNull();
+    expect(await handleMessage({ type: 'start-recording', tabId: 'x' }, e)).toBeNull();
+    expect(e.recorder.start).not.toHaveBeenCalled();
   });
 
   it('ignores anything that is not one of our messages', async () => {
