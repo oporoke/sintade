@@ -27,6 +27,22 @@ impl Mp4Plan {
     }
 }
 
+/// Recordings longer than this are encoded with the faster [`LONG_TAKE_PRESET`]: the free plan
+/// stops at 10 minutes, so these are paid-plan takes, and the 0.5x-real-time target (§11) has
+/// no headroom left at 30 minutes on 4 vCPU with `veryfast` (Day 50 measurement).
+pub const LONG_TAKE_THRESHOLD_MS: u32 = 10 * 60 * 1000;
+pub const DEFAULT_PRESET: &str = "veryfast";
+pub const LONG_TAKE_PRESET: &str = "superfast";
+
+/// The x264 preset for a recording of `duration_ms`.
+pub fn x264_preset(duration_ms: u32) -> &'static str {
+    if duration_ms > LONG_TAKE_THRESHOLD_MS {
+        LONG_TAKE_PRESET
+    } else {
+        DEFAULT_PRESET
+    }
+}
+
 /// `ffmpeg` arguments that turn `input` into a fast-start MP4 at `output` (the design's
 /// command, plus what MediaRecorder output needs):
 ///
@@ -38,7 +54,13 @@ impl Mp4Plan {
 ///   sync, then loudness-normalised; loudnorm works at 192 kHz, so the output is set to 48 kHz.
 /// - The height is capped (`max_height`, the plan's resolution) and kept even, as H.264 4:2:0
 ///   requires; the width follows the aspect ratio (`-2`).
-pub fn mp4_args(input: &Path, output: &Path, info: &SourceInfo, plan: Mp4Plan) -> Vec<OsString> {
+pub fn mp4_args(
+    input: &Path,
+    output: &Path,
+    info: &SourceInfo,
+    plan: Mp4Plan,
+    preset: &str,
+) -> Vec<OsString> {
     let mut args: Vec<OsString> = ["-hide_banner", "-nostdin", "-y", "-i"]
         .into_iter()
         .map(OsString::from)
@@ -54,7 +76,7 @@ pub fn mp4_args(input: &Path, output: &Path, info: &SourceInfo, plan: Mp4Plan) -
                 "-c:v",
                 "libx264",
                 "-preset",
-                "veryfast",
+                preset,
                 "-crf",
                 "23",
                 "-pix_fmt",
@@ -193,6 +215,7 @@ mod tests {
             Path::new("out.mp4"),
             &info("h264", Some("aac"), 720),
             Mp4Plan::Remux,
+            DEFAULT_PRESET,
         ));
         assert!(args.contains("-c copy"), "{args}");
         assert!(args.contains("-movflags +faststart"), "{args}");
@@ -207,6 +230,7 @@ mod tests {
             Path::new("out.mp4"),
             &info("vp9", Some("opus"), 1440),
             Mp4Plan::Transcode { max_height: 1080 },
+            DEFAULT_PRESET,
         ));
         for expected in [
             "-c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p",
@@ -222,12 +246,28 @@ mod tests {
     }
 
     #[test]
+    fn long_takes_get_the_faster_preset() {
+        assert_eq!(x264_preset(0), "veryfast");
+        assert_eq!(x264_preset(LONG_TAKE_THRESHOLD_MS), "veryfast");
+        assert_eq!(x264_preset(LONG_TAKE_THRESHOLD_MS + 1), "superfast");
+        let args = joined(&mp4_args(
+            Path::new("in.webm"),
+            Path::new("out.mp4"),
+            &info("vp9", Some("opus"), 1080),
+            Mp4Plan::Transcode { max_height: 1080 },
+            LONG_TAKE_PRESET,
+        ));
+        assert!(args.contains("-preset superfast"), "{args}");
+    }
+
+    #[test]
     fn a_silent_source_gets_no_audio_settings() {
         let args = joined(&mp4_args(
             Path::new("in.webm"),
             Path::new("out.mp4"),
             &info("vp9", None, 360),
             Mp4Plan::Transcode { max_height: 1080 },
+            DEFAULT_PRESET,
         ));
         assert!(!args.contains("-c:a"), "{args}");
         assert!(!args.contains("loudnorm"), "{args}");

@@ -23,6 +23,13 @@ demo-m3 *args:
 demo-m4 *args:
     cd web && DEMO=1 npx playwright test e2e/m4-demo.spec.ts --workers=1 {{args}}
 
+# Day 50 performance check: a 30-min 1080p take through the MP4 step on 4 cores (needs ~3 GB in
+# target/fixtures; takes ~25 min incl. generating the input). Must finish in <= 15 min.
+perf-long minutes="30":
+    docs/fixtures/generate-long.sh {{minutes}}
+    cargo build -q -p worker
+    /usr/bin/time -v taskset -c 0-3 target/debug/worker transcode target/fixtures/vp9_opus_{{minutes}}min_1080p.webm target/fixtures/out_{{minutes}}min.mp4
+
 deps-up:
     docker compose up -d --wait postgres minio mailpit
     docker compose run --rm minio-init

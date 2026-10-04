@@ -118,10 +118,33 @@ impl JobQueue {
         Ok((inserted.rows_affected() == 1).then_some(id))
     }
 
+    /// Claims the oldest runnable job of any kind.
     pub async fn claim_next(
         &self,
         worker_id: &str,
         lock_duration: Duration,
+    ) -> Result<Option<ClaimedJob>, JobQueueError> {
+        self.claim_kinds(worker_id, lock_duration, None).await
+    }
+
+    /// Claims the oldest runnable job whose kind is in `kinds` (per-kind concurrency limits:
+    /// a worker whose slots for one kind are full leaves that kind for others).
+    pub async fn claim_next_of(
+        &self,
+        worker_id: &str,
+        lock_duration: Duration,
+        kinds: &[&str],
+    ) -> Result<Option<ClaimedJob>, JobQueueError> {
+        let kinds: Vec<String> = kinds.iter().map(|kind| (*kind).to_string()).collect();
+        self.claim_kinds(worker_id, lock_duration, Some(kinds))
+            .await
+    }
+
+    async fn claim_kinds(
+        &self,
+        worker_id: &str,
+        lock_duration: Duration,
+        kinds: Option<Vec<String>>,
     ) -> Result<Option<ClaimedJob>, JobQueueError> {
         let lock_seconds = lock_duration.as_secs_f64();
         let row = sqlx::query!(
@@ -134,6 +157,7 @@ impl JobQueue {
                   AND dead_at IS NULL
                   AND run_at <= now()
                   AND (locked_until IS NULL OR locked_until < now())
+                  AND ($3::text[] IS NULL OR kind = ANY($3))
                 ORDER BY run_at
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
@@ -142,6 +166,7 @@ impl JobQueue {
             "#,
             worker_id,
             lock_seconds,
+            kinds.as_deref(),
         )
         .fetch_optional(&self.pool)
         .await?;
@@ -208,6 +233,47 @@ impl JobQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn claim_next_of_skips_kinds_it_was_not_given(pool: PgPool) {
+        let queue = JobQueue::new(pool);
+        queue
+            .enqueue("Heavy", serde_json::json!({}))
+            .await
+            .expect("enqueue");
+        queue
+            .enqueue("Light", serde_json::json!({}))
+            .await
+            .expect("enqueue");
+
+        let light = queue
+            .claim_next_of("w", Duration::from_secs(30), &["Light"])
+            .await
+            .expect("claim")
+            .expect("the Light job");
+        assert_eq!(light.kind, "Light");
+        assert!(
+            queue
+                .claim_next_of("w", Duration::from_secs(30), &["Light"])
+                .await
+                .expect("claim")
+                .is_none(),
+            "Heavy is not offered"
+        );
+        assert!(
+            queue
+                .claim_next_of("w", Duration::from_secs(30), &[])
+                .await
+                .expect("claim")
+                .is_none()
+        );
+        let heavy = queue
+            .claim_next("w", Duration::from_secs(30))
+            .await
+            .expect("claim")
+            .expect("any kind");
+        assert_eq!(heavy.kind, "Heavy");
+    }
 
     #[sqlx::test(migrations = "../../migrations")]
     async fn enqueue_claim_and_complete_round_trip(pool: PgPool) {

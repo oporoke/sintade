@@ -1,5 +1,6 @@
 mod handler;
 mod handlers;
+mod limits;
 mod recipients;
 mod relay;
 
@@ -12,6 +13,7 @@ use handlers::process_take::ProcessTakeHandler;
 use handlers::send_email::SendEmailHandler;
 use handlers::sweep_stale_uploads::SweepStaleUploadsHandler;
 use ingest::IngestService;
+use limits::KindLimits;
 use media::{MediaService, MediaTools, ScratchSpace, TakeFinalizedMessage};
 use messaging::{MessagingService, RecordingReadyMessage};
 use platform::{JobQueue, Mailer, SmtpMailer};
@@ -97,7 +99,15 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(worker_id, "worker started");
 
     tokio::try_join!(
-        run_job_loop(pool.clone(), worker_id, mailer, ingest, media.clone()),
+        run_job_loop(
+            pool.clone(),
+            worker_id,
+            mailer,
+            ingest,
+            media.clone(),
+            config.worker_concurrency,
+            config.worker_process_take_concurrency,
+        ),
         run_outbox_relay_loop(pool.clone(), media, messaging),
         run_scheduler_loop(pool),
     )?;
@@ -156,23 +166,61 @@ async fn run_scheduler_loop(pool: PgPool) -> anyhow::Result<()> {
     }
 }
 
+/// Runs `concurrency` job slots, at most `process_take_concurrency` of them on `ProcessTake`.
 async fn run_job_loop(
     pool: PgPool,
     worker_id: String,
     mailer: Arc<dyn Mailer>,
     ingest: Arc<IngestService>,
     media: Arc<MediaService>,
+    concurrency: usize,
+    process_take_concurrency: usize,
 ) -> anyhow::Result<()> {
-    let queue = JobQueue::new(pool);
     let mut registry = HandlerRegistry::new();
     registry.register(NoopHandler);
     registry.register(SendEmailHandler::new(mailer));
     registry.register(SweepStaleUploadsHandler::new(ingest));
     registry.register(ProcessTakeHandler::new(media));
+    let registry = Arc::new(registry);
+    let limits = KindLimits::new().limit(
+        ProcessTakeHandler::KIND,
+        process_take_concurrency.min(concurrency),
+    );
+    tracing::info!(concurrency, process_take_concurrency, "job slots");
 
+    let mut slots = tokio::task::JoinSet::new();
+    for slot in 0..concurrency {
+        slots.spawn(run_slot(
+            JobQueue::new(pool.clone()),
+            format!("{worker_id}-{slot}"),
+            registry.clone(),
+            limits.clone(),
+        ));
+    }
+    // A slot only returns on a queue error, which is fatal for the worker.
+    match slots.join_next().await {
+        Some(result) => result?,
+        None => Ok(()),
+    }
+}
+
+async fn run_slot(
+    queue: JobQueue,
+    worker_id: String,
+    registry: Arc<HandlerRegistry>,
+    limits: KindLimits,
+) -> anyhow::Result<()> {
+    let all_kinds = registry.kinds();
     loop {
-        match queue.claim_next(&worker_id, LOCK_DURATION).await? {
+        let reserved = limits.reserve();
+        let kinds = reserved.kinds(&limits, &all_kinds);
+        match queue
+            .claim_next_of(&worker_id, LOCK_DURATION, &kinds)
+            .await?
+        {
             Some(claimed) => {
+                // Held until the job ends; frees the other reserved kinds right away.
+                let _permit = reserved.keep(&claimed.kind);
                 let ctx = JobCtx {
                     job_id: claimed.id,
                     attempt: claimed.attempts,
@@ -190,7 +238,10 @@ async fn run_job_loop(
                     }
                 }
             }
-            None => tokio::time::sleep(POLL_INTERVAL).await,
+            None => {
+                drop(reserved);
+                tokio::time::sleep(POLL_INTERVAL).await;
+            }
         }
     }
 }
