@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { Page, Route } from '@playwright/test';
@@ -14,16 +15,19 @@ import { expect, test } from './support/test';
  * support, as object storage and the CDN serve them.
  */
 const ROOT = join(__dirname, '..', '..');
-const OUT = join(__dirname, '..', 'test-results', 'mp4-playback');
 
+// A real Chrome recording (VP9/Opus: a transcode) and Safari's H.264/AAC (a remux). Short ones:
+// every browser project's worker makes its own copies, alongside the rest of the suite.
 const CASES = [
-  { fixture: 'vp9_opus_30s.webm', mp4: 'chrome-transcoded.mp4', seconds: 30 },
+  { fixture: 'real_chrome_vp9_opus_10s.webm', mp4: 'chrome-transcoded.mp4', seconds: 10.1 },
   { fixture: 'h264_aac_safari_20s.mp4', mp4: 'safari-remuxed.mp4', seconds: 20 },
-  { fixture: 'real_chrome_vp9_opus_10s.webm', mp4: 'real-chrome.mp4', seconds: 10 },
 ];
 
+// Per worker: projects run in parallel, and must not read each other's half-written files.
+let OUT = '';
+
 test.beforeAll(() => {
-  mkdirSync(OUT, { recursive: true });
+  OUT = mkdtempSync(join(tmpdir(), 'sintade-mp4-playback-'));
   for (const { fixture, mp4 } of CASES) {
     execFileSync(
       'cargo',
@@ -123,12 +127,10 @@ for (const { mp4, seconds } of CASES) {
       return { startedPlaying, landedAt, keptPlaying, readyState: video.readyState };
     }, seconds * 0.6);
 
-    test
-      .info()
-      .annotations.push({
-        type: 'seek',
-        description: `${mp4}: landed at ${played.landedAt.toFixed(2)} s`,
-      });
+    test.info().annotations.push({
+      type: 'seek',
+      description: `${mp4}: landed at ${played.landedAt.toFixed(2)} s`,
+    });
     expect(played.startedPlaying).toBe(true);
     expect(Math.abs(played.landedAt - seconds * 0.6)).toBeLessThan(1.5);
     expect(played.keptPlaying).toBe(true);
