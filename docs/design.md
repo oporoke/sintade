@@ -1113,7 +1113,7 @@ Rules: one row = one mergeable unit of work. `In progress` must name the branch 
 | V1 | OAuth, TOTP, active sessions | 12 | Not started |  |
 | V1 | Plans, payments, usage metering | 14 | Not started |  |
 | V1 | Notification centre, CDN, observability stack | 15, 19 | Not started |  |
-| MVP | Browser extension | 2, 16 | In progress | Day 61 (`feat/day-061-extension-scaffold`): `extension/` project (MV3 manifest, service worker, popup, esbuild pipeline, icons), loads unpacked in Chrome 154 and Edge (ADR-0017) |
+| MVP | Browser extension | 2, 16 | In progress | Day 61 (`feat/day-061-extension-scaffold`): `extension/` project (MV3 manifest, service worker, popup, esbuild pipeline, icons), loads unpacked in Chrome 154 and Edge (ADR-0017). Day 62 (`feat/day-062-session-handoff`): the popup shows who is signed in to the web app, using the browser's own session (host permission + `X-Sintade-Client` header for CSRF; ADR-0018) |
 | V2 | AI summary, chapters, filler removal, translation | 8 | Not started |  |
 | V2 | Public API, webhooks, third-party integrations | 16 | Not started |  |
 | V2 | Viewer insights, retention curves, CTA | 10, 17 | Not started |  |

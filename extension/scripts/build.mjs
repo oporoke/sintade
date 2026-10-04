@@ -11,6 +11,9 @@ import { ICON_SIZES, iconPng } from './icons.mjs';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = join(root, 'dist');
 const watch = process.argv.includes('--watch');
+// The Sintade origin the extension talks to. Dev default: the HTTPS dev server (ADR-0006). Store
+// builds set SINTADE_ORIGIN to the production origin (TODO: Verify, not decided yet).
+const origin = (process.env.SINTADE_ORIGIN ?? 'https://localhost:4200').replace(/\/$/, '');
 
 const entries = {
   'service-worker': 'src/background/service-worker.ts',
@@ -27,12 +30,14 @@ const options = {
   sourcemap: 'linked',
   logLevel: 'info',
   legalComments: 'none',
+  define: { __SINTADE_ORIGIN__: JSON.stringify(origin) },
 };
 
 async function copyStatic() {
   const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
   const manifest = JSON.parse(await readFile(join(root, 'manifest.json'), 'utf8'));
   manifest.version = pkg.version;
+  manifest.host_permissions = [`${origin}/*`];
   await writeFile(join(dist, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   await cp(join(root, 'src/popup/popup.html'), join(dist, 'popup.html'));
   await cp(join(root, 'src/popup/popup.css'), join(dist, 'popup.css'));
