@@ -1,5 +1,5 @@
 import { signUpAndLogIn } from './support/auth';
-import { anonymousPage, recordAndShare } from './support/share';
+import { anonymousPage, openWhenProcessed, recordAndShare } from './support/share';
 import { expect, test } from './support/test';
 
 /**
@@ -34,11 +34,7 @@ test('rename in place, then trash: the link dies at once', async ({
 
   // A stranger watches it (once processing is done) under its new name.
   const stranger = await anonymousPage(browser);
-  await stranger.goto(`/s/${shared.slug}`);
-  await expect(async () => {
-    await stranger.reload();
-    await expect(stranger.getByTestId('watch-video')).toBeVisible({ timeout: 2_000 });
-  }).toPass({ timeout: 60_000, intervals: [1_000] });
+  await openWhenProcessed(stranger, shared.slug);
   await expect(stranger.getByTestId('watch-title')).toHaveText('Weekly sync');
 
   // Trash it: ask first, then it is gone from the library…

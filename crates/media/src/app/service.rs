@@ -310,6 +310,22 @@ impl MediaService {
             .put_file(&key, &source, container.content_type())
             .await?;
         tracing::info!(bytes, key = %key, "source assembled and stored");
+        // From here the watch page can play the source while the MP4 is made.
+        {
+            let mut conn = self.pool.acquire().await?;
+            infra::upsert_rendition(
+                &mut conn,
+                job.workspace_id,
+                job.recording_id,
+                job.take_id,
+                "source",
+                "default",
+                &key,
+                i64::try_from(bytes).unwrap_or(i64::MAX),
+                serde_json::json!({ "content_type": container.content_type() }),
+            )
+            .await?;
+        }
 
         let max_height = self
             .billing
@@ -1022,6 +1038,12 @@ mod tests {
             Some("image/jpeg")
         );
 
+        let source_key_expected = source_key(
+            seeded.workspace,
+            seeded.recording,
+            seeded.take,
+            Container::Webm,
+        );
         let renditions = sqlx::query!(
             r#"SELECT kind::text AS "kind!", variant, storage_key, size_bytes, meta
                FROM renditions WHERE recording_id = $1 AND workspace_id = $2 ORDER BY kind"#,
@@ -1046,6 +1068,11 @@ mod tests {
             [
                 ("mp4".to_string(), "default".to_string(), mp4_key),
                 ("thumbnail".to_string(), "poster".to_string(), poster_key),
+                (
+                    "source".to_string(),
+                    "default".to_string(),
+                    source_key_expected
+                ),
             ]
         );
         assert_eq!(renditions[0].meta["video_codec"], "h264");
@@ -1256,7 +1283,8 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("count");
-        assert_eq!(renditions, 2);
+        // The poster, the MP4 and (stored first, so a viewer could preview it) the source.
+        assert_eq!(renditions, 3);
         assert!(scratch_is_empty(&media).await);
     }
 }

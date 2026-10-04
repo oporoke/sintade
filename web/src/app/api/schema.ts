@@ -603,7 +603,14 @@ export interface components {
             title: string;
             type: string;
         };
+        /** @enum {string} */
+        PlaybackKind: "mp4" | "preview";
         PlaybackResponse: {
+            /**
+             * @description The video's MIME type, e.g. `video/mp4` or (for a preview) `video/webm`. A browser that
+             *     can't play it should keep showing the processing notice.
+             */
+            content_type: string;
             /** Format: int32 */
             duration_ms?: number | null;
             /**
@@ -611,9 +618,10 @@ export interface components {
              * @description Seconds the URLs stay valid (900).
              */
             expires_in_s: number;
-            /** @description A signed URL for the fast-start MP4. */
-            mp4_url: string;
+            kind: components["schemas"]["PlaybackKind"];
             poster_url?: string | null;
+            /** @description A signed URL for the video. */
+            url: string;
         };
         PresignChunksResponse: {
             /**

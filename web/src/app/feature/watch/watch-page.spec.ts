@@ -2,7 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
 
 import { PlaybackData, WatchApi, WatchData, WatchHttpError } from '../../core/watch-api.service';
-import { WatchPage } from './watch-page';
+import { STATUS_POLL_MS, WatchPage } from './watch-page';
 
 const READY: WatchData = {
   requirement: 'none',
@@ -17,7 +17,9 @@ const READY: WatchData = {
   poster_url: 'https://store/poster.jpg',
 };
 const PLAYBACK: PlaybackData = {
-  mp4_url: 'https://store/default.mp4',
+  kind: 'mp4',
+  url: 'https://store/default.mp4',
+  content_type: 'video/mp4',
   poster_url: 'https://store/poster.jpg',
   expires_in_s: 900,
   duration_ms: 65_000,
@@ -54,7 +56,7 @@ describe('WatchPage', () => {
     expect(watch).toHaveBeenCalledWith('abcdefghijkl');
     expect(q(root, 'watch-title')?.textContent).toBe('Sprint demo');
     const video = q(root, 'watch-video') as HTMLVideoElement;
-    expect(video.getAttribute('src')).toBe(PLAYBACK.mp4_url);
+    expect(video.getAttribute('src')).toBe(PLAYBACK.url);
     expect(video.getAttribute('poster')).toBe(PLAYBACK.poster_url);
     const speeds = Array.from(q(root, 'watch-speed')?.querySelectorAll('option') ?? []).map(
       (option) => option.textContent?.trim(),
@@ -184,5 +186,135 @@ describe('WatchPage', () => {
     (q(root, 'watch-download') as HTMLButtonElement).click();
     await new Promise((resolve) => setTimeout(resolve));
     expect(q(root, 'watch-download-error')).not.toBeNull();
+  });
+
+  describe('while the recording is still processing', () => {
+    const PREVIEW: PlaybackData = {
+      kind: 'preview',
+      url: 'https://store/source.webm',
+      content_type: 'video/webm',
+      poster_url: null,
+      expires_in_s: 900,
+      duration_ms: null,
+    };
+    const PROCESSING: WatchData = { ...READY, state: 'processing', poster_url: null };
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockImplementation((type) =>
+        type.startsWith('video/webm') ? 'maybe' : '',
+      );
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
+
+    async function openFake(api: Partial<WatchApi>) {
+      TestBed.configureTestingModule({
+        imports: [WatchPage],
+        providers: [
+          provideRouter([]),
+          { provide: WatchApi, useValue: api },
+          {
+            provide: ActivatedRoute,
+            useValue: { snapshot: { paramMap: convertToParamMap({ slug: 'abcdefghijkl' }) } },
+          },
+        ],
+      });
+      const fixture = TestBed.createComponent(WatchPage);
+      const root = fixture.nativeElement as HTMLElement;
+      const settle = async (ms = 0) => {
+        await vi.advanceTimersByTimeAsync(ms);
+        fixture.detectChanges();
+        await vi.advanceTimersByTimeAsync(0);
+        fixture.detectChanges();
+      };
+      fixture.detectChanges();
+      await settle();
+      return { root, settle };
+    }
+
+    it('shows a notice, checks again every second, and plays the MP4 once it exists', async () => {
+      const watch = vi
+        .fn()
+        .mockResolvedValueOnce(PROCESSING)
+        .mockResolvedValueOnce(PROCESSING)
+        .mockResolvedValue(READY);
+      const playback = vi
+        .fn()
+        .mockRejectedValueOnce(new WatchHttpError(409))
+        .mockRejectedValueOnce(new WatchHttpError(409))
+        .mockResolvedValue(PLAYBACK);
+      const { root, settle } = await openFake({ watch, playback });
+      expect(q(root, 'watch-processing')).not.toBeNull();
+      expect(q(root, 'watch-video')).toBeNull();
+
+      await settle(STATUS_POLL_MS);
+      expect(watch).toHaveBeenCalledTimes(2);
+      expect(q(root, 'watch-processing')).not.toBeNull();
+
+      await settle(STATUS_POLL_MS);
+      expect(q(root, 'watch-processing')).toBeNull();
+      expect((q(root, 'watch-video') as HTMLVideoElement).getAttribute('src')).toBe(PLAYBACK.url);
+      expect(q(root, 'watch-preview')).toBeNull();
+
+      // Done polling.
+      await settle(STATUS_POLL_MS * 3);
+      expect(watch).toHaveBeenCalledTimes(3);
+    });
+
+    it('plays the original as a preview straight away, then switches to the MP4', async () => {
+      const watch = vi.fn().mockResolvedValueOnce(PROCESSING).mockResolvedValue(READY);
+      const playback = vi.fn().mockResolvedValueOnce(PREVIEW).mockResolvedValue(PLAYBACK);
+      const { root, settle } = await openFake({ watch, playback });
+      const video = q(root, 'watch-video') as HTMLVideoElement;
+      expect(video.getAttribute('src')).toBe(PREVIEW.url);
+      expect(q(root, 'watch-preview')).not.toBeNull();
+      expect(q(root, 'watch-processing')).toBeNull();
+
+      // Nobody is watching yet (paused), so the MP4 takes over when it appears.
+      await settle(STATUS_POLL_MS);
+      expect((q(root, 'watch-video') as HTMLVideoElement).getAttribute('src')).toBe(PLAYBACK.url);
+      expect(q(root, 'watch-preview')).toBeNull();
+    });
+
+    it('waits for a pause before swapping while the preview is playing', async () => {
+      const watch = vi.fn().mockResolvedValueOnce(PROCESSING).mockResolvedValue(READY);
+      const playback = vi.fn().mockResolvedValueOnce(PREVIEW).mockResolvedValue(PLAYBACK);
+      const { root, settle } = await openFake({ watch, playback });
+      const video = q(root, 'watch-video') as HTMLVideoElement;
+      Object.defineProperty(video, 'paused', { value: false, configurable: true });
+
+      await settle(STATUS_POLL_MS);
+      expect(video.getAttribute('src')).toBe(PREVIEW.url);
+      expect(q(root, 'watch-preview')).not.toBeNull();
+
+      Object.defineProperty(video, 'paused', { value: true, configurable: true });
+      video.dispatchEvent(new Event('pause'));
+      await settle();
+      expect((q(root, 'watch-video') as HTMLVideoElement).getAttribute('src')).toBe(PLAYBACK.url);
+    });
+
+    it('keeps the processing notice when this browser cannot play the original', async () => {
+      vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('');
+      const { root } = await openFake({
+        watch: vi.fn().mockResolvedValue(PROCESSING),
+        playback: vi.fn().mockResolvedValue(PREVIEW),
+      });
+      expect(q(root, 'watch-processing')).not.toBeNull();
+      expect(q(root, 'watch-video')).toBeNull();
+    });
+
+    it('stops polling when the page goes away', async () => {
+      const watch = vi.fn().mockResolvedValue(PROCESSING);
+      const { settle } = await openFake({
+        watch,
+        playback: vi.fn().mockRejectedValue(new WatchHttpError(409)),
+      });
+      TestBed.resetTestingModule();
+      await settle(STATUS_POLL_MS * 3);
+      expect(watch).toHaveBeenCalledTimes(1);
+    });
   });
 });

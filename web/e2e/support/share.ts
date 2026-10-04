@@ -57,3 +57,13 @@ export async function anonymousPage(browser: Browser): Promise<Page> {
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
   return context.newPage();
 }
+
+/**
+ * Opens a share link and waits until the full MP4 is what is on screen: the page first plays
+ * the original as a preview, then switches itself over once processing has finished.
+ */
+export async function openWhenProcessed(page: Page, slug: string): Promise<void> {
+  await page.goto(`/s/${slug}`);
+  await page.getByTestId('watch-video').waitFor({ state: 'visible', timeout: 60_000 });
+  await page.getByTestId('watch-preview').waitFor({ state: 'detached', timeout: 60_000 });
+}

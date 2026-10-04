@@ -1,5 +1,5 @@
 import { signUpAndLogIn } from './support/auth';
-import { anonymousPage, apiAs, recordAndShare } from './support/share';
+import { anonymousPage, apiAs, openWhenProcessed, recordAndShare } from './support/share';
 import { expect, test } from './support/test';
 
 /**
@@ -20,13 +20,7 @@ test('an anonymous viewer opens a share link: first frame fast, speed, seek, ful
   const shared = await recordAndShare(page, 5);
 
   const viewer = await anonymousPage(browser);
-  await viewer.goto(`/s/${shared.slug}`);
-  // The worker is still processing for a few seconds: reload until the player is there.
-  await expect(async () => {
-    await viewer.reload();
-    await expect(viewer.getByTestId('watch-video')).toBeVisible({ timeout: 2_000 });
-  }).toPass({ timeout: 60_000, intervals: [1_000] });
-
+  await openWhenProcessed(viewer, shared.slug);
   await expect(viewer.getByTestId('watch-title')).toHaveText('Untitled recording');
   const player = viewer.getByTestId('watch-player');
   await expect(player).toHaveAttribute('data-first-frame-ms', /^\d+$/, { timeout: 10_000 });
