@@ -31,6 +31,10 @@ export const routes: Routes = [
       import('./feature/auth/reset-password-page').then((m) => m.ResetPasswordPage),
   },
   {
+    path: 's/:slug',
+    loadComponent: () => import('./feature/watch/watch-page').then((m) => m.WatchPage),
+  },
+  {
     path: 'home',
     canActivate: [authGuard],
     loadComponent: () => import('./feature/home/home-page').then((m) => m.HomePage),
