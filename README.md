@@ -892,6 +892,7 @@ Configuration is environment-variable based, loaded by the `platform` crate. Fea
 | `DATA_ENC_KEY` | Yes (V1 TOTP) | AES-256-GCM key (32 bytes, base64) | `<your-encryption-key>` | Yes |
 | `SMTP_URL` | Yes | SMTP server | `smtp://localhost:1025` | Yes in prod |
 | `FFMPEG_PATH` | Worker | FFmpeg binary | `ffmpeg` | No |
+| `FFPROBE_PATH` | Worker | ffprobe binary (source validation, Day 45) | `ffprobe` | No |
 | `WORKER_CONCURRENCY` | Worker | Parallel jobs per worker | `2` | No |
 | `WORKER_SCRATCH_DIR` | Worker | Local disk for media processing; one directory per job, removed afterwards | OS temp dir + `sintade-scratch` | No |
 | `RUST_LOG` | No | Log filter | `info,api=debug,worker=debug` | No |
@@ -1401,7 +1402,7 @@ Queue: Postgres `jobs` table polled with `SELECT … FOR UPDATE SKIP LOCKED`, pe
 
 | Job | Trigger | Purpose | Phase |
 | --- | --- | --- | --- |
-| `ProcessTake` | `TakeFinalized` | Concat, validate, MP4, poster | MVP 🟡 (subscribed and scratch-managed, Day 43; chunks verified + concatenated into `source.webm`, Day 44) |
+| `ProcessTake` | `TakeFinalized` | Concat, validate, MP4, poster | MVP 🟡 (subscribed and scratch-managed, Day 43; chunks verified + concatenated into `source.webm`, Day 44; ffprobe validation, Day 45) |
 | `BuildHls` | After `ProcessTake` | HLS ladder (lazy: only viewed recordings) | V1 |
 | `GenerateSprite` | After `ProcessTake` | Scrub sprite + VTT | V1 |
 | `Transcribe` | `AudioReady` | whisper.cpp transcript + captions | V1 |
