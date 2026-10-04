@@ -12,7 +12,7 @@ use crate::domain::{
     ChunkRangeError, ChunkSizeError, DigestError, MAX_CHUNK_INDEX, MimeType, MimeTypeError,
     Sha256Digest, Sources, chunk_key, chunk_range, chunk_size,
 };
-use crate::events::TakeFinalized;
+use crate::events::{FinalizedChunk, TakeFinalized};
 use crate::infra;
 
 /// How long a presigned chunk PUT stays valid (docs/design.md §9: 5 minutes).
@@ -559,6 +559,28 @@ impl IngestService {
             });
         }
 
+        let chunks = infra::receipts(&mut *tx, request.take_id, request.workspace_id)
+            .await?
+            .into_iter()
+            .filter_map(|receipt| {
+                let idx = u32::try_from(receipt.idx).ok()?;
+                (idx < request.chunk_count).then(|| FinalizedChunk {
+                    idx,
+                    key: chunk_key(
+                        request.workspace_id,
+                        take.recording_id,
+                        request.take_id,
+                        idx,
+                        &take.mime_type,
+                    ),
+                    size_bytes: u32::try_from(receipt.size_bytes).unwrap_or_default(),
+                    sha256: Sha256Digest::from_bytes(&receipt.sha256)
+                        .map(|digest| digest.to_hex())
+                        .unwrap_or_default(),
+                })
+            })
+            .collect();
+
         infra::mark_take_finalized(&mut tx, request.take_id, request.workspace_id).await?;
         if !self
             .catalog
@@ -582,6 +604,7 @@ impl IngestService {
                     chunk_count: request.chunk_count,
                     duration_ms: request.duration_ms,
                     mime: take.mime_type,
+                    chunks,
                 },
             )
             .await?;
@@ -1289,6 +1312,24 @@ mod tests {
         assert_eq!(event["data"]["chunk_count"], 3);
         assert_eq!(event["data"]["duration_ms"], 6_000);
         assert_eq!(event["data"]["mime"], "video/webm;codecs=vp9,opus");
+        // The chunk manifest media processes from (ADR-0012).
+        let chunks = event["data"]["chunks"].as_array().expect("chunk manifest");
+        assert_eq!(chunks.len(), 3);
+        for (idx, chunk) in chunks.iter().enumerate() {
+            assert_eq!(chunk["idx"], idx);
+            assert_eq!(
+                chunk["key"],
+                chunk_key(
+                    up.workspace,
+                    up.started.recording_id,
+                    up.started.take_id,
+                    u32::try_from(idx).expect("small"),
+                    "video/webm;codecs=vp9,opus"
+                )
+            );
+            assert_eq!(chunk["size_bytes"], 1000);
+            assert_eq!(chunk["sha256"], HASH_A);
+        }
 
         // Retrying the same finalize is a no-op; a different count conflicts.
         assert_eq!(

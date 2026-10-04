@@ -1,0 +1,101 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT take_id, workspace_id, recording_id, mime_type, duration_ms, chunks, attempts\n        FROM media_jobs\n        WHERE take_id = $1 AND workspace_id = $2\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "take_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "media_jobs",
+            "name": "take_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "workspace_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "media_jobs",
+            "name": "workspace_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "recording_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "media_jobs",
+            "name": "recording_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "mime_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "media_jobs",
+            "name": "mime_type"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "duration_ms",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "media_jobs",
+            "name": "duration_ms"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "chunks",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "media_jobs",
+            "name": "chunks"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "attempts",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "media_jobs",
+            "name": "attempts"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "85d4d8adedaac2f319267190575ee6d37f6e214e2289f7a423baba91d866a338"
+}

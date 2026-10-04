@@ -246,9 +246,9 @@ Start, stop, pause, resume; 3-2-1 countdown (skippable with `Esc`); elapsed time
 | Entities | `takes`, `chunks` (planned `upload_sessions` table listed in module ownership; `TODO: Verify` whether separate from `takes`) |
 | Events | Emits `TakeFinalized` |
 
-### 4.5 Processing pipeline — 📋 MVP / V1
+### 4.5 Processing pipeline — 🟡 MVP in progress (M5, Days 43–51)
 
-MVP: Postgres job queue; concatenate chunks; ffprobe validation; fix WebM duration/cues; fast-start MP4 (H.264/AAC); poster. V1: HLS ladder 360p/720p/1080p, animated preview, scrub sprite, loudness normalisation, status via SSE. Entities: `renditions`, `jobs`, `outbox_events`. Events: `RecordingReady`, `RenditionReady`, `AudioReady`, `ProcessingFailed`.
+MVP: Postgres job queue; concatenate chunks; ffprobe validation; fix WebM duration/cues; fast-start MP4 (H.264/AAC); poster. V1: HLS ladder 360p/720p/1080p, animated preview, scrub sprite, loudness normalisation, status via SSE. Entities: `renditions`, `media_jobs` (one row per take: the chunk manifest from `TakeFinalized` and processing state, ADR-0012), `jobs`, `outbox_events`. Events: `RecordingReady`, `RenditionReady`, `AudioReady`, `ProcessingFailed`.
 
 ### 4.6 Playback — 📋 MVP / V1
 
@@ -739,7 +739,7 @@ Validation: password ≥ 10 characters, checked against a top-100k breached-pass
 | POST | `/recordings` | Session (workspace member with `CreateRecording`, CSRF) | ✅ Create recording + take in the session's workspace; returns `recording_id`, `take_id`, `max_duration_ms` (Day 33). Free-tier recording limit enforced under a per-workspace lock (Day 41, ADR-0011); `upload_sessions` deferred | 201, 402 (plan's recording limit reached), 403 (CSRF or viewer role), 422 (title or MIME type) |
 | POST | `/takes/{id}/chunks/{idx}/url` | Session (owner) | ✅ Presigned PUT (5 min); `?count=1..10` for batches (Day 34) | 200, 404 (not the owner's take), 409 (finalized), 422 (range) |
 | POST | `/takes/{id}/chunks/{idx}/ack` | Session (owner) | ✅ Confirm size + SHA-256; idempotent on (`take_id`, `idx`); stored object must exist with that size (Day 35) | 200 (`acked` / `already_acked`), 409 (hash mismatch or finalized), 422 (not uploaded, size mismatch, invalid) |
-| POST | `/takes/{id}/finalize` | Session (owner) | ✅ Declare chunk count and duration; recording → `processing`, `TakeFinalized` to the outbox (Day 36; `ProcessTake` enqueue arrives with M5). Takes longer than the plan allows are refused (Day 41) | 202, 402 (longer than the plan allows), 409 (other count / recording closed or abandoned), 422 (`missing` indexes listed) |
+| POST | `/takes/{id}/finalize` | Session (owner) | ✅ Declare chunk count and duration; recording → `processing`, `TakeFinalized` to the outbox (Day 36); media's `TakeFinalized` subscriber enqueues `ProcessTake` with the event's chunk manifest (Day 43, ADR-0012). Takes longer than the plan allows are refused (Day 41) | 202, 402 (longer than the plan allows), 409 (other count / recording closed or abandoned), 422 (`missing` indexes listed) |
 | GET | `/takes/{id}/status` | Session (owner) | ✅ Received chunk indexes (resume), finalized flag (Day 36) | 200, 404 |
 | GET | `/recordings` | Session | List, filter, search; cursor pagination | 200 |
 | GET | `/recordings/{id}` | Session | Read | 200, 404 |
@@ -893,6 +893,7 @@ Configuration is environment-variable based, loaded by the `platform` crate. Fea
 | `SMTP_URL` | Yes | SMTP server | `smtp://localhost:1025` | Yes in prod |
 | `FFMPEG_PATH` | Worker | FFmpeg binary | `ffmpeg` | No |
 | `WORKER_CONCURRENCY` | Worker | Parallel jobs per worker | `2` | No |
+| `WORKER_SCRATCH_DIR` | Worker | Local disk for media processing; one directory per job, removed afterwards | OS temp dir + `sintade-scratch` | No |
 | `RUST_LOG` | No | Log filter | `info,api=debug,worker=debug` | No |
 
 `TODO: Verify` additional variables not yet specified: CDN signing key, payment operator credentials and webhook secrets, Sentry DSN, OpenTelemetry endpoint, whisper model path, API bind address/port.
@@ -1400,7 +1401,7 @@ Queue: Postgres `jobs` table polled with `SELECT … FOR UPDATE SKIP LOCKED`, pe
 
 | Job | Trigger | Purpose | Phase |
 | --- | --- | --- | --- |
-| `ProcessTake` | `TakeFinalized` | Concat, validate, MP4, poster | MVP |
+| `ProcessTake` | `TakeFinalized` | Concat, validate, MP4, poster | MVP 🟡 (subscribed and scratch-managed, Day 43) |
 | `BuildHls` | After `ProcessTake` | HLS ladder (lazy: only viewed recordings) | V1 |
 | `GenerateSprite` | After `ProcessTake` | Scrub sprite + VTT | V1 |
 | `Transcribe` | `AudioReady` | whisper.cpp transcript + captions | V1 |

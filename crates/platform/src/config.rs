@@ -14,6 +14,9 @@ pub struct Config {
     pub s3_secret_key: String,
     pub smtp_url: String,
     pub session_secret: String,
+    /// Local disk for media processing (`WORKER_SCRATCH_DIR`, default: a `sintade-scratch`
+    /// directory under the OS temp dir). Worker only.
+    pub worker_scratch_dir: std::path::PathBuf,
 }
 
 impl Config {
@@ -31,6 +34,11 @@ impl Config {
             s3_secret_key: env_var("S3_SECRET_KEY")?,
             smtp_url: env_var("SMTP_URL")?,
             session_secret: env_var("SESSION_SECRET")?,
+            worker_scratch_dir: std::env::var("WORKER_SCRATCH_DIR")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::env::temp_dir().join("sintade-scratch")),
         })
     }
 }

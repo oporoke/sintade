@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO media_jobs (take_id, workspace_id, recording_id, mime_type, duration_ms, chunks)\n        VALUES ($1, $2, $3, $4, $5, $6)\n        ON CONFLICT (take_id) DO NOTHING\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Int4",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b20c8f6dfe3195e083053dd2ec963bacdb0feae145cc6c45d98c9e4a65f5160e"
+}

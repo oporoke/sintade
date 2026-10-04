@@ -3,7 +3,7 @@ use std::time::Duration;
 use kernel::Id;
 use rand::RngExt;
 use serde_json::Value;
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 pub struct Job;
 pub type JobId = Id<Job>;
@@ -48,6 +48,48 @@ impl JobQueue {
         .execute(&self.pool)
         .await?;
         Ok(id)
+    }
+
+    /// Enqueues a job on the caller's connection, so it exists only if the caller's
+    /// transaction commits (e.g. `ProcessTake` together with the row it processes).
+    pub async fn enqueue_in(
+        conn: &mut PgConnection,
+        kind: &str,
+        payload: Value,
+    ) -> Result<JobId, JobQueueError> {
+        let id = JobId::new_v7();
+        sqlx::query!(
+            "INSERT INTO jobs (id, kind, payload) VALUES ($1, $2, $3)",
+            id.into_uuid(),
+            kind,
+            payload,
+        )
+        .execute(&mut *conn)
+        .await?;
+        Ok(id)
+    }
+
+    /// Keeps a long job's lock (a heartbeat while it runs): `locked_until` moves to now +
+    /// `lock_duration`, if `worker_id` still holds it. `false` means the lock was lost (it
+    /// expired and another worker claimed the job), so this worker's result shouldn't count.
+    pub async fn extend_lock(
+        &self,
+        id: JobId,
+        worker_id: &str,
+        lock_duration: Duration,
+    ) -> Result<bool, JobQueueError> {
+        let extended = sqlx::query!(
+            r#"
+            UPDATE jobs SET locked_until = now() + make_interval(secs => $3)
+            WHERE id = $1 AND locked_by = $2 AND done_at IS NULL AND dead_at IS NULL
+            "#,
+            id.into_uuid(),
+            worker_id,
+            lock_duration.as_secs_f64(),
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(extended.rows_affected() == 1)
     }
 
     /// Enqueues a job of `kind` unless one is already waiting or running (scheduled jobs such
@@ -191,6 +233,56 @@ mod tests {
             .await
             .expect("claim succeeds");
         assert!(again.is_none(), "completed jobs are not claimable again");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_heartbeat_keeps_a_long_job_from_being_reclaimed(pool: PgPool) {
+        let queue = JobQueue::new(pool.clone());
+        let id = queue
+            .enqueue("long", serde_json::json!({}))
+            .await
+            .expect("enqueue");
+        queue
+            .claim_next("worker-1", Duration::from_millis(200))
+            .await
+            .expect("claim")
+            .expect("ready");
+        assert!(
+            queue
+                .extend_lock(id, "worker-1", Duration::from_secs(30))
+                .await
+                .expect("extend")
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            queue
+                .claim_next("worker-2", Duration::from_secs(30))
+                .await
+                .expect("claim")
+                .is_none(),
+            "the extended lock still holds"
+        );
+        assert!(
+            !queue
+                .extend_lock(id, "worker-2", Duration::from_secs(30))
+                .await
+                .expect("extend"),
+            "only the holder extends"
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn enqueue_in_rolls_back_with_its_transaction(pool: PgPool) {
+        let mut tx = pool.begin().await.expect("tx");
+        JobQueue::enqueue_in(&mut tx, "noop", serde_json::json!({}))
+            .await
+            .expect("enqueue");
+        tx.rollback().await.expect("rollback");
+        let claimed = JobQueue::new(pool)
+            .claim_next("worker-1", Duration::from_secs(30))
+            .await
+            .expect("claim");
+        assert!(claimed.is_none());
     }
 
     #[sqlx::test(migrations = "../../migrations")]

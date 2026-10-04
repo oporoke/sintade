@@ -13,6 +13,7 @@ billing = { path = "../../crates/billing" }
 catalog = { path = "../../crates/catalog" }
 ingest = { path = "../../crates/ingest" }
 kernel = { path = "../../crates/kernel" }
+media = { path = "../../crates/media" }
 platform = { path = "../../crates/platform" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
