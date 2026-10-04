@@ -1092,9 +1092,9 @@ Rules: one row = one mergeable unit of work. `In progress` must name the branch 
 | MVP | Capture: `AudioMixer` (mic + system audio) | 1 | In progress | Day 22 (`feat/day-022-audio-mixer`): mic + display → one `MediaStreamDestination` track, RMS meters per input + mix; the cross-engine self-test proves both sources in a recorded clip. Wired into the recorder on Day 39 |
 | MVP | Capture: `ChunkRecorder`, controls, countdown | 2 | In progress | Day 23 (`feat/day-023-chunk-recorder`): `ChunkRecorder` per the §5 contract, incl. pause/resume, pause-excluding timer and auto-stop on track end (Day 24); concatenated and paused clips proven playable on Chromium + Firefox. Day 28 countdown + device meter; Day 29 control bar (Pause/Resume, Stop, timer; keyboard-only operable) driving a framework-free `TakeSession`. M3 demo (local, 2026-09-28, `docs/demos/M03-capture-engine.md`): 2-minute recording + crash recovery on Chromium + Firefox; WebKit recording deferred to macOS (Playwright's Linux WebKit has no `MediaRecorder`) |
 | MVP | Capture: OPFS `ChunkStore` + recovery dialog | 3 | In progress | Day 25 (`feat/day-025-chunk-store`): `ChunkStore` on OPFS with IndexedDB fallback; chunks survive a reload on both backends. Day 26 (`feat/day-026-orphan-recovery`): take journal, Web-Lock-based orphan detection, recovery dialog (Save a copy / Discard; Upload disabled until Days 37–39). M3 demo (local, 2026-09-28, `docs/demos/M03-capture-engine.md`): 2-minute recording + crash recovery on Chromium + Firefox; WebKit recording deferred to macOS (Playwright's Linux WebKit has no `MediaRecorder`) Day 40: Upload from the recovery dialog, finalizing with no gaps (`feat/day-040-recovery-upload`) |
-| MVP | Ingest: recording, take, upload-session creation | 4 | In progress | Day 33 (`feat/day-033-recordings-create`): `catalog` + `ingest` crates, `recordings`/`takes`/`chunks` migrations (`workspace_id` on takes/chunks, ADR-0009), `POST /api/v1/recordings` creating recording + take in one transaction. `upload_sessions` deferred (ADR-0009) |
-| MVP | Ingest: presign, ack, status, finalize | 4 | In progress | Day 34 (`feat/day-034-presign-chunks`): chunk presign (single + `?count=` batch, owner-only, 5-min URLs). Day 35: idempotent chunk ack (size vs `HEAD`, SHA-256, `409` on mismatch). Day 36: status + finalize (`422` with missing indexes, recording → processing, `TakeFinalized` via outbox) |
-| MVP | Client `Uploader`: streaming queue + retry | 3, 4 | In progress | Day 37 (`feat/day-037-uploader`): framework-free `Uploader` (SHA-256, presign → PUT → ack), `IngestApi` adapter; hashes verified against server records on all three engines. ADR-0010: presign for a public endpoint, same-origin storage proxy in dev. Day 38: retry with jittered backoff, offline pause, batched presign, `resume()` from status. Day 39: wired into the recorder (upload while recording, drain + finalize + clear on stop). Day 40: recovery upload (resume or create, finalize, clear) |
+| MVP | Ingest: recording, take, upload-session creation | 4 | In progress | Day 33 (`feat/day-033-recordings-create`): `catalog` + `ingest` crates, `recordings`/`takes`/`chunks` migrations (`workspace_id` on takes/chunks, ADR-0009), `POST /api/v1/recordings` creating recording + take in one transaction. `upload_sessions` deferred (ADR-0009) Day 41: free-tier limit at create (`402`, per-workspace lock, ADR-0011). Local demo `docs/demos/M04-ingest.md` (2026-10-04); not *Done*, since no staging/prod deploy exists yet |
+| MVP | Ingest: presign, ack, status, finalize | 4 | In progress | Day 34 (`feat/day-034-presign-chunks`): chunk presign (single + `?count=` batch, owner-only, 5-min URLs). Day 35: idempotent chunk ack (size vs `HEAD`, SHA-256, `409` on mismatch). Day 36: status + finalize (`422` with missing indexes, recording → processing, `TakeFinalized` via outbox) Day 41: 10-minute take limit at finalize (`402`); `SweepStaleUploads` abandons idle uploads and purges their chunks. Local demo `docs/demos/M04-ingest.md` (2026-10-04); not *Done*, since no staging/prod deploy exists yet |
+| MVP | Client `Uploader`: streaming queue + retry | 3, 4 | In progress | Day 37 (`feat/day-037-uploader`): framework-free `Uploader` (SHA-256, presign → PUT → ack), `IngestApi` adapter; hashes verified against server records on all three engines. ADR-0010: presign for a public endpoint, same-origin storage proxy in dev. Day 38: retry with jittered backoff, offline pause, batched presign, `resume()` from status. Day 39: wired into the recorder (upload while recording, drain + finalize + clear on stop). Day 40: recovery upload (resume or create, finalize, clear) Day 41: recorder stops at the plan limit. Day 42: loss-scenario e2e (`upload-loss.spec.ts`). Local demo `docs/demos/M04-ingest.md` (2026-10-04); not *Done*, since no staging/prod deploy exists yet |
 | MVP | Worker binary, job queue, outbox relay | 5, 19 | In progress | Days 6–7 (`feat/day-006-job-queue`, `feat/day-007-outbox-relay`): `bin/worker` runs a real `SKIP LOCKED` poll loop with backoff/DLQ and an outbox relay with exactly-once in-process dispatch, both tested and live-demonstrated. No real job handlers/subscribers beyond `Noop`/`SendEmail` yet — `ProcessTake` etc. land with Processing (M5) |
 | MVP | `ProcessTake`: concat, ffprobe, MP4 fast-start, poster | 5 | Not started |  |
 | MVP | Recording state machine + "ready" email | 5, 15 | Not started |  |
@@ -1165,12 +1165,12 @@ _Verified locally 2026-09-26, `docs/demos/M02-identity.md`; staging pending._
 
 - [x] 3-2-1 countdown, skippable with `Esc` (verified locally, M3 demo `docs/demos/M03-capture-engine.md`)
 - [x] Timer excludes paused time (verified locally, M3 demo `docs/demos/M03-capture-engine.md`)
-- [ ] Given the user clicks the browser's "Stop sharing", then recording stops and upload completes as with the Stop button
+- [x] Given the user clicks the browser's "Stop sharing", then recording stops and upload completes as with the Stop button (verified locally, `web/e2e/upload-loss.spec.ts`, Day 42)
 
 **US-12 — As a creator, I want my recording to survive a crash, so that I never lose work.**
 
-- [ ] Every chunk is in OPFS before its upload starts
-- [ ] Given the tab is killed mid-recording, when the app is reopened, then a dialog offers Upload or Discard with date and duration
+- [x] Every chunk is in OPFS before its upload starts (the uploader reads each chunk back from the `ChunkStore`; M4 demo `docs/demos/M04-ingest.md`)
+- [x] Given the tab is killed mid-recording, when the app is reopened, then a dialog offers Upload or Discard with date and duration (verified locally, M3 + M4 demos)
 - [ ] Recovered recording plays with no gap longer than the last unflushed timeslice (≤ 2 s)
 
 ### Upload and processing
@@ -1178,8 +1178,8 @@ _Verified locally 2026-09-26, `docs/demos/M02-identity.md`; staging pending._
 **US-20 — As a creator, I want uploading to happen while I record, so that my link is ready right after I stop.**
 
 - [ ] Stop → link ≤ 5 s p95 for 30 min at 1080p on 10 Mbps uplink
-- [ ] Given the network drops for 60 s, then chunks queue locally and upload on reconnect with no loss
-- [ ] Re-sent chunk with same hash is a no-op; different hash returns `409`
+- [x] Given the network drops for 60 s, then chunks queue locally and upload on reconnect with no loss (verified locally, M4 demo `docs/demos/M04-ingest.md`)
+- [x] Re-sent chunk with same hash is a no-op; different hash returns `409` (Day 35 integration tests)
 
 **US-21 — As a creator, I want my recording to play in any browser, so that anyone can watch it.**
 
