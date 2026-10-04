@@ -9,6 +9,9 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
+billing = { path = "../../crates/billing" }
+catalog = { path = "../../crates/catalog" }
+ingest = { path = "../../crates/ingest" }
 kernel = { path = "../../crates/kernel" }
 platform = { path = "../../crates/platform" }
 serde = { version = "1.0.229", features = ["derive"] }

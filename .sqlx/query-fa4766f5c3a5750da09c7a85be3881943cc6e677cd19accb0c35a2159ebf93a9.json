@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT t.id, t.recording_id, t.workspace_id\n        FROM takes t\n        WHERE t.finalized_at IS NULL\n          AND t.abandoned_at IS NOT NULL\n          AND EXISTS (SELECT 1 FROM chunks c WHERE c.take_id = t.id AND c.workspace_id = t.workspace_id)\n          AND NOT EXISTS (\n                SELECT 1 FROM chunks c\n                WHERE c.take_id = t.id AND c.workspace_id = t.workspace_id AND c.received_at >= $1)\n          AND t.created_at < $1\n        ORDER BY t.created_at\n        LIMIT $2\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "takes",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "recording_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "takes",
+            "name": "recording_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "workspace_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "takes",
+            "name": "workspace_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "fa4766f5c3a5750da09c7a85be3881943cc6e677cd19accb0c35a2159ebf93a9"
+}

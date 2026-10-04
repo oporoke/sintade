@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE recordings r\n        SET state = 'abandoned', updated_at = now()\n        FROM unnest($1::uuid[], $2::uuid[]) AS target(id, workspace_id)\n        WHERE r.id = target.id AND r.workspace_id = target.workspace_id\n          AND r.state IN ('recording', 'uploading')\n        RETURNING r.id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "recordings",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d4434f6d1b5350bf81807d95c3161f1288e02625b7dd6926839b7bd304e2ce35"
+}

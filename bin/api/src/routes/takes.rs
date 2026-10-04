@@ -355,6 +355,7 @@ impl IntoResponse for FinalizeRejection {
     responses(
         (status = 202, description = "Finalized; processing starts", body = FinalizeResponse),
         (status = 401, description = "No valid session", body = Problem, content_type = "application/problem+json"),
+        (status = 402, description = "Longer than the plan allows (free tier: 10 minutes)", body = Problem, content_type = "application/problem+json"),
         (status = 403, description = "Missing or mismatched CSRF token", body = Problem, content_type = "application/problem+json"),
         (status = 404, description = "No such take, or not the caller's", body = Problem, content_type = "application/problem+json"),
         (status = 409, description = "Finalized before with another count, or the recording no longer accepts uploads", body = Problem, content_type = "application/problem+json"),
@@ -394,6 +395,9 @@ pub async fn finalize_take(
             | FinalizeError::UnexpectedChunks(_) => AppError::Validation(error.to_string()).into(),
             FinalizeError::CountMismatch { .. } | FinalizeError::RecordingClosed => {
                 AppError::Conflict(error.to_string()).into()
+            }
+            FinalizeError::DurationExceeded { .. } => {
+                AppError::LimitReached(error.to_string()).into()
             }
             FinalizeError::Outbox(source) => {
                 tracing::error!(error = %source, "finalize: outbox error");
@@ -710,6 +714,15 @@ mod tests {
         owner: &Owner,
         chunk_count: u32,
     ) -> (StatusCode, Value, Option<String>) {
+        finalize_lasting(pool, owner, chunk_count, 4000).await
+    }
+
+    async fn finalize_lasting(
+        pool: &PgPool,
+        owner: &Owner,
+        chunk_count: u32,
+        duration_ms: u32,
+    ) -> (StatusCode, Value, Option<String>) {
         let app = build_router(
             pool.clone(),
             test_identity(pool.clone()),
@@ -728,7 +741,7 @@ mod tests {
                     .header(CSRF_HEADER_NAME, "token")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        serde_json::json!({ "chunk_count": chunk_count, "duration_ms": 4000 })
+                        serde_json::json!({ "chunk_count": chunk_count, "duration_ms": duration_ms })
                             .to_string(),
                     ))
                     .expect("valid request"),
@@ -788,6 +801,25 @@ mod tests {
         assert_eq!(status, StatusCode::ACCEPTED, "retry is idempotent");
         let (_, body) = get_status(&pool, &owner).await;
         assert_eq!(body["finalized"], true);
+
+        test_store()
+            .delete_prefix(&format!("ws/{}/", owner.workspace_id))
+            .await
+            .expect("clean up");
+    }
+
+    /// Day 41's Check over HTTP: an 11-minute take is `402`; the take stays open.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn an_11_minute_take_is_402(pool: PgPool) {
+        let owner = owner_with_take(&pool).await;
+        upload(&pool, &owner, 0, b"chunk").await;
+        ack(&pool, &owner, 0, 5, HASH_A).await;
+
+        let (status, body, _) = finalize_lasting(&pool, &owner, 1, 11 * 60 * 1000).await;
+        assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
+        assert_eq!(body["detail"], "your plan allows takes of up to 10 minutes");
+        let (_, body) = get_status(&pool, &owner).await;
+        assert_eq!(body["finalized"], false);
 
         test_store()
             .delete_prefix(&format!("ws/{}/", owner.workspace_id))

@@ -17,6 +17,7 @@ import {
   MicDevice,
   TakeMeta,
   TakeSession,
+  UploadHttpError,
   UploadProgress,
   Uploader,
   assembleTake,
@@ -25,6 +26,7 @@ import {
 } from '../../capture';
 import { currentBrowser } from '../../core/browser';
 import { CapabilityService } from '../../core/capability.service';
+import { CreateRecordingResponse } from '../../core/ingest-api.service';
 import {
   AUDIO_MIXER,
   CHUNK_STORE,
@@ -53,6 +55,8 @@ interface UploadedTake {
 
 const METER_INTERVAL_MS = 50;
 const TIMER_INTERVAL_MS = 250;
+/** How far inside the plan's take limit the recorder stops (timer ticks every 250 ms). */
+const LIMIT_MARGIN_MS = 1_000;
 /**
  * Option value for a microphone listed before permission. Firefox then reports devices with an
  * empty `deviceId`, so the only thing we can ask for is "the browser's microphone".
@@ -178,6 +182,9 @@ const ANY_MIC = 'any';
         @if (!display()) {
           <p i18n>Choose what to share first.</p>
         }
+      }
+      @if (limitNotice(); as notice) {
+        <p role="status" data-testid="recorder-limit-notice">{{ notice }}</p>
       }
       <app-countdown #countdownRef />
 
@@ -328,6 +335,8 @@ export class RecorderPage {
   protected readonly upload = signal<UploadProgress | null>(null);
   protected readonly uploaded = signal<UploadedTake | null>(null);
   protected readonly uploadNotice = signal<string | null>(null);
+  /** The plan's limits: recording refused (50 reached) or the take stopped at its length cap. */
+  protected readonly limitNotice = signal<string | null>(null);
   protected readonly uploadedHeading = $localize`Recording uploaded`;
   protected readonly savedHeading = $localize`Recording saved`;
   protected readonly anyMic = ANY_MIC;
@@ -484,24 +493,41 @@ export class RecorderPage {
     const hasSystemAudio = display.getAudioTracks().length > 0;
     // Chosen now so the server knows the format; the mix has audio exactly when a source does.
     const mimeType = selectMimeType(undefined, { audio: hasMic || hasSystemAudio });
-    // Created while the countdown runs (§10 Record steps 5–6). Unreachable server: record anyway.
-    const created = mimeType
-      ? this.recordingsApi
-          .createRecording({
-            mime_type: mimeType,
-            has_system_audio: hasSystemAudio,
-            has_mic: hasMic,
-            has_camera: false,
-          })
-          .catch(() => null)
-      : Promise.resolve(null);
+    // Created while the countdown runs (§10 Record steps 5–6). Unreachable server: record anyway;
+    // the plan's limit reached (402): don't.
+    const created: Promise<{ recording: CreateRecordingResponse | null; limitReached: boolean }> =
+      mimeType
+        ? this.recordingsApi
+            .createRecording({
+              mime_type: mimeType,
+              has_system_audio: hasSystemAudio,
+              has_mic: hasMic,
+              has_camera: false,
+            })
+            .then(
+              (recording) => ({ recording, limitReached: false }),
+              (error: unknown) => ({
+                recording: null,
+                limitReached: error instanceof UploadHttpError && error.status === 402,
+              }),
+            )
+        : Promise.resolve({ recording: null, limitReached: false });
     const outcome = await this.countdown().run();
     if (outcome === 'cancelled') {
       this.phase.set('setup');
       return;
     }
     try {
-      const recording = await created;
+      const { recording, limitReached } = await created;
+      if (limitReached) {
+        this.phase.set('setup');
+        this.limitNotice.set(
+          $localize`You've reached your plan's limit on recordings. Delete one to record another.`,
+        );
+        return;
+      }
+      this.limitNotice.set(null);
+      const maxDurationMs = recording?.max_duration_ms ?? null;
       const store = await this.chunkStore;
       const takeId = recording?.take_id ?? crypto.randomUUID();
       const session = await this.startTake({
@@ -532,7 +558,16 @@ export class RecorderPage {
               uploader.progress$.subscribe((progress) => this.upload.set(progress)),
             ]
           : []),
-        session.elapsed$(TIMER_INTERVAL_MS).subscribe((ms) => this.elapsedMs.set(ms)),
+        session.elapsed$(TIMER_INTERVAL_MS).subscribe((ms) => {
+          this.elapsedMs.set(ms);
+          // Stop just inside the plan's limit, so finalize accepts the take.
+          if (maxDurationMs !== null && ms >= maxDurationMs - LIMIT_MARGIN_MS && !this.limitNotice()) {
+            this.limitNotice.set(
+              $localize`Your plan allows recordings of up to ${formatDuration(maxDurationMs)}:limit:, so this one stopped there.`,
+            );
+            void this.stop();
+          }
+        }),
         session.state$.subscribe((state) => {
           if (state === 'paused') this.phase.set('paused');
           else if (state === 'recording') this.phase.set('recording');
@@ -572,6 +607,7 @@ export class RecorderPage {
     this.result.set(null);
     this.uploaded.set(null);
     this.uploadNotice.set(null);
+    this.limitNotice.set(null);
     this.upload.set(null);
     this.elapsedMs.set(0);
     this.phase.set('setup');

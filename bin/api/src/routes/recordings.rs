@@ -30,6 +30,9 @@ pub struct CreateRecordingResponse {
     pub recording_id: RecordingId,
     #[schema(value_type = uuid::Uuid)]
     pub take_id: TakeId,
+    /// The longest take the workspace's plan accepts (pauses excluded). The recorder stops by
+    /// itself before this; finalize rejects anything longer.
+    pub max_duration_ms: u32,
 }
 
 /// Starts a recording: creates the recording and its first take in the caller's current
@@ -43,6 +46,7 @@ pub struct CreateRecordingResponse {
     responses(
         (status = 201, description = "Recording and take created", body = CreateRecordingResponse),
         (status = 401, description = "No valid session", body = Problem, content_type = "application/problem+json"),
+        (status = 402, description = "The plan's recording limit is reached (free tier: 50)", body = Problem, content_type = "application/problem+json"),
         (status = 403, description = "Missing CSRF token, or the role can't create recordings", body = Problem, content_type = "application/problem+json"),
         (status = 404, description = "Not a member of the session's workspace", body = Problem, content_type = "application/problem+json"),
         (status = 422, description = "Invalid title or MIME type", body = Problem, content_type = "application/problem+json"),
@@ -78,6 +82,9 @@ pub async fn create_recording(
             StartRecordingError::InvalidMimeType(source) => {
                 ApiError::from(AppError::Validation(source.to_string()))
             }
+            StartRecordingError::LimitReached { .. } => {
+                ApiError::from(AppError::LimitReached(error.to_string()))
+            }
             StartRecordingError::Database(source) => {
                 tracing::error!(error = %source, "create recording: database error");
                 ApiError::from(AppError::Internal("database unavailable".to_string()))
@@ -88,6 +95,7 @@ pub async fn create_recording(
         Json(CreateRecordingResponse {
             recording_id: started.recording_id,
             take_id: started.take_id,
+            max_duration_ms: started.max_duration_ms,
         }),
     ))
 }
@@ -280,5 +288,24 @@ mod tests {
         }
         let (status, _) = post(&pool, &alice, missing_sources, true).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    /// Day 41's Check over HTTP: the 51st recording is `402` problem+json; the first 50 carry
+    /// the plan's take limit.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn the_51st_recording_is_402(pool: PgPool) {
+        let alice = caller(&pool).await;
+        for _ in 0..50 {
+            let (status, body) = post(&pool, &alice, valid_body(), true).await;
+            assert_eq!(status, StatusCode::CREATED, "{body}");
+            assert_eq!(body["max_duration_ms"], 600_000);
+        }
+        let (status, problem) = post(&pool, &alice, valid_body(), true).await;
+        assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{problem}");
+        assert_eq!(problem["status"], 402);
+        assert_eq!(
+            problem["detail"],
+            "your plan allows 50 recordings; delete one to record another"
+        );
     }
 }

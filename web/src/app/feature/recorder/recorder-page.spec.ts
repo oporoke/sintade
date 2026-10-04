@@ -384,6 +384,27 @@ describe('RecorderPage control bar', () => {
     });
     afterEach(() => vi.unstubAllGlobals());
 
+    it('stops by itself just inside the plan limit, and says why', async () => {
+      const api = onlineApi();
+      const { q, session, elapsed, settle } = await recording(api);
+      elapsed.next(598_000);
+      await settle();
+      expect(session.stop).not.toHaveBeenCalled();
+      elapsed.next(599_000);
+      await settle();
+      expect(session.stop).toHaveBeenCalledTimes(1);
+      expect(q('recorder-limit-notice')?.textContent).toContain('up to 10 min');
+    });
+
+    it("doesn't record when the plan's recording limit is reached", async () => {
+      const api = onlineApi();
+      api.createRecording.mockRejectedValue(new UploadHttpError('api', 402, 'limit'));
+      const { q, startTake } = await recording(api);
+      expect(startTake).not.toHaveBeenCalled();
+      expect(q('recorder-limit-notice')?.textContent).toContain("reached your plan's limit");
+      expect(q('recorder-start')).not.toBeNull();
+    });
+
     it('records under the server take id, uploads each stored chunk, finalizes and clears the device', async () => {
       const api = onlineApi();
       const { q, startTake, stored, store, settle } = await recording(api);
@@ -494,7 +515,11 @@ const SERVER_TAKE = '01a0e7a3-c969-756c-93d0-000000000001';
 /** A server that answers everything. */
 function onlineApi() {
   return {
-    createRecording: vi.fn().mockResolvedValue({ recording_id: 'rec-1', take_id: SERVER_TAKE }),
+    createRecording: vi.fn().mockResolvedValue({
+      recording_id: 'rec-1',
+      take_id: SERVER_TAKE,
+      max_duration_ms: 600_000,
+    }),
     presign: vi.fn(async (_take: string, idx: number, count: number) =>
       Array.from({ length: count }, (_, i) => ({ idx: idx + i, url: `https://store/${idx + i}` })),
     ),

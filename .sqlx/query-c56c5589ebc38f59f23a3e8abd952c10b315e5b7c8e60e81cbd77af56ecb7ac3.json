@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO jobs (id, kind, payload)\n            SELECT $1, $2, $3\n            WHERE NOT EXISTS (\n                SELECT 1 FROM jobs WHERE kind = $2 AND done_at IS NULL AND dead_at IS NULL\n            )\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c56c5589ebc38f59f23a3e8abd952c10b315e5b7c8e60e81cbd77af56ecb7ac3"
+}

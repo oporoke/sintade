@@ -50,6 +50,32 @@ impl JobQueue {
         Ok(id)
     }
 
+    /// Enqueues a job of `kind` unless one is already waiting or running (scheduled jobs such
+    /// as `SweepStaleUploads`: several workers ticking must not pile up copies). Returns the new
+    /// job's id, or `None` if one was pending.
+    pub async fn enqueue_unless_pending(
+        &self,
+        kind: &str,
+        payload: Value,
+    ) -> Result<Option<JobId>, JobQueueError> {
+        let id = JobId::new_v7();
+        let inserted = sqlx::query!(
+            r#"
+            INSERT INTO jobs (id, kind, payload)
+            SELECT $1, $2, $3
+            WHERE NOT EXISTS (
+                SELECT 1 FROM jobs WHERE kind = $2 AND done_at IS NULL AND dead_at IS NULL
+            )
+            "#,
+            id.into_uuid(),
+            kind,
+            payload,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok((inserted.rows_affected() == 1).then_some(id))
+    }
+
     pub async fn claim_next(
         &self,
         worker_id: &str,

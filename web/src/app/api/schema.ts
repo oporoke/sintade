@@ -353,6 +353,12 @@ export interface components {
             title?: string | null;
         };
         CreateRecordingResponse: {
+            /**
+             * Format: int32
+             * @description The longest take the workspace's plan accepts (pauses excluded). The recorder stops by
+             *     itself before this; finalize rejects anything longer.
+             */
+            max_duration_ms: number;
             /** Format: uuid */
             recording_id: string;
             /** Format: uuid */
@@ -883,6 +889,15 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+            /** @description The plan's recording limit is reached (free tier: 50) */
+            402: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description Missing CSRF token, or the role can't create recordings */
             403: {
                 headers: {
@@ -1088,6 +1103,15 @@ export interface operations {
             };
             /** @description No valid session */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Longer than the plan allows (free tier: 10 minutes) */
+            402: {
                 headers: {
                     [name: string]: unknown;
                 };

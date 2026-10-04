@@ -184,6 +184,7 @@ pub(crate) mod tests {
         Arc::new(IngestService::new(
             pool,
             Arc::new(CatalogService::new()),
+            Arc::new(billing::BillingService::new()),
             test_store(),
             test_clock(),
         ))
