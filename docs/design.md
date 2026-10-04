@@ -1098,9 +1098,9 @@ Rules: one row = one mergeable unit of work. `In progress` must name the branch 
 | MVP | Worker binary, job queue, outbox relay | 5, 19 | In progress | Days 6–7 (`feat/day-006-job-queue`, `feat/day-007-outbox-relay`): `bin/worker` runs a real `SKIP LOCKED` poll loop with backoff/DLQ and an outbox relay with exactly-once in-process dispatch, both tested and live-demonstrated. No real job handlers/subscribers beyond `Noop`/`SendEmail` yet — `ProcessTake` etc. land with Processing (M5) |
 | MVP | `ProcessTake`: concat, ffprobe, MP4 fast-start, poster | 5 | In progress | Day 43 (`feat/day-043-media-crate`): `media` crate, `renditions` + `media_jobs`, `TakeFinalized` subscriber (manifest in the event, ADR-0012) enqueues `ProcessTake`; scratch dirs; job lock heartbeat. Day 44: chunks streamed, SHA-256-verified and concatenated into `source.webm` in storage. Day 45: ffprobe validation (container, codecs, size) with creator-facing rejections; golden fixtures in `docs/fixtures/`. Day 46: fast-start MP4 (transcode, or remux for Safari H.264/AAC), FFmpeg runner with progress/stall/deadline; plays and seeks in Chrome, Firefox, WebKit. Day 47: poster, rendition rows. Day 49: golden-file pipeline tests. Day 50: per-kind job slots; 30-min 1080p in 10:05 on 4 cores (ADR-0013). Local demo `docs/demos/M05-processing.md` (2026-10-04); not *Done*, since no staging/prod deploy |
 | MVP | Recording state machine + "ready" email | 5, 15 | In progress | Day 47: `processing → ready` or `failed` with `RecordingReady`/`ProcessingFailed` in the same transaction. Day 48: `messaging` crate emails the creator on `RecordingReady` (`SendEmail` job); `POST /recordings/{id}/retry` requeues a `failed` recording. Local demo `docs/demos/M05-processing.md` (record → stop → MP4 ready → email, Chromium + Firefox); not *Done*, since no staging/prod deploy |
-| MVP | Share links: private / link / public | 9 | In progress | Day 52 (`feat/day-052-share-links`): `sharing` crate, `share_links` (+ `workspace_id`, ADR-0014), 12-char base62 slugs (71 bits), create/list/update/revoke endpoints (`/recordings/{id}/links[/{link}]`), `LinkCreated`; revoke takes effect on the next request |
-| MVP | Watch page, playback grants, basic player | 6 | In progress | Day 53 (`feat/day-053-can-view-playback`): `sharing::decide` access table, `delivery` crate, `GET /api/v1/s/{slug}` and `/playback` with 15-min signed MP4/poster URLs (ADR-0015); private link is `404` to everyone but the owner. Day 54 (`feat/day-054-watch-page`): Angular watch page `/s/:slug` (poster, MP4 player, speed 0.5–2×, fullscreen, ←/→ seek ±5 s, space/F/M keys); first frame 405 ms (Firefox, local storage; staging has no VPS yet). Day 59 (`feat/day-059-processing-status`): the page polls a processing recording every second, plays the original as a preview as soon as it is stored (ADR-0016) and switches to the MP4 by itself; stop → playable 1.3–2.5 s locally. Day 55 (`feat/day-055-share-dialog`): the link is created (`link` visibility) and copied when the upload finishes; Share dialog changes visibility, download flag, turns the link off. Day 56 (`feat/day-056-download`): owner/admin MP4 download (`GET /recordings/{id}/download`) and viewer download when the link allows it (`GET /s/{slug}/download`), as a signed `attachment` URL (15 min), file named after the title |
-| MVP | Library list, rename, trash | 11 | In progress | Day 57 (`feat/day-057-library-list`): `GET /api/v1/recordings` (keyset cursor, 24 per page, newest first, signed thumbnails) and the Angular library page `/library` (thumbnail, length, date, state, Share, Download, empty state, Load more); 1,000 recordings list in 6 ms (first page) / 11 ms (slowest page). Day 58 (`feat/day-058-rename-trash-purge`): inline rename (`PATCH /recordings/{id}`), trash (`DELETE`; links die on the next request), `PurgeRecording` deletes storage prefix + rows after 30 days |
+| MVP | Share links: private / link / public | 9 | In progress | Day 52 (`feat/day-052-share-links`): `sharing` crate, `share_links` (+ `workspace_id`, ADR-0014), 12-char base62 slugs (71 bits), create/list/update/revoke endpoints (`/recordings/{id}/links[/{link}]`), `LinkCreated`; revoke takes effect on the next request. Local demo `docs/demos/M06-share-watch-library.md` (2026-10-05); not *Done*, since no staging/prod deploy and `public` listing/indexing is V1 |
+| MVP | Watch page, playback grants, basic player | 6 | In progress | Day 53 (`feat/day-053-can-view-playback`): `sharing::decide` access table, `delivery` crate, `GET /api/v1/s/{slug}` and `/playback` with 15-min signed MP4/poster URLs (ADR-0015); private link is `404` to everyone but the owner. Day 54 (`feat/day-054-watch-page`): Angular watch page `/s/:slug` (poster, MP4 player, speed 0.5–2×, fullscreen, ←/→ seek ±5 s, space/F/M keys); first frame 405 ms (Firefox, local storage; staging has no VPS yet). Day 59 (`feat/day-059-processing-status`): the page polls a processing recording every second, plays the original as a preview as soon as it is stored (ADR-0016) and switches to the MP4 by itself; stop → playable 1.3–2.5 s locally. Day 55 (`feat/day-055-share-dialog`): the link is created (`link` visibility) and copied when the upload finishes; Share dialog changes visibility, download flag, turns the link off. Day 56 (`feat/day-056-download`): owner/admin MP4 download (`GET /recordings/{id}/download`) and viewer download when the link allows it (`GET /s/{slug}/download`), as a signed `attachment` URL (15 min), file named after the title. Local demo `docs/demos/M06-share-watch-library.md` (2026-10-05): record → share → watch on Chromium and Firefox; not *Done*, since no staging/prod deploy |
+| MVP | Library list, rename, trash | 11 | In progress | Day 57 (`feat/day-057-library-list`): `GET /api/v1/recordings` (keyset cursor, 24 per page, newest first, signed thumbnails) and the Angular library page `/library` (thumbnail, length, date, state, Share, Download, empty state, Load more); 1,000 recordings list in 6 ms (first page) / 11 ms (slowest page). Day 58 (`feat/day-058-rename-trash-purge`): inline rename (`PATCH /recordings/{id}`), trash (`DELETE`; links die on the next request), `PurgeRecording` deletes storage prefix + rows after 30 days. Local demo `docs/demos/M06-share-watch-library.md` (2026-10-05); not *Done*, since no staging/prod deploy |
 | MVP | Hardening: rate limits, headers, tenant-isolation tests | 18 | In progress | Rate limits + CSRF + headers (Day 16); generated tenant-isolation harness (Day 18). Remaining hardening is M8 |
 | MVP | Backups + production VPS deploy | 19 | Not started |  |
 | V1 | Webcam bubble, quality presets, shortcuts, meters | 1, 2 | Not started |  |
@@ -1183,32 +1183,32 @@ _Verified locally 2026-09-26, `docs/demos/M02-identity.md`; staging pending._
 
 **US-21 — As a creator, I want my recording to play in any browser, so that anyone can watch it.**
 
-- [ ] MP4 H.264/AAC with `faststart` produced for every take
+- [x] MP4 H.264/AAC with `faststart` produced for every take (verified locally, M5 demo `docs/demos/M05-processing.md`)
 - [ ] Output duration within 100 ms of recorded duration; seeking works end to end
-- [ ] Poster generated; recording state becomes `ready`; creator gets a "ready" email
+- [x] Poster generated; recording state becomes `ready`; creator gets a "ready" email (verified locally, M5 demo `docs/demos/M05-processing.md`)
 - [ ] Given processing fails 5 times, then state is `failed`, job is in DLQ, creator sees a retry button
 
 ### Sharing and watching
 
 **US-30 — As a creator, I want to share a link with chosen visibility, so that the right people can watch.**
 
-- [ ] Link copied to clipboard on stop by default
+- [x] Link copied to clipboard on stop by default (verified locally, `web/e2e/share-after-stop.spec.ts`, M6 demo `docs/demos/M06-share-watch-library.md`)
 - [ ] Private: only owner; link: anyone with URL; public: listed and indexable
-- [ ] Changing visibility takes effect on the next playback request (≤ 15 min for already issued URLs)
+- [x] Changing visibility takes effect on the next playback request (≤ 15 min for already issued URLs) (verified locally, M6 demo)
 
 **US-31 — As a viewer, I want the video to start quickly, so that I don't give up.**
 
 - [ ] First frame ≤ 1.5 s p75 on 10 Mbps
-- [ ] Speed 0.5–2×, fullscreen, keyboard seek (←/→ 5 s)
-- [ ] Unauthorised viewer gets `404` (not `403`) on private recordings
+- [x] Speed 0.5–2×, fullscreen, keyboard seek (←/→ 5 s) (verified locally, `web/e2e/watch-page.spec.ts`, M6 demo)
+- [x] Unauthorised viewer gets `404` (not `403`) on private recordings (verified locally, tenant-isolation harness, M6 demo)
 
 ### Library
 
 **US-40 — As a creator, I want to see, rename and delete my recordings, so that I stay organised.**
 
-- [ ] List newest first with thumbnail, title, duration, date; cursor pagination 24 per page
-- [ ] Rename inline; delete moves to trash; links stop working immediately
-- [ ] Trash purged after 30 days by `PurgeRecording`, including the storage prefix
+- [x] List newest first with thumbnail, title, duration, date; cursor pagination 24 per page (verified locally, M6 demo)
+- [x] Rename inline; delete moves to trash; links stop working immediately (verified locally, M6 demo)
+- [x] Trash purged after 30 days by `PurgeRecording`, including the storage prefix (verified locally, `catalog` tests with real MinIO, M6 demo)
 
 ## 16. Developer setup
 

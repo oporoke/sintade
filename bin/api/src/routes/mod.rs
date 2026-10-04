@@ -53,6 +53,13 @@ pub struct Route {
     )]
     pub access: Access,
     pub handler: MethodRouter<AppState>,
+    /// The handler's type path (`api::routes::links::create_link`), for the classification lint
+    /// in the tenant-isolation harness.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read by the tenant-isolation harness")
+    )]
+    pub handler_name: &'static str,
 }
 
 impl Route {
@@ -67,6 +74,7 @@ impl Route {
             method,
             path,
             access,
+            handler_name: std::any::type_name::<H>(),
             handler: on(filter, handler),
         }
     }

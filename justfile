@@ -35,6 +35,11 @@ perf-long minutes="30":
 demo-m5 *args:
     cd web && DEMO=1 npx playwright test e2e/m5-demo.spec.ts --workers=1 {{args}}
 
+# M6 demo: the full record -> share -> watch -> library -> download -> trash loop on Chromium and
+# Firefox (~1 min each). Needs `just worker` running. Films into web/demo-output/m6/
+demo-m6 *args:
+    cd web && DEMO=1 npx playwright test e2e/m6-demo.spec.ts --workers=1 {{args}}
+
 deps-up:
     docker compose up -d --wait postgres minio mailpit
     docker compose run --rm minio-init
