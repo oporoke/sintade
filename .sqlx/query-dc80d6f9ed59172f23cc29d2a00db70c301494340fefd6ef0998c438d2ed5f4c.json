@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE recordings SET title = $3, updated_at = now()\n        WHERE id = $1 AND workspace_id = $2 AND trashed_at IS NULL\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dc80d6f9ed59172f23cc29d2a00db70c301494340fefd6ef0998c438d2ed5f4c"
+}

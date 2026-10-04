@@ -34,6 +34,7 @@ pub struct AppState {
     pub retry: Arc<RetryService>,
     pub sharing: Arc<sharing::SharingService>,
     pub catalog: Arc<catalog::CatalogService>,
+    pub recordings: Arc<catalog::RecordingManager>,
     pub delivery: Arc<delivery::DeliveryService>,
     pub rate_limiter: Arc<RateLimiter>,
     pub clock: Arc<dyn Clock>,
@@ -59,6 +60,11 @@ pub fn build_router(
                 Arc::new(catalog::CatalogService::new()),
             )),
             catalog: Arc::new(catalog::CatalogService::new()),
+            recordings: Arc::new(catalog::RecordingManager::new(
+                pool.clone(),
+                store.clone(),
+                clock.clone(),
+            )),
             delivery: Arc::new(delivery::DeliveryService::new(
                 store,
                 Arc::new(media::RenditionReader::new(pool.clone())),

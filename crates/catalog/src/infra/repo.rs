@@ -328,3 +328,93 @@ pub async fn list_library(
         })
         .collect())
 }
+
+/// Renames a recording that is not in the trash. `false`: no such recording in the workspace.
+pub async fn rename(
+    conn: &mut PgConnection,
+    id: RecordingId,
+    workspace_id: WorkspaceId,
+    title: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        r#"
+        UPDATE recordings SET title = $3, updated_at = now()
+        WHERE id = $1 AND workspace_id = $2 AND trashed_at IS NULL
+        "#,
+        id.into_uuid(),
+        workspace_id.into_uuid(),
+        title,
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// Moves a recording to the trash (idempotent; keeps the first trash time). `false`: no such
+/// recording in the workspace.
+pub async fn trash(
+    conn: &mut PgConnection,
+    id: RecordingId,
+    workspace_id: WorkspaceId,
+    now: time::OffsetDateTime,
+) -> Result<bool, sqlx::Error> {
+    let found = sqlx::query_scalar!(
+        r#"
+        UPDATE recordings SET trashed_at = COALESCE(trashed_at, $3), updated_at = now()
+        WHERE id = $1 AND workspace_id = $2
+        RETURNING id
+        "#,
+        id.into_uuid(),
+        workspace_id.into_uuid(),
+        now,
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(found.is_some())
+}
+
+/// Recordings trashed before `cutoff`, oldest first.
+pub async fn trashed_before(
+    conn: &mut PgConnection,
+    cutoff: time::OffsetDateTime,
+    limit: i64,
+) -> Result<Vec<(RecordingId, WorkspaceId)>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT id, workspace_id FROM recordings
+        WHERE trashed_at IS NOT NULL AND trashed_at < $1
+        ORDER BY trashed_at
+        LIMIT $2
+        "#,
+        cutoff,
+        limit,
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            (
+                RecordingId::from_uuid(row.id),
+                WorkspaceId::from_uuid(row.workspace_id),
+            )
+        })
+        .collect())
+}
+
+/// Deletes a trashed recording's row; takes, chunks, renditions, media jobs and share links go
+/// with it (`ON DELETE CASCADE`). Only a still-trashed recording is deleted.
+pub async fn delete_trashed(
+    conn: &mut PgConnection,
+    id: RecordingId,
+    workspace_id: WorkspaceId,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "DELETE FROM recordings WHERE id = $1 AND workspace_id = $2 AND trashed_at IS NOT NULL",
+        id.into_uuid(),
+        workspace_id.into_uuid(),
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}

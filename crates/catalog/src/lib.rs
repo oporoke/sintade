@@ -6,7 +6,7 @@ pub mod events;
 mod infra;
 
 pub use app::{
-    CatalogService, LibraryItem, LibraryPage, Measured, NewRecording, RecordingOwner, Reopened,
-    WatchInfo,
+    CatalogService, LibraryItem, LibraryPage, ManageError, Measured, NewRecording, PurgeReport,
+    RecordingManager, RecordingOwner, Reopened, TRASH_RETENTION, WatchInfo,
 };
 pub use domain::{Cursor, LIBRARY_PAGE_SIZE, MAX_TITLE_CHARS, Title, TitleError};

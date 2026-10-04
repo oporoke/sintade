@@ -52,7 +52,7 @@ describe('LibraryPage', () => {
     const cards = all('library-item');
     expect(cards).toHaveLength(2);
     expect(cards[0].querySelector('img')?.getAttribute('src')).toBe('https://store/poster-1.jpg');
-    expect(cards[0].querySelector('[data-testid="library-title"]')?.textContent).toBe(
+    expect(cards[0].querySelector('[data-testid="library-title"]')?.textContent?.trim()).toBe(
       'Recording 1',
     );
     expect(cards[0].querySelector('[data-testid="library-duration"]')?.textContent).toBe(
@@ -148,5 +148,68 @@ describe('LibraryPage', () => {
     spy.mockRestore();
     expect(download).toHaveBeenCalledWith('rec-1');
     expect(clicked[0].download).toBe('Recording 1.mp4');
+  });
+
+  it('renames a title in place: Enter saves, Escape cancels', async () => {
+    const rename = vi.fn().mockResolvedValue({ id: 'rec-1', title: 'Better name' });
+    const { all, q, settle } = await open({
+      list: vi.fn().mockResolvedValue({ items: [item(1)], next_cursor: null }),
+      rename,
+    });
+    (q('library-rename') as HTMLButtonElement).click();
+    await settle();
+    let input = q('library-title-input') as HTMLInputElement;
+    expect(input.value).toBe('Recording 1');
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await settle();
+    expect(q('library-title-input')).toBeNull();
+    expect(rename).not.toHaveBeenCalled();
+
+    (q('library-rename') as HTMLButtonElement).click();
+    await settle();
+    input = q('library-title-input') as HTMLInputElement;
+    input.value = 'Better name';
+    input.form?.dispatchEvent(new Event('submit', { cancelable: true }));
+    await settle();
+    expect(rename).toHaveBeenCalledWith('rec-1', 'Better name');
+    expect(all('library-title')[0].textContent?.trim()).toBe('Better name');
+    expect(q('library-title-input')).toBeNull();
+  });
+
+  it('keeps the editor open and says so when the rename fails', async () => {
+    const { q, settle } = await open({
+      list: vi.fn().mockResolvedValue({ items: [item(1)], next_cursor: null }),
+      rename: vi.fn().mockRejectedValue(new Error('422')),
+    });
+    (q('library-rename') as HTMLButtonElement).click();
+    await settle();
+    const input = q('library-title-input') as HTMLInputElement;
+    input.value = 'x';
+    input.form?.dispatchEvent(new Event('submit', { cancelable: true }));
+    await settle();
+    expect(q('library-notice')?.textContent).toContain("couldn't be saved");
+    expect(q('library-title-input')).not.toBeNull();
+  });
+
+  it('asks before moving to the trash, then removes the card', async () => {
+    const trash = vi.fn().mockResolvedValue(undefined);
+    const { all, q, settle } = await open({
+      list: vi.fn().mockResolvedValue({ items: [item(1), item(2)], next_cursor: null }),
+      trash,
+    });
+    (all('library-trash')[0] as HTMLButtonElement).click();
+    await settle();
+    expect(trash).not.toHaveBeenCalled();
+    (q('library-trash-no') as HTMLButtonElement).click();
+    await settle();
+    expect(trash).not.toHaveBeenCalled();
+
+    (all('library-trash')[0] as HTMLButtonElement).click();
+    await settle();
+    (q('library-trash-yes') as HTMLButtonElement).click();
+    await settle();
+    expect(trash).toHaveBeenCalledWith('rec-1');
+    expect(all('library-item').map((c) => c.getAttribute('data-recording-id'))).toEqual(['rec-2']);
+    expect(q('library-notice')?.textContent).toContain('30 days');
   });
 });

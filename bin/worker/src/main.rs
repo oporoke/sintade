@@ -10,6 +10,7 @@ use std::time::Duration;
 use handler::{HandlerRegistry, JobCtx, JobHandler};
 use handlers::noop::NoopHandler;
 use handlers::process_take::ProcessTakeHandler;
+use handlers::purge_trashed::PurgeRecordingHandler;
 use handlers::send_email::SendEmailHandler;
 use handlers::sweep_stale_uploads::SweepStaleUploadsHandler;
 use ingest::IngestService;
@@ -74,12 +75,17 @@ async fn main() -> anyhow::Result<()> {
     };
     let media = Arc::new(MediaService::new(
         pool.clone(),
-        store,
+        store.clone(),
         Arc::new(catalog::CatalogService::new()),
         Arc::new(billing::BillingService::new()),
-        clock,
+        clock.clone(),
         scratch,
         tools,
+    ));
+    let recordings = Arc::new(catalog::RecordingManager::new(
+        pool.clone(),
+        store,
+        clock.clone(),
     ));
     let tenancy = Arc::new(tenancy::TenancyService::new(pool.clone()));
     let identity = Arc::new(identity::IdentityService::new(
@@ -105,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
             mailer,
             ingest,
             media.clone(),
+            recordings,
             config.worker_concurrency,
             config.worker_process_take_concurrency,
         ),
@@ -162,17 +169,25 @@ async fn run_scheduler_loop(pool: PgPool) -> anyhow::Result<()> {
         {
             tracing::debug!(%job_id, "scheduled SweepStaleUploads");
         }
+        if let Some(job_id) = queue
+            .enqueue_unless_pending(PurgeRecordingHandler::KIND, serde_json::json!({}))
+            .await?
+        {
+            tracing::debug!(%job_id, "scheduled PurgeRecording");
+        }
         tokio::time::sleep(SWEEP_INTERVAL).await;
     }
 }
 
 /// Runs `concurrency` job slots, at most `process_take_concurrency` of them on `ProcessTake`.
+#[allow(clippy::too_many_arguments)]
 async fn run_job_loop(
     pool: PgPool,
     worker_id: String,
     mailer: Arc<dyn Mailer>,
     ingest: Arc<IngestService>,
     media: Arc<MediaService>,
+    recordings: Arc<catalog::RecordingManager>,
     concurrency: usize,
     process_take_concurrency: usize,
 ) -> anyhow::Result<()> {
@@ -181,6 +196,7 @@ async fn run_job_loop(
     registry.register(SendEmailHandler::new(mailer));
     registry.register(SweepStaleUploadsHandler::new(ingest));
     registry.register(ProcessTakeHandler::new(media));
+    registry.register(PurgeRecordingHandler::new(recordings));
     let registry = Arc::new(registry);
     let limits = KindLimits::new().limit(
         ProcessTakeHandler::KIND,

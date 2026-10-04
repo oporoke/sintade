@@ -38,4 +38,19 @@ describe('LibraryApi', () => {
       .flush({ url: 'https://store/x', filename: 'x.mp4', expires_in_s: 900 });
     expect((await result).filename).toBe('x.mp4');
   });
+
+  it('renames and trashes a recording', async () => {
+    const renamed = api.rename('rec-1', 'New name');
+    const patch = http.expectOne('/api/v1/recordings/rec-1');
+    expect(patch.request.method).toBe('PATCH');
+    expect(patch.request.body).toEqual({ title: 'New name' });
+    patch.flush({ id: 'rec-1', title: 'New name' });
+    expect((await renamed).title).toBe('New name');
+
+    const trashed = api.trash('rec-1');
+    const del = http.expectOne('/api/v1/recordings/rec-1');
+    expect(del.request.method).toBe('DELETE');
+    del.flush(null, { status: 204, statusText: 'No Content' });
+    await trashed;
+  });
 });

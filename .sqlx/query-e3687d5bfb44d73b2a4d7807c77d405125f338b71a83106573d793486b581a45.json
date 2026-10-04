@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM recordings WHERE id = $1 AND workspace_id = $2 AND trashed_at IS NOT NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e3687d5bfb44d73b2a4d7807c77d405125f338b71a83106573d793486b581a45"
+}
