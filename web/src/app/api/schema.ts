@@ -200,6 +200,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/recordings/{recording_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Downloads the recording's MP4: a signed URL that saves `<title>.mp4`. The recording's owner,
+         *     or a workspace admin, may.
+         */
+        get: operations["download_recording"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/recordings/{recording_id}/links": {
         parameters: {
             query?: never;
@@ -268,6 +288,26 @@ export interface paths {
          *     first. A link the viewer can't see is `404`, like a link that doesn't exist.
          */
         get: operations["watch"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/s/{slug}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A signed download URL for the MP4, when the link allows downloads or the viewer owns the
+         *     recording.
+         */
+        get: operations["download"];
         put?: never;
         post?: never;
         delete?: never;
@@ -464,6 +504,14 @@ export interface components {
             /** Format: uuid */
             take_id: string;
         };
+        DownloadResponse: {
+            /** Format: int64 */
+            expires_in_s: number;
+            /** @description The file name the browser will use. */
+            filename: string;
+            /** @description A signed URL that saves the MP4; open it (the browser downloads it). */
+            url: string;
+        };
         FinalizeBody: {
             /**
              * Format: int32
@@ -624,6 +672,8 @@ export interface components {
         VisibilityDto: "private" | "workspace" | "link" | "public";
         WatchResponse: {
             allow_download?: boolean | null;
+            /** @description Whether this viewer may download the MP4: the link allows it, or they own the recording. */
+            can_download?: boolean | null;
             /** @description RFC 3339. */
             created_at?: string | null;
             /** Format: int32 */
@@ -1083,6 +1133,65 @@ export interface operations {
             };
         };
     };
+    download_recording: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The recording */
+                recording_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Signed download URL */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DownloadResponse"];
+                };
+            };
+            /** @description No valid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not the owner, and the role can't manage recordings */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such recording in the caller's workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The MP4 isn't ready yet */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     list_links: {
         parameters: {
             query?: never;
@@ -1382,6 +1491,65 @@ export interface operations {
             };
             /** @description No such live link, or not for this viewer */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    download: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The link's slug */
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Signed download URL */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DownloadResponse"];
+                };
+            };
+            /** @description Sign in to watch this link */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The link doesn't allow downloads */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such live link, or not for this viewer */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The MP4 isn't ready yet */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -500,6 +500,79 @@
         }
       }
     },
+    "/api/v1/recordings/{recording_id}/download": {
+      "get": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "Downloads the recording's MP4: a signed URL that saves `<title>.mp4`. The recording's owner,\nor a workspace admin, may.",
+        "operationId": "download_recording",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "description": "The recording",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Signed download URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not the owner, and the role can't manage recordings",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such recording in the caller's workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The MP4 isn't ready yet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/recordings/{recording_id}/links": {
       "get": {
         "tags": [
@@ -891,6 +964,78 @@
           },
           "404": {
             "description": "No such live link, or not for this viewer",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/s/{slug}/download": {
+      "get": {
+        "tags": [
+          "watch"
+        ],
+        "summary": "A signed download URL for the MP4, when the link allows downloads or the viewer owns the\nrecording.",
+        "operationId": "download",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "description": "The link's slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Signed download URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in to watch this link",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The link doesn't allow downloads",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such live link, or not for this viewer",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The MP4 isn't ready yet",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1520,6 +1665,29 @@
           }
         }
       },
+      "DownloadResponse": {
+        "type": "object",
+        "required": [
+          "url",
+          "filename",
+          "expires_in_s"
+        ],
+        "properties": {
+          "expires_in_s": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "filename": {
+            "type": "string",
+            "description": "The file name the browser will use."
+          },
+          "url": {
+            "type": "string",
+            "description": "A signed URL that saves the MP4; open it (the browser downloads it)."
+          }
+        }
+      },
       "FinalizeBody": {
         "type": "object",
         "required": [
@@ -2029,6 +2197,13 @@
               "boolean",
               "null"
             ]
+          },
+          "can_download": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether this viewer may download the MP4: the link allows it, or they own the recording."
           },
           "created_at": {
             "type": [

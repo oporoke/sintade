@@ -140,6 +140,56 @@ pub async fn retry_recording(
     Ok(StatusCode::ACCEPTED)
 }
 
+/// Downloads the recording's MP4: a signed URL that saves `<title>.mp4`. The recording's owner,
+/// or a workspace admin, may.
+#[utoipa::path(
+    get,
+    path = "/api/v1/recordings/{recording_id}/download",
+    tag = "recordings",
+    params(("recording_id" = uuid::Uuid, Path, description = "The recording")),
+    responses(
+        (status = 200, description = "Signed download URL", body = crate::routes::watch::DownloadResponse),
+        (status = 401, description = "No valid session", body = Problem, content_type = "application/problem+json"),
+        (status = 403, description = "Not the owner, and the role can't manage recordings", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such recording in the caller's workspace", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "The MP4 isn't ready yet", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+#[tracing::instrument(skip_all, fields(workspace_id = %ctx.workspace_id))]
+pub async fn download_recording(
+    State(state): State<AppState>,
+    ctx: WorkspaceContext,
+    Path(recording_id): Path<RecordingId>,
+) -> Result<axum::response::Response, ApiError> {
+    let internal = |error: &dyn std::fmt::Display| {
+        tracing::error!(%error, "download recording failed");
+        ApiError::from(AppError::Internal("download unavailable".to_string()))
+    };
+    let mut conn = state.pool.acquire().await.map_err(|e| internal(&e))?;
+    let info = state
+        .catalog
+        .watch_info(&mut conn, recording_id, ctx.workspace_id)
+        .await
+        .map_err(|e| internal(&e))?
+        .ok_or(AppError::NotFound)?;
+    drop(conn);
+    if info.owner_id != ctx.user_id {
+        ctx.require(Permission::DeleteRecording)?;
+    }
+    let grant = state
+        .delivery
+        .download(ctx.workspace_id, recording_id, &info.title)
+        .await
+        .map_err(|e| internal(&e))?
+        .filter(|_| info.state == "ready")
+        .ok_or_else(|| {
+            ApiError::from(AppError::Conflict(
+                "this recording is still being processed".to_string(),
+            ))
+        })?;
+    Ok(crate::routes::watch::download_response(grant))
+}
+
 #[cfg(test)]
 mod tests {
     use axum::body::Body;
@@ -483,5 +533,31 @@ mod tests {
             retry(&pool, &alice, recording_id, true).await,
             StatusCode::FORBIDDEN
         );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn the_owner_downloads_an_mp4(pool: PgPool) {
+        use crate::routes::testkit::{call, caller, recording, renditions};
+        let owner = caller(&pool).await;
+        let id = recording(&pool, &owner, "ready").await;
+        renditions(&pool, &owner, id).await;
+        let uri = format!("/api/v1/recordings/{id}/download");
+
+        let reply = call(&pool, Some(&owner), axum::http::Method::GET, &uri, None).await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        assert_eq!(reply.body["filename"], "Mine.mp4");
+        assert_eq!(reply.body["expires_in_s"], 900);
+
+        // A recording without an MP4 yet is a conflict, not a broken URL.
+        let pending = recording(&pool, &owner, "processing").await;
+        let reply = call(
+            &pool,
+            Some(&owner),
+            axum::http::Method::GET,
+            &format!("/api/v1/recordings/{pending}/download"),
+            None,
+        )
+        .await;
+        assert_eq!(reply.status, StatusCode::CONFLICT);
     }
 }

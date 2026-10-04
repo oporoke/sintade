@@ -9,12 +9,14 @@ use crate::routes::links::{
     __path_create_link, __path_list_links, __path_revoke_link, __path_update_link,
 };
 use crate::routes::me::{__path_me, __path_update_me};
-use crate::routes::recordings::{__path_create_recording, __path_retry_recording};
+use crate::routes::recordings::{
+    __path_create_recording, __path_download_recording, __path_retry_recording,
+};
 use crate::routes::takes::{
     __path_ack_chunk, __path_finalize_take, __path_presign_chunks, __path_take_status,
 };
 use crate::routes::verify_email::__path_verify_email;
-use crate::routes::watch::{__path_playback, __path_watch};
+use crate::routes::watch::{__path_download, __path_playback, __path_watch};
 
 /// The API contract. `api openapi` prints it; `just openapi` writes it to
 /// `docs/api/openapi.json` and generates `web/src/app/api/schema.ts` from it.
@@ -42,6 +44,8 @@ use crate::routes::watch::{__path_playback, __path_watch};
         revoke_link,
         watch,
         playback,
+        download,
+        download_recording,
         presign_chunks,
         ack_chunk,
         take_status,

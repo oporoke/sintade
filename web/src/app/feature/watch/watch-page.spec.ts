@@ -13,6 +13,7 @@ const READY: WatchData = {
   height: 720,
   created_at: '2026-10-05T08:00:00Z',
   allow_download: false,
+  can_download: false,
   poster_url: 'https://store/poster.jpg',
 };
 const PLAYBACK: PlaybackData = {
@@ -138,5 +139,50 @@ describe('WatchPage', () => {
       playback: vi.fn(),
     });
     expect(q(down, 'watch-error')).not.toBeNull();
+  });
+
+  it('offers Download only to viewers who may, and starts it from the signed URL', async () => {
+    const download = vi.fn().mockResolvedValue({
+      url: 'https://store/default.mp4?sig=1',
+      filename: 'Sprint demo.mp4',
+      expires_in_s: 900,
+    });
+    const hidden = await open({
+      watch: vi.fn().mockResolvedValue(READY),
+      playback: vi.fn().mockResolvedValue(PLAYBACK),
+      download,
+    });
+    expect(q(hidden, 'watch-download')).toBeNull();
+    TestBed.resetTestingModule();
+
+    const root = await open({
+      watch: vi.fn().mockResolvedValue({ ...READY, can_download: true }),
+      playback: vi.fn().mockResolvedValue(PLAYBACK),
+      download,
+    });
+    const clicked: HTMLAnchorElement[] = [];
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      clicked.push(this);
+    });
+    (q(root, 'watch-download') as HTMLButtonElement).click();
+    await new Promise((resolve) => setTimeout(resolve));
+    click.mockRestore();
+    expect(download).toHaveBeenCalledWith('abcdefghijkl');
+    expect(clicked).toHaveLength(1);
+    expect(clicked[0].href).toBe('https://store/default.mp4?sig=1');
+    expect(clicked[0].download).toBe('Sprint demo.mp4');
+  });
+
+  it('says when the download cannot start', async () => {
+    const root = await open({
+      watch: vi.fn().mockResolvedValue({ ...READY, can_download: true }),
+      playback: vi.fn().mockResolvedValue(PLAYBACK),
+      download: vi.fn().mockRejectedValue(new WatchHttpError(403)),
+    });
+    (q(root, 'watch-download') as HTMLButtonElement).click();
+    await new Promise((resolve) => setTimeout(resolve));
+    expect(q(root, 'watch-download-error')).not.toBeNull();
   });
 });

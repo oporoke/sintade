@@ -3,12 +3,16 @@
 //! Playback grants: short-lived signed URLs for a recording's renditions (docs/design.md §5).
 //! Stateless; the caller has already decided the viewer may watch (`sharing::decide`).
 
+mod filename;
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use kernel::{RecordingId, WorkspaceId};
 use media::RenditionReader;
 use platform::{ObjectStore, StorageError};
+
+pub use filename::download_filename;
 
 /// How long a grant's URLs work (docs/design.md §16: presigned URLs ≤ 15 minutes).
 pub const GRANT_TTL: Duration = Duration::from_secs(15 * 60);
@@ -26,6 +30,14 @@ pub enum DeliveryError {
 pub struct PlaybackGrant {
     pub mp4_url: String,
     pub poster_url: Option<String>,
+    pub expires_in_s: u64,
+}
+
+/// A signed URL that saves the MP4 as a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadGrant {
+    pub url: String,
+    pub filename: String,
     pub expires_in_s: u64,
 }
 
@@ -65,6 +77,34 @@ impl DeliveryService {
         Ok(Some(PlaybackGrant {
             mp4_url,
             poster_url,
+            expires_in_s: GRANT_TTL.as_secs(),
+        }))
+    }
+
+    /// A URL that downloads the recording's MP4 as `<title>.mp4`, or `None` while no MP4 exists.
+    #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
+    pub async fn download(
+        &self,
+        workspace_id: WorkspaceId,
+        recording_id: RecordingId,
+        title: &str,
+    ) -> Result<Option<DownloadGrant>, DeliveryError> {
+        let Some(keys) = self
+            .renditions
+            .playback_keys(workspace_id, recording_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let filename = download_filename(title);
+        let url = self
+            .store
+            .presign_download(&keys.mp4, GRANT_TTL, &filename)
+            .await?
+            .to_string();
+        Ok(Some(DownloadGrant {
+            url,
+            filename,
             expires_in_s: GRANT_TTL.as_secs(),
         }))
     }
@@ -192,6 +232,27 @@ mod tests {
                 .poster_url
                 .is_some_and(|url| url.contains("poster.jpg"))
         );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_download_url_names_the_file_and_expires(pool: PgPool) {
+        let (workspace, recording) = seed(&pool, true).await;
+        let grant = service(pool)
+            .download(workspace, recording, "Sprint demo: Q3/Q4")
+            .await
+            .expect("grant")
+            .expect("an MP4 exists");
+        assert_eq!(grant.filename, "Sprint demo Q3 Q4.mp4");
+        assert_eq!(grant.expires_in_s, 900);
+        let parsed = url::Url::parse(&grant.url).expect("a URL");
+        let query: std::collections::HashMap<_, _> = parsed.query_pairs().collect();
+        assert_eq!(
+            query
+                .get("response-content-disposition")
+                .map(|v| v.as_ref()),
+            Some("attachment; filename=\"Sprint demo Q3 Q4.mp4\"")
+        );
+        assert!(query.contains_key("X-Amz-Signature"));
     }
 
     #[sqlx::test(migrations = "../../migrations")]

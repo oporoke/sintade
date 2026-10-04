@@ -128,9 +128,21 @@ pub fn table() -> Vec<Route> {
         Route::new(Method::GET, "/api/v1/s/{slug}", Viewer, watch::watch),
         Route::new(
             Method::GET,
+            "/api/v1/s/{slug}/download",
+            Viewer,
+            watch::download,
+        ),
+        Route::new(
+            Method::GET,
             "/api/v1/s/{slug}/playback",
             Viewer,
             watch::playback,
+        ),
+        Route::new(
+            Method::GET,
+            "/api/v1/recordings/{recording_id}/download",
+            Workspace,
+            recordings::download_recording,
         ),
         Route::new(
             Method::POST,

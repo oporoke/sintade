@@ -43,6 +43,8 @@ pub struct WatchResponse {
     /// RFC 3339.
     pub created_at: Option<String>,
     pub allow_download: Option<bool>,
+    /// Whether this viewer may download the MP4: the link allows it, or they own the recording.
+    pub can_download: Option<bool>,
     /// A signed poster URL (15 minutes) once the poster exists.
     pub poster_url: Option<String>,
 }
@@ -65,6 +67,7 @@ struct Resolved {
     recording_id: RecordingId,
     info: catalog::WatchInfo,
     decision: Decision,
+    is_owner: bool,
 }
 
 async fn resolve(
@@ -105,6 +108,7 @@ async fn resolve(
     };
     let decision = decide(&link, viewer);
     Ok(Resolved {
+        is_owner: viewer.owner,
         workspace_id: link.workspace_id,
         recording_id: link.recording_id,
         link,
@@ -162,6 +166,7 @@ pub async fn watch(
                 height: None,
                 created_at: None,
                 allow_download: None,
+                can_download: None,
                 poster_url: None,
             })));
         }
@@ -192,6 +197,7 @@ pub async fn watch(
         height: to_u32(resolved.info.height),
         created_at: resolved.info.created_at.format(&Rfc3339).ok(),
         allow_download: Some(resolved.link.allow_download),
+        can_download: Some(resolved.link.allow_download || resolved.is_owner),
         poster_url,
     })))
 }
@@ -255,6 +261,80 @@ pub async fn playback(
                 .and_then(|v| u32::try_from(v).ok()),
         }),
     )))
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DownloadResponse {
+    /// A signed URL that saves the MP4; open it (the browser downloads it).
+    pub url: String,
+    /// The file name the browser will use.
+    pub filename: String,
+    pub expires_in_s: u64,
+}
+
+pub(crate) fn download_response(grant: delivery::DownloadGrant) -> Response {
+    no_store(Json(DownloadResponse {
+        url: grant.url,
+        filename: grant.filename,
+        expires_in_s: grant.expires_in_s,
+    }))
+}
+
+/// A signed download URL for the MP4, when the link allows downloads or the viewer owns the
+/// recording.
+#[utoipa::path(
+    get,
+    path = "/api/v1/s/{slug}/download",
+    tag = "watch",
+    params(("slug" = String, Path, description = "The link's slug")),
+    responses(
+        (status = 200, description = "Signed download URL", body = DownloadResponse),
+        (status = 401, description = "Sign in to watch this link", body = Problem, content_type = "application/problem+json"),
+        (status = 403, description = "The link doesn't allow downloads", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such live link, or not for this viewer", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "The MP4 isn't ready yet", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+#[tracing::instrument(skip_all)]
+pub async fn download(
+    State(state): State<AppState>,
+    session: MaybeSession,
+    Path(slug): Path<String>,
+) -> Result<Response, ApiError> {
+    let resolved = resolve(&state, &session, &slug).await?;
+    match resolved.decision {
+        Decision::Hidden => return Err(AppError::NotFound.into()),
+        Decision::LoginRequired => {
+            return Err(
+                AppError::Unauthorized("sign in to download this recording".to_string()).into(),
+            );
+        }
+        Decision::Allow => {}
+    }
+    if !(resolved.link.allow_download || resolved.is_owner) {
+        return Err(
+            AppError::Forbidden("downloads are turned off for this link".to_string()).into(),
+        );
+    }
+    let grant = state
+        .delivery
+        .download(
+            resolved.workspace_id,
+            resolved.recording_id,
+            &resolved.info.title,
+        )
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "download: could not sign");
+            ApiError::from(AppError::Internal("download unavailable".to_string()))
+        })?
+        .filter(|_| resolved.info.state == "ready")
+        .ok_or_else(|| {
+            ApiError::from(AppError::Conflict(
+                "this recording is still being processed".to_string(),
+            ))
+        })?;
+    Ok(download_response(grant))
 }
 
 #[cfg(test)]
@@ -436,5 +516,69 @@ mod tests {
                 "{slug}"
             );
         }
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn downloads_need_the_link_to_allow_them_or_the_owner(pool: PgPool) {
+        let (owner, id) = ready(&pool).await;
+        let (slug, link_id) = link(&pool, &owner, id, "link").await;
+        let uri = format!("/api/v1/s/{slug}/download");
+
+        // Not allowed for strangers by default…
+        let denied = call(&pool, None, Method::GET, &uri, None).await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN);
+        let page = call(&pool, None, Method::GET, &watch_uri(&slug), None).await;
+        assert_eq!(page.body["can_download"], false);
+        // …but the owner can.
+        let own = call(&pool, Some(&owner), Method::GET, &uri, None).await;
+        assert_eq!(own.status, StatusCode::OK, "{}", own.body);
+        assert_eq!(own.body["filename"], "Mine.mp4");
+        assert!(
+            own.body["url"]
+                .as_str()
+                .is_some_and(|u| u.contains("response-content-disposition"))
+        );
+        assert_eq!(own.cache_control.as_deref(), Some("no-store"));
+
+        // Turning downloads on opens it to everyone with the link.
+        let patched = call(
+            &pool,
+            Some(&owner),
+            Method::PATCH,
+            &format!("/api/v1/recordings/{id}/links/{link_id}"),
+            Some(serde_json::json!({"allow_download": true})),
+        )
+        .await;
+        assert_eq!(patched.status, StatusCode::OK);
+        let open = call(&pool, None, Method::GET, &uri, None).await;
+        assert_eq!(open.status, StatusCode::OK, "{}", open.body);
+        let page = call(&pool, None, Method::GET, &watch_uri(&slug), None).await;
+        assert_eq!(page.body["can_download"], true);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_hidden_or_unfinished_recording_cannot_be_downloaded(pool: PgPool) {
+        let (owner, id) = ready(&pool).await;
+        let stranger = caller(&pool).await;
+        let (slug, _) = link(&pool, &owner, id, "private").await;
+        let uri = format!("/api/v1/s/{slug}/download");
+        for viewer in [None, Some(&stranger)] {
+            assert_eq!(
+                call(&pool, viewer, Method::GET, &uri, None).await.status,
+                StatusCode::NOT_FOUND
+            );
+        }
+
+        let processing = recording(&pool, &owner, "processing").await;
+        let (slug, _) = link(&pool, &owner, processing, "link").await;
+        let reply = call(
+            &pool,
+            Some(&owner),
+            Method::GET,
+            &format!("/api/v1/s/{slug}/download"),
+            None,
+        )
+        .await;
+        assert_eq!(reply.status, StatusCode::CONFLICT);
     }
 }

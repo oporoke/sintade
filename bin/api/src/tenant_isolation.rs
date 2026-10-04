@@ -109,6 +109,16 @@ fn tenant_table() -> Vec<(Method, &'static str, Probe)> {
             }),
         ),
         (
+            Method::GET,
+            "/api/v1/recordings/{recording_id}/download",
+            Probe::Owned(|pool, workspace_id| {
+                Box::pin(async move {
+                    let recording_id = downloadable_recording_in(&pool, workspace_id).await;
+                    get(&format!("/api/v1/recordings/{recording_id}/download"))
+                })
+            }),
+        ),
+        (
             Method::POST,
             "/api/v1/recordings/{recording_id}/links",
             Probe::Owned(|pool, workspace_id| {
@@ -275,6 +285,38 @@ async fn ready_recording_in(pool: &PgPool, workspace_id: WorkspaceId) -> kernel:
     .execute(pool)
     .await
     .expect("recording");
+    recording_id
+}
+
+/// A `ready` recording in `workspace_id` with an MP4 rendition.
+async fn downloadable_recording_in(
+    pool: &PgPool,
+    workspace_id: WorkspaceId,
+) -> kernel::RecordingId {
+    let recording_id = ready_recording_in(pool, workspace_id).await;
+    let take_id = uuid::Uuid::now_v7();
+    sqlx::query!(
+        "INSERT INTO takes (id, workspace_id, recording_id, mime_type, has_system_audio,
+                            has_mic, has_camera, finalized_at)
+         VALUES ($1, $2, $3, 'video/webm', false, true, false, now())",
+        take_id,
+        workspace_id.into_uuid(),
+        recording_id.into_uuid(),
+    )
+    .execute(pool)
+    .await
+    .expect("take");
+    sqlx::query!(
+        "INSERT INTO renditions (id, workspace_id, recording_id, take_id, kind, variant, storage_key)
+         VALUES ($1, $2, $3, $4, 'mp4', 'default', 'ws/rec/default.mp4')",
+        uuid::Uuid::now_v7(),
+        workspace_id.into_uuid(),
+        recording_id.into_uuid(),
+        take_id,
+    )
+    .execute(pool)
+    .await
+    .expect("rendition");
     recording_id
 }
 
