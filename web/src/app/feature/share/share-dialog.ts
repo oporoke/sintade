@@ -40,6 +40,9 @@ const VISIBILITIES: { value: Visibility; label: string }[] = [
             (focus)="$any($event.target).select()"
           />
         </label>
+        <a [href]="url(current)" target="_blank" rel="noopener" data-testid="share-open" i18n
+          >Open</a
+        >
         <button type="button" data-testid="share-copy" (click)="copy(current)" i18n>
           Copy link
         </button>
@@ -86,9 +89,11 @@ const VISIBILITIES: { value: Visibility; label: string }[] = [
   `,
 })
 export class ShareDialog {
-  readonly recordingId = input.required<string>();
+  /** The recording to manage; `open(id)` can point one dialog at several recordings. */
+  readonly recordingId = input<string | null>(null);
 
   private readonly api = inject(SHARE_API);
+  private target: string | null = null;
   private readonly dialog = viewChild.required<ElementRef<HTMLDialogElement>>('dialog');
 
   protected readonly visibilities = VISIBILITIES;
@@ -97,7 +102,11 @@ export class ShareDialog {
   protected readonly copied = signal(false);
   protected readonly error = signal<string | null>(null);
 
-  async open(): Promise<void> {
+  async open(recordingId?: string): Promise<void> {
+    this.target = recordingId ?? this.recordingId();
+    if (!this.target) {
+      return;
+    }
     const element = this.dialog().nativeElement;
     if (typeof element.showModal === 'function') {
       element.showModal();
@@ -108,7 +117,7 @@ export class ShareDialog {
     this.copied.set(false);
     this.loading.set(true);
     try {
-      const links = await this.api.list(this.recordingId());
+      const links = await this.api.list(this.target ?? '');
       this.link.set(links.find((candidate) => candidate.revoked_at === null) ?? null);
     } catch {
       this.error.set($localize`Couldn't load the sharing settings.`);
@@ -141,7 +150,7 @@ export class ShareDialog {
 
   protected create(): Promise<void> {
     return this.run(async () => {
-      this.link.set(await this.api.create(this.recordingId(), { visibility: 'link' }));
+      this.link.set(await this.api.create(this.target ?? '', { visibility: 'link' }));
     });
   }
 
@@ -155,7 +164,7 @@ export class ShareDialog {
 
   protected revoke(link: ShareLink): Promise<void> {
     return this.run(async () => {
-      await this.api.revoke(this.recordingId(), link.id);
+      await this.api.revoke(this.target ?? '', link.id);
       this.link.set(null);
     });
   }
@@ -166,7 +175,7 @@ export class ShareDialog {
       return Promise.resolve();
     }
     return this.run(async () => {
-      this.link.set(await this.api.update(this.recordingId(), current.id, body));
+      this.link.set(await this.api.update(this.target ?? '', current.id, body));
     });
   }
 

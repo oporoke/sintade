@@ -140,6 +140,12 @@ pub fn table() -> Vec<Route> {
         ),
         Route::new(
             Method::GET,
+            "/api/v1/recordings",
+            Workspace,
+            recordings::list_recordings,
+        ),
+        Route::new(
+            Method::GET,
             "/api/v1/recordings/{recording_id}/download",
             Workspace,
             recordings::download_recording,

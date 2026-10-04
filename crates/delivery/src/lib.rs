@@ -109,6 +109,26 @@ impl DeliveryService {
         }))
     }
 
+    /// Signed poster URLs for a page of recordings (the library's thumbnails); recordings
+    /// without a poster are simply absent.
+    #[tracing::instrument(skip_all, fields(workspace_id = %workspace_id, recordings = recording_ids.len()))]
+    pub async fn posters(
+        &self,
+        workspace_id: WorkspaceId,
+        recording_ids: &[RecordingId],
+    ) -> Result<std::collections::HashMap<RecordingId, String>, DeliveryError> {
+        let mut urls = std::collections::HashMap::new();
+        for (recording_id, key) in self
+            .renditions
+            .poster_keys(workspace_id, recording_ids)
+            .await?
+        {
+            let url = self.store.presign_get(&key, GRANT_TTL).await?.to_string();
+            urls.insert(recording_id, url);
+        }
+        Ok(urls)
+    }
+
     /// Just the poster URL (a watch page for a recording that is still processing has none yet).
     #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
     pub async fn poster(
@@ -253,6 +273,24 @@ mod tests {
             Some("attachment; filename=\"Sprint demo Q3 Q4.mp4\"")
         );
         assert!(query.contains_key("X-Amz-Signature"));
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn posters_are_signed_per_recording_and_scoped_to_the_workspace(pool: PgPool) {
+        let (workspace, with_poster) = seed(&pool, true).await;
+        let (other_workspace, other_recording) = seed(&pool, true).await;
+        let delivery = service(pool);
+        let urls = delivery
+            .posters(workspace, &[with_poster, other_recording])
+            .await
+            .expect("posters");
+        assert_eq!(urls.len(), 1, "another workspace's poster is not signed");
+        assert!(urls[&with_poster].contains("poster.jpg"));
+        let none = delivery
+            .posters(other_workspace, &[with_poster])
+            .await
+            .expect("posters");
+        assert!(none.is_empty());
     }
 
     #[sqlx::test(migrations = "../../migrations")]

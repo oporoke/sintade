@@ -267,3 +267,64 @@ pub async fn watch_info(
         created_at: row.created_at,
     }))
 }
+
+/// One row of the library.
+#[derive(Debug)]
+pub struct LibraryItem {
+    pub id: RecordingId,
+    pub owner_id: UserId,
+    pub title: String,
+    pub state: String,
+    pub duration_ms: Option<i32>,
+    pub created_at: time::OffsetDateTime,
+}
+
+/// The workspace's recordings, newest first, after `cursor`. Trashed and abandoned ones are not
+/// part of the library. Fetches `limit` rows (callers ask for one more than a page to know
+/// whether another page exists).
+pub async fn list_library(
+    conn: &mut PgConnection,
+    workspace_id: WorkspaceId,
+    cursor: Option<crate::domain::Cursor>,
+    limit: i64,
+) -> Result<Vec<LibraryItem>, sqlx::Error> {
+    let (after_at, after_id) = match cursor {
+        Some(cursor) => (
+            time::OffsetDateTime::from_unix_timestamp_nanos(
+                i128::from(cursor.created_at_micros) * 1_000,
+            )
+            .ok(),
+            Some(cursor.id),
+        ),
+        None => (None, None),
+    };
+    let rows = sqlx::query!(
+        r#"
+        SELECT id, owner_id, title, state::text AS "state!", duration_ms, created_at
+        FROM recordings
+        WHERE workspace_id = $1
+          AND trashed_at IS NULL
+          AND state NOT IN ('abandoned', 'trashed')
+          AND ($2::timestamptz IS NULL OR (created_at, id) < ($2, $3))
+        ORDER BY created_at DESC, id DESC
+        LIMIT $4
+        "#,
+        workspace_id.into_uuid(),
+        after_at,
+        after_id,
+        limit,
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| LibraryItem {
+            id: RecordingId::from_uuid(row.id),
+            owner_id: UserId::from_uuid(row.owner_id),
+            title: row.title,
+            state: row.state,
+            duration_ms: row.duration_ms,
+            created_at: row.created_at,
+        })
+        .collect())
+}

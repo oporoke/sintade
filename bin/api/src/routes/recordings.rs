@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use ingest::{Sources, StartRecording, StartRecordingError};
 use kernel::{AppError, Permission, RecordingId, TakeId};
@@ -138,6 +138,97 @@ pub async fn retry_recording(
             }
         })?;
     Ok(StatusCode::ACCEPTED)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListQuery {
+    /// The `next_cursor` of the previous page.
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RecordingSummary {
+    #[schema(value_type = uuid::Uuid)]
+    pub id: RecordingId,
+    pub title: String,
+    /// `recording`, `uploading`, `processing`, `ready` or `failed`.
+    pub state: String,
+    pub duration_ms: Option<u32>,
+    /// RFC 3339.
+    pub created_at: String,
+    /// A signed thumbnail URL (15 minutes) once the poster exists.
+    pub poster_url: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RecordingList {
+    pub items: Vec<RecordingSummary>,
+    /// Pass as `cursor` for the next page; `null` on the last one.
+    pub next_cursor: Option<String>,
+}
+
+/// The workspace's library: 24 recordings per page, newest first, with signed thumbnails.
+#[utoipa::path(
+    get,
+    path = "/api/v1/recordings",
+    tag = "recordings",
+    params(("cursor" = Option<String>, Query, description = "The previous page's `next_cursor`")),
+    responses(
+        (status = 200, description = "One page of recordings", body = RecordingList),
+        (status = 401, description = "No valid session", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "Not a member of the session's workspace", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "Unreadable cursor", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+#[tracing::instrument(skip_all, fields(workspace_id = %ctx.workspace_id))]
+pub async fn list_recordings(
+    State(state): State<AppState>,
+    ctx: WorkspaceContext,
+    Query(query): Query<ListQuery>,
+) -> Result<Json<RecordingList>, ApiError> {
+    let internal = |error: &dyn std::fmt::Display| {
+        tracing::error!(%error, "list recordings failed");
+        ApiError::from(AppError::Internal("library unavailable".to_string()))
+    };
+    let cursor = match query.cursor.as_deref() {
+        None | Some("") => None,
+        Some(raw) => Some(
+            catalog::Cursor::parse(raw)
+                .ok_or_else(|| AppError::Validation("unreadable cursor".to_string()))?,
+        ),
+    };
+    let mut conn = state.pool.acquire().await.map_err(|e| internal(&e))?;
+    let page = state
+        .catalog
+        .library_page(&mut conn, ctx.workspace_id, cursor)
+        .await
+        .map_err(|e| internal(&e))?;
+    drop(conn);
+    let ids: Vec<RecordingId> = page.items.iter().map(|item| item.id).collect();
+    let posters = state
+        .delivery
+        .posters(ctx.workspace_id, &ids)
+        .await
+        .map_err(|e| internal(&e))?;
+    let items = page
+        .items
+        .into_iter()
+        .map(|item| RecordingSummary {
+            id: item.id,
+            title: item.title,
+            state: item.state,
+            duration_ms: item.duration_ms.and_then(|ms| u32::try_from(ms).ok()),
+            created_at: item
+                .created_at
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default(),
+            poster_url: posters.get(&item.id).cloned(),
+        })
+        .collect();
+    Ok(Json(RecordingList {
+        items,
+        next_cursor: page.next.map(catalog::Cursor::encode),
+    }))
 }
 
 /// Downloads the recording's MP4: a signed URL that saves `<title>.mp4`. The recording's owner,
@@ -559,5 +650,200 @@ mod tests {
         )
         .await;
         assert_eq!(reply.status, StatusCode::CONFLICT);
+    }
+
+    async fn list(
+        pool: &PgPool,
+        caller: &crate::routes::testkit::Caller,
+        cursor: Option<&str>,
+    ) -> crate::routes::testkit::Reply {
+        use crate::routes::testkit::call;
+        let uri = match cursor {
+            Some(cursor) => format!("/api/v1/recordings?cursor={cursor}"),
+            None => "/api/v1/recordings".to_string(),
+        };
+        call(pool, Some(caller), axum::http::Method::GET, &uri, None).await
+    }
+
+    /// Bulk-inserts `count` ready recordings, one second apart, newest last inserted.
+    async fn seed_many(pool: &PgPool, caller: &crate::routes::testkit::Caller, count: i32) {
+        sqlx::query!(
+            r#"
+            INSERT INTO recordings (id, workspace_id, owner_id, title, state, duration_ms, created_at)
+            SELECT gen_random_uuid(), $1, $2, 'Recording ' || n, 'ready', 60000,
+                   now() - make_interval(secs => (($3::int - n)::double precision))
+            FROM generate_series(1, $3::int) AS n
+            "#,
+            caller.workspace_id.into_uuid(),
+            caller.user_id.into_uuid(),
+            count,
+        )
+        .execute(pool)
+        .await
+        .expect("seed");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn an_empty_library_is_an_empty_page(pool: PgPool) {
+        let alice = crate::routes::testkit::caller(&pool).await;
+        let reply = list(&pool, &alice, None).await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        assert_eq!(reply.body["items"], json!([]));
+        assert!(reply.body["next_cursor"].is_null());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn pages_of_24_newest_first_without_gaps_or_repeats(pool: PgPool) {
+        let alice = crate::routes::testkit::caller(&pool).await;
+        seed_many(&pool, &alice, 60).await;
+
+        let mut titles = Vec::new();
+        let mut sizes = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let reply = list(&pool, &alice, cursor.as_deref()).await;
+            assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+            let items = reply.body["items"].as_array().expect("items");
+            sizes.push(items.len());
+            titles.extend(
+                items
+                    .iter()
+                    .map(|i| i["title"].as_str().expect("title").to_string()),
+            );
+            cursor = reply.body["next_cursor"].as_str().map(str::to_string);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(sizes, vec![24, 24, 12]);
+        let expected: Vec<String> = (1..=60).rev().map(|n| format!("Recording {n}")).collect();
+        assert_eq!(titles, expected, "newest first, each exactly once");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn exactly_one_page_has_no_next_cursor(pool: PgPool) {
+        let alice = crate::routes::testkit::caller(&pool).await;
+        seed_many(&pool, &alice, 24).await;
+        let reply = list(&pool, &alice, None).await;
+        assert_eq!(reply.body["items"].as_array().map(Vec::len), Some(24));
+        assert!(reply.body["next_cursor"].is_null());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn the_library_shows_state_duration_date_and_a_thumbnail(pool: PgPool) {
+        use crate::routes::testkit::{recording, renditions};
+        let alice = crate::routes::testkit::caller(&pool).await;
+        let ready = recording(&pool, &alice, "ready").await;
+        renditions(&pool, &alice, ready).await;
+        let processing = recording(&pool, &alice, "processing").await;
+        let abandoned = recording(&pool, &alice, "abandoned").await;
+        let trashed = recording(&pool, &alice, "ready").await;
+        sqlx::query!(
+            "UPDATE recordings SET trashed_at = now() WHERE id = $1",
+            trashed.into_uuid()
+        )
+        .execute(&pool)
+        .await
+        .expect("trash");
+
+        let reply = list(&pool, &alice, None).await;
+        let items = reply.body["items"].as_array().expect("items");
+        let ids: Vec<&str> = items
+            .iter()
+            .map(|i| i["id"].as_str().expect("id"))
+            .collect();
+        assert!(ids.contains(&ready.to_string().as_str()));
+        assert!(ids.contains(&processing.to_string().as_str()));
+        assert!(
+            !ids.contains(&abandoned.to_string().as_str()),
+            "abandoned is hidden"
+        );
+        assert!(
+            !ids.contains(&trashed.to_string().as_str()),
+            "trashed is hidden"
+        );
+
+        let item = items
+            .iter()
+            .find(|i| i["id"] == ready.to_string())
+            .expect("ready item");
+        assert_eq!(item["state"], "ready");
+        assert_eq!(item["duration_ms"], 12000);
+        assert!(item["created_at"].as_str().is_some_and(|d| d.contains('T')));
+        assert!(
+            item["poster_url"]
+                .as_str()
+                .is_some_and(|u| u.contains("poster.jpg") && u.contains("X-Amz-Signature"))
+        );
+        let pending = items
+            .iter()
+            .find(|i| i["id"] == processing.to_string())
+            .expect("processing item");
+        assert!(pending["poster_url"].is_null());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn another_workspaces_recordings_never_appear(pool: PgPool) {
+        let alice = crate::routes::testkit::caller(&pool).await;
+        let bob = crate::routes::testkit::caller(&pool).await;
+        seed_many(&pool, &alice, 5).await;
+        let reply = list(&pool, &bob, None).await;
+        assert_eq!(reply.body["items"], json!([]));
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn an_unreadable_cursor_is_422(pool: PgPool) {
+        let alice = crate::routes::testkit::caller(&pool).await;
+        for cursor in ["nonsense", "1.2", "12.zzzz"] {
+            assert_eq!(
+                list(&pool, &alice, Some(cursor)).await.status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{cursor}"
+            );
+        }
+    }
+
+    /// Day 57 Check: 1,000 recordings list in ≤ 150 ms. Measured through the whole router
+    /// (session, workspace check, query, thumbnails), best of five after a warm-up request.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_thousand_recordings_list_within_150_ms(pool: PgPool) {
+        let alice = crate::routes::testkit::caller(&pool).await;
+        seed_many(&pool, &alice, 1_000).await;
+        sqlx::query!("ANALYZE recordings")
+            .execute(&pool)
+            .await
+            .expect("analyze");
+        list(&pool, &alice, None).await; // warm-up
+
+        let mut best = std::time::Duration::MAX;
+        let mut deep_cursor = None;
+        for _ in 0..5 {
+            let started = std::time::Instant::now();
+            let reply = list(&pool, &alice, None).await;
+            best = best.min(started.elapsed());
+            assert_eq!(reply.body["items"].as_array().map(Vec::len), Some(24));
+            deep_cursor = reply.body["next_cursor"].as_str().map(str::to_string);
+        }
+        eprintln!("library first page of 1,000: best of 5 = {best:?}");
+        assert!(deep_cursor.is_some());
+        assert!(
+            best <= std::time::Duration::from_millis(150),
+            "first page of 1,000 took {best:?}"
+        );
+
+        // A page deep in the list is just as quick (keyset, not OFFSET): walk to the last page.
+        let mut cursor = deep_cursor;
+        let mut deepest = std::time::Duration::ZERO;
+        while let Some(current) = cursor {
+            let started = std::time::Instant::now();
+            let reply = list(&pool, &alice, Some(&current)).await;
+            deepest = deepest.max(started.elapsed());
+            cursor = reply.body["next_cursor"].as_str().map(str::to_string);
+        }
+        eprintln!("library slowest page of 1,000: {deepest:?}");
+        assert!(
+            deepest <= std::time::Duration::from_millis(150),
+            "slowest page took {deepest:?}"
+        );
     }
 }

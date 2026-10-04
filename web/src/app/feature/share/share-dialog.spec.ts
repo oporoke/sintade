@@ -43,6 +43,18 @@ async function open(api: SharePort) {
 }
 
 describe('ShareDialog', () => {
+  it('can be pointed at a recording when opened', async () => {
+    const api = port([LINK]);
+    TestBed.configureTestingModule({
+      imports: [ShareDialog],
+      providers: [{ provide: SHARE_API, useValue: api }],
+    });
+    const fixture = TestBed.createComponent(ShareDialog);
+    fixture.detectChanges();
+    await fixture.componentInstance.open('rec-9');
+    expect(api.list).toHaveBeenCalledWith('rec-9');
+  });
+
   it('shows the live link with its visibility', async () => {
     const api = port([{ ...LINK, id: 'old', revoked_at: '2026-10-01T00:00:00Z' }, LINK].reverse());
     const { q } = await open(api);

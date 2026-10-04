@@ -40,6 +40,11 @@ export const routes: Routes = [
     loadComponent: () => import('./feature/home/home-page').then((m) => m.HomePage),
   },
   {
+    path: 'library',
+    canActivate: [authGuard],
+    loadComponent: () => import('./feature/library/library-page').then((m) => m.LibraryPage),
+  },
+  {
     path: 'record',
     canActivate: [authGuard],
     loadComponent: () => import('./feature/recorder/recorder-page').then((m) => m.RecorderPage),
