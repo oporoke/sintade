@@ -18,6 +18,11 @@ e2e:
 demo-m3 *args:
     cd web && DEMO=1 npx playwright test e2e/m3-demo.spec.ts --workers=1 {{args}}
 
+# M4 demo: a 10-minute recording with the network cut for 60 s; films + result.json per browser
+# into web/demo-output/m4/ (~12 min per browser; WebKit skips: no MediaRecorder on Linux)
+demo-m4 *args:
+    cd web && DEMO=1 npx playwright test e2e/m4-demo.spec.ts --workers=1 {{args}}
+
 deps-up:
     docker compose up -d --wait postgres minio mailpit
     docker compose run --rm minio-init
