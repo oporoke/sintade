@@ -14,7 +14,9 @@ import { expect, test } from './support/test';
  * support, as object storage and the CDN serve them.
  */
 const ROOT = join(__dirname, '..', '..');
-const OUT = join(__dirname, '..', 'test-results', 'mp4-playback');
+// One directory per worker: `beforeAll` runs in every worker, and they must not write the same files.
+const outDir = (parallelIndex: number) =>
+  join(__dirname, '..', 'test-results', 'mp4-playback', `worker-${parallelIndex}`);
 
 const CASES = [
   { fixture: 'vp9_opus_30s.webm', mp4: 'chrome-transcoded.mp4', seconds: 30 },
@@ -22,7 +24,10 @@ const CASES = [
   { fixture: 'real_chrome_vp9_opus_10s.webm', mp4: 'real-chrome.mp4', seconds: 10 },
 ];
 
-test.beforeAll(() => {
+// Playwright requires the destructuring pattern for the first (fixtures) argument.
+// eslint-disable-next-line no-empty-pattern
+test.beforeAll(({}, testInfo) => {
+  const OUT = outDir(testInfo.parallelIndex);
   mkdirSync(OUT, { recursive: true });
   for (const { fixture, mp4 } of CASES) {
     execFileSync(
@@ -72,7 +77,10 @@ async function canPlayH264(page: Page): Promise<boolean> {
 for (const { mp4, seconds } of CASES) {
   test(`${mp4} plays and seeks`, async ({ page, browserName }) => {
     test.setTimeout(60_000);
-    await page.route('**/__media/video.mp4', serveWithRanges(readFileSync(join(OUT, mp4))));
+    await page.route(
+      '**/__media/video.mp4',
+      serveWithRanges(readFileSync(join(outDir(test.info().parallelIndex), mp4))),
+    );
     await page.route('**/__media/player.html', (route) =>
       route.fulfill({
         contentType: 'text/html',
@@ -123,12 +131,10 @@ for (const { mp4, seconds } of CASES) {
       return { startedPlaying, landedAt, keptPlaying, readyState: video.readyState };
     }, seconds * 0.6);
 
-    test
-      .info()
-      .annotations.push({
-        type: 'seek',
-        description: `${mp4}: landed at ${played.landedAt.toFixed(2)} s`,
-      });
+    test.info().annotations.push({
+      type: 'seek',
+      description: `${mp4}: landed at ${played.landedAt.toFixed(2)} s`,
+    });
     expect(played.startedPlaying).toBe(true);
     expect(Math.abs(played.landedAt - seconds * 0.6)).toBeLessThan(1.5);
     expect(played.keptPlaying).toBe(true);
