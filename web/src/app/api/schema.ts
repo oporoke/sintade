@@ -256,6 +256,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/s/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The watch page's data for a share link: title, state, poster and what the viewer must do
+         *     first. A link the viewer can't see is `404`, like a link that doesn't exist.
+         */
+        get: operations["watch"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/s/{slug}/playback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Signed MP4 (and poster) URLs, valid 15 minutes, for a viewer the link admits. */
+        get: operations["playback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/takes/{take_id}/chunks/{idx}/ack": {
         parameters: {
             query?: never;
@@ -496,6 +533,18 @@ export interface components {
             title: string;
             type: string;
         };
+        PlaybackResponse: {
+            /** Format: int32 */
+            duration_ms?: number | null;
+            /**
+             * Format: int64
+             * @description Seconds the URLs stay valid (900).
+             */
+            expires_in_s: number;
+            /** @description A signed URL for the fast-start MP4. */
+            mp4_url: string;
+            poster_url?: string | null;
+        };
         PresignChunksResponse: {
             /**
              * Format: int64
@@ -527,6 +576,8 @@ export interface components {
             email: string;
             password: string;
         };
+        /** @enum {string} */
+        Requirement: "none" | "login";
         ResetPasswordBody: {
             password: string;
             token: string;
@@ -571,6 +622,25 @@ export interface components {
         };
         /** @enum {string} */
         VisibilityDto: "private" | "workspace" | "link" | "public";
+        WatchResponse: {
+            allow_download?: boolean | null;
+            /** @description RFC 3339. */
+            created_at?: string | null;
+            /** Format: int32 */
+            duration_ms?: number | null;
+            /** Format: int32 */
+            height?: number | null;
+            /** @description A signed poster URL (15 minutes) once the poster exists. */
+            poster_url?: string | null;
+            requirement: components["schemas"]["Requirement"];
+            state?: components["schemas"]["WatchState"] | null;
+            /** @description Absent while a `login` requirement is unmet. */
+            title?: string | null;
+            /** Format: int32 */
+            width?: number | null;
+        };
+        /** @enum {string} */
+        WatchState: "processing" | "ready" | "failed";
     };
     responses: never;
     parameters: never;
@@ -1279,6 +1349,88 @@ export interface operations {
                 };
             };
             /** @description The recording isn't failed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    watch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The link's slug */
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Watch page data, or a login requirement */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchResponse"];
+                };
+            };
+            /** @description No such live link, or not for this viewer */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    playback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The link's slug */
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Signed URLs */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaybackResponse"];
+                };
+            };
+            /** @description Sign in to watch this link */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such live link, or not for this viewer */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The MP4 isn't ready yet */
             409: {
                 headers: {
                     [name: string]: unknown;

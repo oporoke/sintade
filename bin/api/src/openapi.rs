@@ -14,6 +14,7 @@ use crate::routes::takes::{
     __path_ack_chunk, __path_finalize_take, __path_presign_chunks, __path_take_status,
 };
 use crate::routes::verify_email::__path_verify_email;
+use crate::routes::watch::{__path_playback, __path_watch};
 
 /// The API contract. `api openapi` prints it; `just openapi` writes it to
 /// `docs/api/openapi.json` and generates `web/src/app/api/schema.ts` from it.
@@ -39,6 +40,8 @@ use crate::routes::verify_email::__path_verify_email;
         list_links,
         update_link,
         revoke_link,
+        watch,
+        playback,
         presign_chunks,
         ack_chunk,
         take_status,

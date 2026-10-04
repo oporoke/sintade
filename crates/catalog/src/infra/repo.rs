@@ -228,3 +228,42 @@ pub async fn exists_in_workspace(
     .fetch_one(&mut *conn)
     .await
 }
+
+/// What a watch page shows about a recording.
+pub struct WatchInfo {
+    pub owner_id: UserId,
+    pub title: String,
+    pub state: String,
+    pub duration_ms: Option<i32>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub created_at: time::OffsetDateTime,
+}
+
+/// A recording that isn't in the trash. Trashed recordings (Day 58) read as missing.
+pub async fn watch_info(
+    conn: &mut PgConnection,
+    id: RecordingId,
+    workspace_id: WorkspaceId,
+) -> Result<Option<WatchInfo>, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"
+        SELECT owner_id, title, state::text AS "state!", duration_ms, width, height, created_at
+        FROM recordings
+        WHERE id = $1 AND workspace_id = $2 AND trashed_at IS NULL
+        "#,
+        id.into_uuid(),
+        workspace_id.into_uuid(),
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(row.map(|row| WatchInfo {
+        owner_id: UserId::from_uuid(row.owner_id),
+        title: row.title,
+        state: row.state,
+        duration_ms: row.duration_ms,
+        width: row.width,
+        height: row.height,
+        created_at: row.created_at,
+    }))
+}

@@ -354,6 +354,7 @@ mod tests {
             test_identity(pool.clone()),
             test_tenancy(pool.clone()),
             test_ingest(pool.clone()),
+            crate::app::tests::test_store(),
             test_rate_limiter(pool.clone()),
             test_clock(),
             "http://localhost:4200",

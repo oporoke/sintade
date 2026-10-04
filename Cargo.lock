@@ -31,6 +31,7 @@ dependencies = [
  "axum",
  "billing",
  "catalog",
+ "delivery",
  "identity",
  "ingest",
  "kernel",
@@ -616,6 +617,7 @@ dependencies = [
  "kernel",
  "sqlx",
  "thiserror",
+ "time",
  "tokio",
  "tracing",
  "uuid",
@@ -814,6 +816,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d5515a3834141de9eafb9717ad39eea8247b5674e6066c404e8c4b365d2a29e"
 dependencies = [
  "cmov",
+]
+
+[[package]]
+name = "delivery"
+version = "0.1.0"
+dependencies = [
+ "kernel",
+ "media",
+ "platform",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
 ]
 
 [[package]]

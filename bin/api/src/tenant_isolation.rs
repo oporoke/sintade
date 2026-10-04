@@ -399,6 +399,11 @@ fn app(pool: &PgPool) -> Router {
                 pool.clone(),
                 Arc::new(catalog::CatalogService::new()),
             )),
+            catalog: Arc::new(catalog::CatalogService::new()),
+            delivery: Arc::new(delivery::DeliveryService::new(
+                test_store(),
+                Arc::new(media::RenditionReader::new(pool.clone())),
+            )),
             sharing: Arc::new(sharing::SharingService::new(
                 pool.clone(),
                 Arc::new(catalog::CatalogService::new()),
@@ -538,6 +543,29 @@ async fn anonymous_callers_get_401_on_every_protected_route(pool: PgPool) {
                 route.method,
                 route.path
             ),
+            Access::Viewer => {
+                // An unknown slug is `404`; the path being mounted shows as `405` for a method
+                // it doesn't take (an unmounted path is `404` for every method).
+                assert_eq!(
+                    status,
+                    StatusCode::NOT_FOUND,
+                    "{} {}",
+                    route.method,
+                    route.path
+                );
+                let wrong_method = Request::builder()
+                    .method(Method::DELETE)
+                    .uri(concrete_path(route.path))
+                    .body(Body::empty())
+                    .expect("valid request");
+                assert_eq!(
+                    send(&app, wrong_method, None).await,
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "{} {} is in the route table but not mounted",
+                    route.method,
+                    route.path
+                );
+            }
             Access::Session | Access::Workspace => assert_eq!(
                 status,
                 StatusCode::UNAUTHORIZED,
@@ -689,4 +717,55 @@ async fn a_removed_member_loses_access_on_the_next_request(pool: PgPool) {
         send(&app, get(&uri), Some(&alice.cookie)).await,
         StatusCode::NOT_FOUND
     );
+}
+
+/// Every `Viewer` route, against a private link in workspace A: anonymous visitors and
+/// members of workspace B get `404`; A's owner gets through.
+#[sqlx::test(migrations = "../../migrations")]
+async fn viewer_routes_hide_private_links_from_other_tenants(pool: PgPool) {
+    let app = app(&pool);
+    let alice = tenant(&pool, "a").await;
+    let bob = tenant(&pool, "b").await;
+    let (_, link_id) = link_in(&pool, alice.workspace_id).await;
+    let slug = sqlx::query_scalar!(
+        "UPDATE share_links SET visibility = 'private' WHERE id = $1 RETURNING slug",
+        link_id.into_uuid()
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("private link");
+
+    let viewer_routes: Vec<Route> = table_with_probe()
+        .into_iter()
+        .filter(|route| route.access == Access::Viewer)
+        .collect();
+    assert!(!viewer_routes.is_empty());
+    for route in viewer_routes {
+        let request = || {
+            Request::builder()
+                .method(route.method.clone())
+                .uri(route.path.replace("{slug}", &slug))
+                .body(Body::empty())
+                .expect("valid request")
+        };
+        for (who, cookie) in [
+            ("anonymous", None),
+            ("workspace B", Some(bob.cookie.as_str())),
+        ] {
+            assert_eq!(
+                send(&app, request(), cookie).await,
+                StatusCode::NOT_FOUND,
+                "{} {}: {who} reached a private link of workspace A",
+                route.method,
+                route.path
+            );
+        }
+        let as_owner = send(&app, request(), Some(&alice.cookie)).await;
+        assert!(
+            as_owner != StatusCode::NOT_FOUND && as_owner != StatusCode::UNAUTHORIZED,
+            "{} {}: the owner got {as_owner}; the 404s above prove nothing otherwise",
+            route.method,
+            route.path
+        );
+    }
 }

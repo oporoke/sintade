@@ -33,15 +33,19 @@ pub struct AppState {
     pub ingest: Arc<IngestService>,
     pub retry: Arc<RetryService>,
     pub sharing: Arc<sharing::SharingService>,
+    pub catalog: Arc<catalog::CatalogService>,
+    pub delivery: Arc<delivery::DeliveryService>,
     pub rate_limiter: Arc<RateLimiter>,
     pub clock: Arc<dyn Clock>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_router(
     pool: PgPool,
     identity: Arc<IdentityService>,
     tenancy: Arc<TenancyService>,
     ingest: Arc<IngestService>,
+    store: Arc<dyn platform::ObjectStore>,
     rate_limiter: Arc<RateLimiter>,
     clock: Arc<dyn Clock>,
     public_base_url: &str,
@@ -53,6 +57,11 @@ pub fn build_router(
             retry: Arc::new(RetryService::new(
                 pool.clone(),
                 Arc::new(catalog::CatalogService::new()),
+            )),
+            catalog: Arc::new(catalog::CatalogService::new()),
+            delivery: Arc::new(delivery::DeliveryService::new(
+                store,
+                Arc::new(media::RenditionReader::new(pool.clone())),
             )),
             sharing: Arc::new(sharing::SharingService::new(
                 pool.clone(),
@@ -232,6 +241,7 @@ pub(crate) mod tests {
             test_identity(pool.clone()),
             test_tenancy(pool.clone()),
             test_ingest(pool.clone()),
+            crate::app::tests::test_store(),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -255,6 +265,7 @@ pub(crate) mod tests {
             test_identity(pool.clone()),
             test_tenancy(pool.clone()),
             test_ingest(pool.clone()),
+            crate::app::tests::test_store(),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,
@@ -278,6 +289,7 @@ pub(crate) mod tests {
             test_identity(pool.clone()),
             test_tenancy(pool.clone()),
             test_ingest(pool.clone()),
+            crate::app::tests::test_store(),
             test_rate_limiter(pool.clone()),
             test_clock(),
             TEST_ORIGIN,

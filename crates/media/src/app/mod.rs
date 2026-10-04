@@ -2,6 +2,8 @@ mod retry;
 mod service;
 pub(crate) mod transcode;
 
+mod reader;
+pub use reader::{PlaybackKeys, RenditionReader};
 pub use retry::{RetryError, RetryService};
 pub use service::{
     EnqueueError, MediaService, PROCESS_TAKE, ProcessError, ProcessOutcome, ProcessTake,

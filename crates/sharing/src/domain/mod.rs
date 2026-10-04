@@ -1,6 +1,8 @@
+mod access;
 mod slug;
 mod visibility;
 
+pub use access::{Decision, Viewer, decide};
 pub use slug::{SLUG_LEN, Slug};
 pub use visibility::Visibility;
 

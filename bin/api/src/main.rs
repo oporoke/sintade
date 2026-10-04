@@ -55,7 +55,7 @@ async fn main() -> anyhow::Result<()> {
         pool.clone(),
         Arc::new(catalog::CatalogService::new()),
         Arc::new(billing::BillingService::new()),
-        store,
+        store.clone(),
         clock.clone(),
     ));
     let router = app::build_router(
@@ -63,6 +63,7 @@ async fn main() -> anyhow::Result<()> {
         identity,
         tenancy,
         ingest,
+        store,
         rate_limiter,
         clock,
         &config.public_base_url,
