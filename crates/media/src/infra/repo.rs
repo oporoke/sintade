@@ -116,3 +116,61 @@ pub async fn mark_rejected(
     .await?;
     Ok(())
 }
+
+/// Records (or, on a retry, replaces) one rendition of a take.
+#[allow(clippy::too_many_arguments)]
+pub async fn upsert_rendition(
+    conn: &mut PgConnection,
+    workspace_id: WorkspaceId,
+    recording_id: RecordingId,
+    take_id: TakeId,
+    kind: &str,
+    variant: &str,
+    storage_key: &str,
+    size_bytes: i64,
+    meta: serde_json::Value,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"
+        INSERT INTO renditions (id, workspace_id, recording_id, take_id, kind, variant,
+                                storage_key, size_bytes, meta)
+        VALUES ($1, $2, $3, $4, $5::text::rendition_kind, $6, $7, $8, $9)
+        ON CONFLICT (recording_id, take_id, kind, variant) DO UPDATE
+        SET storage_key = EXCLUDED.storage_key, size_bytes = EXCLUDED.size_bytes,
+            meta = EXCLUDED.meta, created_at = now()
+        "#,
+        uuid::Uuid::now_v7(),
+        workspace_id.into_uuid(),
+        recording_id.into_uuid(),
+        take_id.into_uuid(),
+        kind,
+        variant,
+        storage_key,
+        size_bytes,
+        meta,
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// `running` → `done`.
+pub async fn mark_done(
+    conn: &mut PgConnection,
+    take_id: TakeId,
+    workspace_id: WorkspaceId,
+    now: OffsetDateTime,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"
+        UPDATE media_jobs SET state = 'done', last_error = NULL, finished_at = $3
+        WHERE take_id = $1 AND workspace_id = $2
+        "#,
+        take_id.into_uuid(),
+        workspace_id.into_uuid(),
+        now,
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}

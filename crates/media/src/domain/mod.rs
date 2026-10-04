@@ -1,6 +1,7 @@
 //! Media's pure rules: the chunk manifest a take is processed from. No I/O here.
 
 pub mod probe;
+pub mod transcode;
 
 use kernel::{RecordingId, TakeId, WorkspaceId};
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,16 @@ impl Container {
             Self::Mp4 => "video/mp4",
         }
     }
+}
+
+/// Where a recording's default MP4 lives (docs/design.md §8 storage layout).
+pub fn mp4_key(workspace_id: WorkspaceId, recording_id: RecordingId) -> String {
+    format!("ws/{workspace_id}/rec/{recording_id}/mp4/default.mp4")
+}
+
+/// Where a recording's poster lives (docs/design.md §8 storage layout).
+pub fn poster_key(workspace_id: WorkspaceId, recording_id: RecordingId) -> String {
+    format!("ws/{workspace_id}/rec/{recording_id}/img/poster.jpg")
 }
 
 /// Where a take's concatenated original lives (docs/design.md §8 storage layout).

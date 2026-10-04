@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE media_jobs SET state = 'done', last_error = NULL, finished_at = $3\n        WHERE take_id = $1 AND workspace_id = $2\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9d6bbe53c2ade1d1dcd36211d86c38d8a3dae0bcd78a45781a690ec278202adf"
+}

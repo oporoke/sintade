@@ -15,7 +15,16 @@ pub enum JobError {
 
 pub struct JobCtx {
     pub job_id: platform::JobId,
+    /// Failed attempts so far (0 on the first run).
     pub attempt: i32,
+    pub max_attempts: i32,
+}
+
+impl JobCtx {
+    /// Whether a failure now dead-letters the job (no retry follows).
+    pub fn is_last_attempt(&self) -> bool {
+        self.attempt + 1 >= self.max_attempts
+    }
 }
 
 pub trait JobHandler: Send + Sync + 'static {

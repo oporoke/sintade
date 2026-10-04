@@ -31,6 +31,13 @@ const SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // `worker transcode <input> <output.mp4> [mime]` runs the MP4 step of `ProcessTake` on local
+    // files and exits -- no config, database or storage. For ops (re-making one recording by
+    // hand) and the cross-browser playback e2e test.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("transcode") {
+        return transcode_command(&args[2..]).await;
+    }
     let config = platform::Config::load()?;
     platform::init_telemetry(&config.rust_log);
 
@@ -64,6 +71,8 @@ async fn main() -> anyhow::Result<()> {
     let media = Arc::new(MediaService::new(
         pool.clone(),
         store,
+        Arc::new(catalog::CatalogService::new()),
+        Arc::new(billing::BillingService::new()),
         clock,
         scratch,
         tools,
@@ -76,6 +85,43 @@ async fn main() -> anyhow::Result<()> {
         run_outbox_relay_loop(pool.clone(), media),
         run_scheduler_loop(pool),
     )?;
+    Ok(())
+}
+
+async fn transcode_command(args: &[String]) -> anyhow::Result<()> {
+    let [input, output, rest @ ..] = args else {
+        anyhow::bail!("usage: worker transcode <input> <output.mp4> [mime-type]");
+    };
+    let mime = rest.first().map(String::as_str).unwrap_or_else(|| {
+        if input.ends_with(".mp4") {
+            "video/mp4"
+        } else {
+            "video/webm"
+        }
+    });
+    let tools = MediaTools {
+        ffmpeg: std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_string()),
+        ffprobe: std::env::var("FFPROBE_PATH").unwrap_or_else(|_| "ffprobe".to_string()),
+    };
+    let max_height = billing::FREE_TIER.max_resolution;
+    let report = media::transcode_file(
+        &tools,
+        std::path::Path::new(input),
+        media::Container::from_mime(mime),
+        std::path::Path::new(output),
+        max_height,
+        0,
+    )
+    .await?;
+    println!(
+        "{output}: {:?}, {} {}x{}, {} ms, {} bytes",
+        report.plan,
+        report.mp4.video_codec,
+        report.mp4.width,
+        report.mp4.height,
+        report.mp4.duration_ms.unwrap_or_default(),
+        report.mp4_bytes
+    );
     Ok(())
 }
 
@@ -114,6 +160,7 @@ async fn run_job_loop(
                 let ctx = JobCtx {
                     job_id: claimed.id,
                     attempt: claimed.attempts,
+                    max_attempts: claimed.max_attempts,
                 };
                 let dispatched = registry.dispatch(&claimed.kind, ctx, claimed.payload);
                 let result = with_heartbeat(&queue, claimed.id, &worker_id, dispatched).await;
