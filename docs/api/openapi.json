@@ -457,6 +457,16 @@
               }
             }
           },
+          "402": {
+            "description": "The plan's recording limit is reached (free tier: 50)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "403": {
             "description": "Missing CSRF token, or the role can't create recordings",
             "content": {
@@ -752,6 +762,16 @@
               }
             }
           },
+          "402": {
+            "description": "Longer than the plan allows (free tier: 10 minutes)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "403": {
             "description": "Missing or mismatched CSRF token",
             "content": {
@@ -985,9 +1005,16 @@
         "type": "object",
         "required": [
           "recording_id",
-          "take_id"
+          "take_id",
+          "max_duration_ms"
         ],
         "properties": {
+          "max_duration_ms": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The longest take the workspace's plan accepts (pauses excluded). The recorder stops by\nitself before this; finalize rejects anything longer.",
+            "minimum": 0
+          },
           "recording_id": {
             "type": "string",
             "format": "uuid"

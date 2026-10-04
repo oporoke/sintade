@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use billing::BillingService;
 use catalog::{CatalogService, NewRecording, Title, TitleError};
 use kernel::{RecordingId, TakeId, UserId, WorkspaceId};
 use platform::{Clock, ObjectStore, Outbox, OutboxError, StorageError};
@@ -32,6 +33,8 @@ pub struct StartRecording {
 pub struct StartedRecording {
     pub recording_id: RecordingId,
     pub take_id: TakeId,
+    /// The longest take the workspace's plan accepts, so the recorder can stop in time.
+    pub max_duration_ms: u32,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -41,6 +44,10 @@ pub enum StartRecordingError {
 
     #[error(transparent)]
     InvalidMimeType(#[from] MimeTypeError),
+
+    /// The plan's recording limit is reached (free tier: 50).
+    #[error("your plan allows {max} recordings; delete one to record another")]
+    LimitReached { max: u32 },
 
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
@@ -197,6 +204,10 @@ pub enum FinalizeError {
     #[error("duration_ms must be at most {}", i32::MAX)]
     InvalidDuration,
 
+    /// Longer than the plan allows (free tier: 10 minutes).
+    #[error("your plan allows takes of up to {} minutes", max_ms / 60_000)]
+    DurationExceeded { max_ms: u32 },
+
     /// Some of `0..chunk_count` were never acknowledged (docs/design.md §9: `422` with the
     /// missing indexes). `missing` lists at most [`MAX_MISSING_LISTED`].
     #[error("{missing_count} chunk(s) missing")]
@@ -223,10 +234,28 @@ pub enum FinalizeError {
     Database(#[from] sqlx::Error),
 }
 
+/// What one `SweepStaleUploads` run did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SweepReport {
+    /// Recordings moved to `abandoned` (upload idle > 24 h).
+    pub abandoned: usize,
+    /// Unfinalized takes whose chunks were deleted (idle > 7 days).
+    pub purged_takes: usize,
+}
+
+/// An upload idle this long is abandoned (docs/design.md §10 Recover step 4).
+pub const ABANDON_AFTER: time::Duration = time::Duration::hours(24);
+/// Chunks of an abandoned upload are deleted this long after its last activity.
+pub const PURGE_AFTER: time::Duration = time::Duration::days(7);
+/// Most takes one sweep handles per step; the next run continues.
+const SWEEP_BATCH: i64 = 500;
+
 pub struct IngestService {
     pool: PgPool,
     catalog: Arc<CatalogService>,
+    billing: Arc<BillingService>,
     store: Arc<dyn ObjectStore>,
+    clock: Arc<dyn Clock>,
     outbox: Outbox,
 }
 
@@ -234,14 +263,17 @@ impl IngestService {
     pub fn new(
         pool: PgPool,
         catalog: Arc<CatalogService>,
+        billing: Arc<BillingService>,
         store: Arc<dyn ObjectStore>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             pool,
             catalog,
+            billing,
             store,
-            outbox: Outbox::new(clock),
+            outbox: Outbox::new(clock.clone()),
+            clock,
         }
     }
 
@@ -254,12 +286,25 @@ impl IngestService {
     ) -> Result<StartedRecording, StartRecordingError> {
         let title = Title::parse(request.title.as_deref())?;
         let mime_type = MimeType::parse(&request.mime_type)?;
+        let entitlements = self.billing.entitlements(request.workspace_id).await;
         let started = StartedRecording {
             recording_id: RecordingId::new_v7(),
             take_id: TakeId::new_v7(),
+            max_duration_ms: entitlements.max_duration_ms,
         };
 
         let mut tx = self.pool.begin().await?;
+        // Count and insert under a per-workspace lock: concurrent creates can't both take the
+        // last free slot.
+        let active = self
+            .catalog
+            .lock_and_count_active(&mut tx, request.workspace_id)
+            .await?;
+        if active >= u64::from(entitlements.max_recordings) {
+            return Err(StartRecordingError::LimitReached {
+                max: entitlements.max_recordings,
+            });
+        }
         self.catalog
             .create_recording(
                 &mut tx,
@@ -449,6 +494,14 @@ impl IngestService {
         }
         let duration_ms =
             i32::try_from(request.duration_ms).map_err(|_| FinalizeError::InvalidDuration)?;
+        let max_ms = self
+            .billing
+            .entitlements(request.workspace_id)
+            .await
+            .max_duration_ms;
+        if request.duration_ms > max_ms {
+            return Err(FinalizeError::DurationExceeded { max_ms });
+        }
 
         let mut tx = self.pool.begin().await?;
         let take = infra::lock_take_for_owner(
@@ -539,6 +592,62 @@ impl IngestService {
             recording_id: take.recording_id,
         })
     }
+
+    /// `SweepStaleUploads` (docs/design.md §10 Recover step 4): recordings whose upload has been
+    /// idle for more than [`ABANDON_AFTER`] become `abandoned` (catalog decides, from
+    /// `recording`/`uploading` only), and the chunks of unfinalized takes idle for more than
+    /// [`PURGE_AFTER`] are deleted from storage and the database. Idle means no chunk acked and
+    /// no take created since. A system job: it spans workspaces by design, and every row it
+    /// touches is addressed by its own workspace.
+    #[tracing::instrument(skip_all)]
+    pub async fn sweep_stale_uploads(&self) -> Result<SweepReport, SweepError> {
+        let now = self.clock.now();
+        let mut report = SweepReport::default();
+
+        // The takes are marked and their recordings abandoned in one transaction.
+        let mut tx = self.pool.begin().await?;
+        let idle =
+            infra::abandon_idle_takes(&mut *tx, now, now - ABANDON_AFTER, SWEEP_BATCH).await?;
+        if !idle.is_empty() {
+            let recordings: Vec<(RecordingId, WorkspaceId)> = idle
+                .iter()
+                .map(|take| (take.recording_id, take.workspace_id))
+                .collect();
+            report.abandoned = self
+                .catalog
+                .mark_abandoned(&mut tx, &recordings)
+                .await?
+                .len();
+        }
+        tx.commit().await?;
+
+        let expired = infra::purgeable_takes(&self.pool, now - PURGE_AFTER, SWEEP_BATCH).await?;
+        for take in expired {
+            let prefix = format!(
+                "ws/{}/rec/{}/takes/{}/chunks/",
+                take.workspace_id, take.recording_id, take.take_id
+            );
+            self.store.delete_prefix(&prefix).await?;
+            infra::delete_chunks(&self.pool, take.take_id, take.workspace_id).await?;
+            report.purged_takes += 1;
+        }
+
+        tracing::info!(
+            abandoned = report.abandoned,
+            purged_takes = report.purged_takes,
+            "stale uploads swept"
+        );
+        Ok(report)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SweepError {
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+
+    #[error("database error: {0}")]
+    Database(#[from] sqlx::Error),
 }
 
 #[cfg(test)]
@@ -589,6 +698,7 @@ mod tests {
         IngestService::new(
             pool.clone(),
             Arc::new(CatalogService::new()),
+            Arc::new(BillingService::new()),
             store,
             Arc::new(platform::SystemClock),
         )
@@ -599,6 +709,7 @@ mod tests {
     #[derive(Default)]
     struct FakeStore {
         objects: std::sync::Mutex<std::collections::HashMap<String, u64>>,
+        deleted: std::sync::Mutex<Vec<String>>,
     }
 
     impl FakeStore {
@@ -626,8 +737,12 @@ mod tests {
                     content_type: None,
                 }))
         }
-        async fn delete_prefix(&self, _prefix: &str) -> Result<u64, StorageError> {
-            Ok(0)
+        async fn delete_prefix(&self, prefix: &str) -> Result<u64, StorageError> {
+            self.deleted.lock().expect("lock").push(prefix.to_string());
+            let mut objects = self.objects.lock().expect("lock");
+            let before = objects.len();
+            objects.retain(|key, _| !key.starts_with(prefix));
+            Ok((before - objects.len()) as u64)
         }
     }
 
@@ -1268,5 +1383,248 @@ mod tests {
             })
             .await;
         assert!(matches!(result, Err(FinalizeError::NotFound)), "{result:?}");
+    }
+
+    /// Day 41's Check, part 1: the 51st recording is rejected (free tier: 50).
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn the_51st_recording_is_rejected(pool: PgPool) {
+        let (owner, workspace) = owner_and_workspace(&pool).await;
+        let ingest = service(&pool);
+        for _ in 0..50 {
+            let started = ingest
+                .start_recording(request(owner, workspace))
+                .await
+                .expect("within the plan");
+            assert_eq!(started.max_duration_ms, 600_000);
+        }
+        let result = ingest.start_recording(request(owner, workspace)).await;
+        assert!(
+            matches!(result, Err(StartRecordingError::LimitReached { max: 50 })),
+            "{result:?}"
+        );
+
+        // Abandoned recordings don't count: one frees a slot.
+        sqlx::query!(
+            "UPDATE recordings SET state = 'abandoned'
+             WHERE id = (SELECT id FROM recordings WHERE workspace_id = $1 LIMIT 1)",
+            workspace.into_uuid()
+        )
+        .execute(&pool)
+        .await
+        .expect("abandon one");
+        ingest
+            .start_recording(request(owner, workspace))
+            .await
+            .expect("a slot was freed");
+
+        // Another workspace has its own 50.
+        let (other_owner, other_workspace) = owner_and_workspace(&pool).await;
+        ingest
+            .start_recording(request(other_owner, other_workspace))
+            .await
+            .expect("other workspace unaffected");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn concurrent_creates_cannot_exceed_the_limit(pool: PgPool) {
+        let (owner, workspace) = owner_and_workspace(&pool).await;
+        let ingest = service(&pool);
+        for _ in 0..48 {
+            ingest
+                .start_recording(request(owner, workspace))
+                .await
+                .expect("within the plan");
+        }
+        // Four requests race for the last two slots.
+        let results = futures_join4(
+            ingest.start_recording(request(owner, workspace)),
+            ingest.start_recording(request(owner, workspace)),
+            ingest.start_recording(request(owner, workspace)),
+            ingest.start_recording(request(owner, workspace)),
+        )
+        .await;
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 2);
+        let total = sqlx::query_scalar!(
+            r#"SELECT count(*) AS "n!" FROM recordings WHERE workspace_id = $1"#,
+            workspace.into_uuid()
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(total, 50);
+    }
+
+    async fn futures_join4<T>(
+        a: impl std::future::Future<Output = T>,
+        b: impl std::future::Future<Output = T>,
+        c: impl std::future::Future<Output = T>,
+        d: impl std::future::Future<Output = T>,
+    ) -> [T; 4] {
+        let (a, b, c, d) = tokio::join!(a, b, c, d);
+        [a, b, c, d]
+    }
+
+    /// Day 41's Check, part 2: an 11-minute take is rejected at finalize (free tier: 10 min).
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn an_11_minute_take_is_rejected(pool: PgPool) {
+        let up = uploading(&pool).await;
+        up.upload_and_ack(&[0]).await;
+        let eleven_minutes = up
+            .ingest
+            .finalize(FinalizeTake {
+                workspace_id: up.workspace,
+                user_id: up.owner,
+                take_id: up.started.take_id,
+                chunk_count: 1,
+                duration_ms: 11 * 60 * 1000,
+            })
+            .await;
+        assert!(
+            matches!(
+                eleven_minutes,
+                Err(FinalizeError::DurationExceeded { max_ms: 600_000 })
+            ),
+            "{eleven_minutes:?}"
+        );
+        assert!(!up.status().await.finalized);
+
+        let ten_minutes = up
+            .ingest
+            .finalize(FinalizeTake {
+                workspace_id: up.workspace,
+                user_id: up.owner,
+                take_id: up.started.take_id,
+                chunk_count: 1,
+                duration_ms: 10 * 60 * 1000,
+            })
+            .await;
+        assert!(
+            ten_minutes.is_ok(),
+            "exactly the limit is allowed: {ten_minutes:?}"
+        );
+    }
+
+    /// Ages every timestamp of the take (and its chunks) by `by`, as if it happened earlier.
+    async fn age_take(pool: &PgPool, take: TakeId, by: time::Duration) {
+        sqlx::query!(
+            "UPDATE takes SET created_at = created_at - $2::interval WHERE id = $1",
+            take.into_uuid(),
+            sqlx::postgres::types::PgInterval::try_from(by).expect("interval"),
+        )
+        .execute(pool)
+        .await
+        .expect("age take");
+        sqlx::query!(
+            "UPDATE chunks SET received_at = received_at - $2::interval WHERE take_id = $1",
+            take.into_uuid(),
+            sqlx::postgres::types::PgInterval::try_from(by).expect("interval"),
+        )
+        .execute(pool)
+        .await
+        .expect("age chunks");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn the_sweep_abandons_idle_uploads_then_purges_their_chunks(pool: PgPool) {
+        let store = Arc::new(FakeStore::default());
+        let (owner, workspace) = owner_and_workspace(&pool).await;
+        let ingest = service_with(&pool, store.clone());
+        let idle = ingest
+            .start_recording(request(owner, workspace))
+            .await
+            .expect("idle take");
+        let active = ingest
+            .start_recording(request(owner, workspace))
+            .await
+            .expect("active take");
+        for take in [idle.take_id, active.take_id] {
+            sqlx::query!(
+                "INSERT INTO chunks (take_id, workspace_id, idx, size_bytes, sha256)
+                 VALUES ($1, $2, 0, 10, $3)",
+                take.into_uuid(),
+                workspace.into_uuid(),
+                &[0u8; 32][..],
+            )
+            .execute(&pool)
+            .await
+            .expect("chunk");
+        }
+
+        // 25 hours idle: abandoned, chunks kept.
+        age_take(&pool, idle.take_id, time::Duration::hours(25)).await;
+        let report = ingest.sweep_stale_uploads().await.expect("sweep");
+        assert_eq!(
+            report,
+            SweepReport {
+                abandoned: 1,
+                purged_takes: 0
+            }
+        );
+        let states = sqlx::query!(
+            r#"SELECT id, state::text AS "state!" FROM recordings WHERE workspace_id = $1"#,
+            workspace.into_uuid()
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("states");
+        for row in states {
+            let expected = if row.id == idle.recording_id.into_uuid() {
+                "abandoned"
+            } else {
+                "recording"
+            };
+            assert_eq!(row.state, expected);
+        }
+        // A second run finds nothing new.
+        assert_eq!(
+            ingest.sweep_stale_uploads().await.expect("sweep"),
+            SweepReport::default()
+        );
+
+        // 8 days idle: its chunks go, in storage and in the database.
+        age_take(&pool, idle.take_id, time::Duration::days(7)).await;
+        let report = ingest.sweep_stale_uploads().await.expect("sweep");
+        assert_eq!(
+            report,
+            SweepReport {
+                abandoned: 0,
+                purged_takes: 1
+            }
+        );
+        assert_eq!(
+            store.deleted.lock().expect("lock").as_slice(),
+            [format!(
+                "ws/{workspace}/rec/{}/takes/{}/chunks/",
+                idle.recording_id, idle.take_id
+            )]
+        );
+        let left = sqlx::query_scalar!(
+            r#"SELECT count(*) AS "n!" FROM chunks WHERE take_id = $1"#,
+            idle.take_id.into_uuid()
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(left, 0);
+        let active_left = sqlx::query_scalar!(
+            r#"SELECT count(*) AS "n!" FROM chunks WHERE take_id = $1"#,
+            active.take_id.into_uuid()
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(active_left, 1, "the active upload is untouched");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn the_sweep_leaves_finalized_takes_alone(pool: PgPool) {
+        let up = uploading(&pool).await;
+        up.upload_and_ack(&[0]).await;
+        up.finalize(1).await.expect("finalize");
+        age_take(&pool, up.started.take_id, time::Duration::days(30)).await;
+        assert_eq!(
+            up.ingest.sweep_stale_uploads().await.expect("sweep"),
+            SweepReport::default()
+        );
     }
 }

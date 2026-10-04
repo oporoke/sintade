@@ -55,4 +55,29 @@ impl CatalogService {
     ) -> Result<bool, sqlx::Error> {
         infra::mark_processing(conn, id, workspace_id, duration_ms).await
     }
+
+    /// How many recordings count towards the workspace's plan. Takes a per-workspace lock held
+    /// until the caller's transaction ends, so the caller can check a quota and insert without
+    /// a race.
+    #[tracing::instrument(skip_all, fields(workspace_id = %workspace_id))]
+    pub async fn lock_and_count_active(
+        &self,
+        conn: &mut PgConnection,
+        workspace_id: WorkspaceId,
+    ) -> Result<u64, sqlx::Error> {
+        infra::lock_workspace_recordings(conn, workspace_id).await?;
+        let count = infra::count_active_recordings(conn, workspace_id).await?;
+        Ok(u64::try_from(count).unwrap_or_default())
+    }
+
+    /// `Recording → Abandoned` for recordings whose upload went idle (`SweepStaleUploads`).
+    /// Only recordings still in `recording`/`uploading` change; returns those.
+    #[tracing::instrument(skip_all, fields(candidates = recordings.len()))]
+    pub async fn mark_abandoned(
+        &self,
+        conn: &mut PgConnection,
+        recordings: &[(RecordingId, WorkspaceId)],
+    ) -> Result<Vec<RecordingId>, sqlx::Error> {
+        infra::mark_abandoned(conn, recordings).await
+    }
 }

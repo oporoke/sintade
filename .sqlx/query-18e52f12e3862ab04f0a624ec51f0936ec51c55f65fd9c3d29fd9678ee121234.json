@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE chunks SET received_at = received_at - $2::interval WHERE take_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Interval"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "18e52f12e3862ab04f0a624ec51f0936ec51c55f65fd9c3d29fd9678ee121234"
+}

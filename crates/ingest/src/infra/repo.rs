@@ -1,7 +1,113 @@
 use kernel::{RecordingId, TakeId, UserId, WorkspaceId};
 use sqlx::{PgConnection, PgExecutor};
+use time::OffsetDateTime;
 
 use crate::domain::{MimeType, Sources};
+
+/// A take found by the stale-upload sweep.
+pub struct StaleTake {
+    pub take_id: TakeId,
+    pub recording_id: RecordingId,
+    pub workspace_id: WorkspaceId,
+}
+
+/// Unfinalized, not-yet-abandoned takes with no activity (take created, chunk acked) since
+/// `cutoff`, oldest first; marks them abandoned in the same statement so the next run moves on.
+pub async fn abandon_idle_takes(
+    executor: impl PgExecutor<'_>,
+    now: OffsetDateTime,
+    cutoff: OffsetDateTime,
+    limit: i64,
+) -> Result<Vec<StaleTake>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"
+        WITH idle AS (
+            SELECT t.id, t.workspace_id
+            FROM takes t
+            WHERE t.finalized_at IS NULL
+              AND t.abandoned_at IS NULL
+              AND GREATEST(
+                    t.created_at,
+                    COALESCE(
+                      (SELECT max(c.received_at) FROM chunks c
+                       WHERE c.take_id = t.id AND c.workspace_id = t.workspace_id),
+                      t.created_at)
+                  ) < $1
+            ORDER BY t.created_at
+            LIMIT $2
+            FOR UPDATE OF t SKIP LOCKED
+        )
+        UPDATE takes t
+        SET abandoned_at = $3
+        FROM idle
+        WHERE t.id = idle.id AND t.workspace_id = idle.workspace_id
+        RETURNING t.id, t.recording_id, t.workspace_id
+        "#,
+        cutoff,
+        limit,
+        now,
+    )
+    .fetch_all(executor)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| StaleTake {
+            take_id: TakeId::from_uuid(row.id),
+            recording_id: RecordingId::from_uuid(row.recording_id),
+            workspace_id: WorkspaceId::from_uuid(row.workspace_id),
+        })
+        .collect())
+}
+
+/// Abandoned takes, idle since before `cutoff`, that still have chunks to delete.
+pub async fn purgeable_takes(
+    executor: impl PgExecutor<'_>,
+    cutoff: OffsetDateTime,
+    limit: i64,
+) -> Result<Vec<StaleTake>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT t.id, t.recording_id, t.workspace_id
+        FROM takes t
+        WHERE t.finalized_at IS NULL
+          AND t.abandoned_at IS NOT NULL
+          AND EXISTS (SELECT 1 FROM chunks c WHERE c.take_id = t.id AND c.workspace_id = t.workspace_id)
+          AND NOT EXISTS (
+                SELECT 1 FROM chunks c
+                WHERE c.take_id = t.id AND c.workspace_id = t.workspace_id AND c.received_at >= $1)
+          AND t.created_at < $1
+        ORDER BY t.created_at
+        LIMIT $2
+        "#,
+        cutoff,
+        limit,
+    )
+    .fetch_all(executor)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| StaleTake {
+            take_id: TakeId::from_uuid(row.id),
+            recording_id: RecordingId::from_uuid(row.recording_id),
+            workspace_id: WorkspaceId::from_uuid(row.workspace_id),
+        })
+        .collect())
+}
+
+pub async fn delete_chunks(
+    executor: impl PgExecutor<'_>,
+    take_id: TakeId,
+    workspace_id: WorkspaceId,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query!(
+        "DELETE FROM chunks WHERE take_id = $1 AND workspace_id = $2",
+        take_id.into_uuid(),
+        workspace_id.into_uuid(),
+    )
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected())
+}
 
 pub async fn insert_take(
     conn: &mut PgConnection,

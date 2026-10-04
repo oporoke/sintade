@@ -54,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
     let ingest = Arc::new(ingest::IngestService::new(
         pool.clone(),
         Arc::new(catalog::CatalogService::new()),
+        Arc::new(billing::BillingService::new()),
         store,
         clock.clone(),
     ));

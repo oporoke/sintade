@@ -57,6 +57,9 @@ impl IntoResponse for ApiError {
             AppError::Unauthorized(detail) => (StatusCode::UNAUTHORIZED, "Unauthorized", detail),
             AppError::Forbidden(detail) => (StatusCode::FORBIDDEN, "Forbidden", detail),
             AppError::Conflict(detail) => (StatusCode::CONFLICT, "Conflict", detail),
+            AppError::LimitReached(detail) => {
+                (StatusCode::PAYMENT_REQUIRED, "Payment Required", detail)
+            }
             AppError::RateLimited => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "Too Many Requests",
