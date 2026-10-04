@@ -1,3 +1,4 @@
+mod golden_pipeline;
 mod probe_fixtures;
 mod repo;
 pub mod scratch;
