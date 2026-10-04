@@ -18,6 +18,7 @@
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
@@ -96,6 +97,16 @@ fn tenant_table() -> Vec<(Method, &'static str, Probe)> {
                     })
                 },
             },
+        ),
+        (
+            Method::POST,
+            "/api/v1/recordings/{recording_id}/retry",
+            Probe::Owned(|pool, workspace_id| {
+                Box::pin(async move {
+                    let recording_id = failed_recording_in(&pool, workspace_id).await;
+                    post_json(&format!("/api/v1/recordings/{recording_id}/retry"), "")
+                })
+            }),
         ),
         (
             Method::POST,
@@ -202,6 +213,38 @@ async fn take_owned_by(pool: &PgPool, workspace_id: WorkspaceId) -> TakeId {
         .take_id
 }
 
+/// A recording in `workspace_id` that processing gave up on: `failed`, with the take's job.
+async fn failed_recording_in(pool: &PgPool, workspace_id: WorkspaceId) -> kernel::RecordingId {
+    let take_id = take_owned_by(pool, workspace_id).await;
+    let take = sqlx::query!(
+        "SELECT recording_id, mime_type FROM takes WHERE id = $1",
+        take_id.into_uuid()
+    )
+    .fetch_one(pool)
+    .await
+    .expect("take");
+    sqlx::query!(
+        "UPDATE recordings SET state = 'failed' WHERE id = $1",
+        take.recording_id
+    )
+    .execute(pool)
+    .await
+    .expect("fail the recording");
+    sqlx::query!(
+        r#"INSERT INTO media_jobs (take_id, workspace_id, recording_id, mime_type, duration_ms,
+                                   chunks, state)
+           VALUES ($1, $2, $3, $4, 1000, '[]'::jsonb, 'failed')"#,
+        take_id.into_uuid(),
+        workspace_id.into_uuid(),
+        take.recording_id,
+        take.mime_type,
+    )
+    .execute(pool)
+    .await
+    .expect("media job");
+    kernel::RecordingId::from_uuid(take.recording_id)
+}
+
 /// PUTs `bytes` as chunk `idx` of the take, into real MinIO, as the browser would.
 async fn put_chunk(pool: &PgPool, take_id: TakeId, idx: u32, bytes: &'static [u8]) {
     let take = sqlx::query!(
@@ -263,6 +306,10 @@ fn app(pool: &PgPool) -> Router {
             identity: test_identity(pool.clone()),
             tenancy: test_tenancy(pool.clone()),
             ingest: test_ingest(pool.clone()),
+            retry: Arc::new(media::RetryService::new(
+                pool.clone(),
+                Arc::new(catalog::CatalogService::new()),
+            )),
             rate_limiter: test_rate_limiter(pool.clone()),
             clock: test_clock(),
         },

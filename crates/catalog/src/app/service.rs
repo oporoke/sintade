@@ -3,7 +3,7 @@ use sqlx::PgConnection;
 
 use crate::domain::Title;
 use crate::infra;
-pub use crate::infra::RecordingOwner;
+pub use crate::infra::{RecordingOwner, Reopened};
 
 /// A recording to create, in state `recording`, with its first take already chosen.
 #[derive(Debug, Clone)]
@@ -114,6 +114,18 @@ impl CatalogService {
         workspace_id: WorkspaceId,
     ) -> Result<Option<RecordingOwner>, sqlx::Error> {
         infra::mark_failed(conn, id, workspace_id).await
+    }
+
+    /// `Failed → Processing` for a manual retry. Runs on media's transaction, so the state and
+    /// the re-queued job commit together.
+    #[tracing::instrument(skip_all, fields(recording_id = %id, workspace_id = %workspace_id))]
+    pub async fn reopen_failed(
+        &self,
+        conn: &mut PgConnection,
+        id: RecordingId,
+        workspace_id: WorkspaceId,
+    ) -> Result<Reopened, sqlx::Error> {
+        infra::reopen_failed(conn, id, workspace_id).await
     }
 }
 

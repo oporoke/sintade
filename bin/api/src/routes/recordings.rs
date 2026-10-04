@@ -1,8 +1,9 @@
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use ingest::{Sources, StartRecording, StartRecordingError};
 use kernel::{AppError, Permission, RecordingId, TakeId};
+use media::RetryError;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -98,6 +99,45 @@ pub async fn create_recording(
             max_duration_ms: started.max_duration_ms,
         }),
     ))
+}
+
+/// Reprocesses a recording whose processing failed (`failed → processing`, docs/design.md §4).
+/// The work runs in the background; poll the recording for `ready` or `failed` again.
+#[utoipa::path(
+    post,
+    path = "/api/v1/recordings/{recording_id}/retry",
+    tag = "recordings",
+    params(("recording_id" = uuid::Uuid, Path, description = "The failed recording")),
+    responses(
+        (status = 202, description = "Processing queued again"),
+        (status = 401, description = "No valid session", body = Problem, content_type = "application/problem+json"),
+        (status = 403, description = "Missing CSRF token, or the role can't edit recordings", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such recording in the caller's workspace", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "The recording isn't failed", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+#[tracing::instrument(skip_all, fields(workspace_id = %ctx.workspace_id))]
+pub async fn retry_recording(
+    State(state): State<AppState>,
+    ctx: WorkspaceContext,
+    headers: HeaderMap,
+    Path(recording_id): Path<RecordingId>,
+) -> Result<StatusCode, ApiError> {
+    verify_csrf(&headers)?;
+    ctx.require(Permission::EditRecording)?;
+    state
+        .retry
+        .retry_processing(ctx.workspace_id, recording_id)
+        .await
+        .map_err(|error| match error {
+            RetryError::NotFound => ApiError::from(AppError::NotFound),
+            RetryError::NotFailed => ApiError::from(AppError::Conflict(error.to_string())),
+            other => {
+                tracing::error!(error = %other, "retry recording failed");
+                ApiError::from(AppError::Internal("could not queue the retry".to_string()))
+            }
+        })?;
+    Ok(StatusCode::ACCEPTED)
 }
 
 #[cfg(test)]
@@ -306,6 +346,140 @@ mod tests {
         assert_eq!(
             problem["detail"],
             "your plan allows 50 recordings; delete one to record another"
+        );
+    }
+
+    async fn retry(
+        pool: &PgPool,
+        caller: &Caller,
+        recording_id: uuid::Uuid,
+        csrf: bool,
+    ) -> StatusCode {
+        let app = build_router(
+            pool.clone(),
+            test_identity(pool.clone()),
+            test_tenancy(pool.clone()),
+            test_ingest(pool.clone()),
+            test_rate_limiter(pool.clone()),
+            test_clock(),
+            TEST_ORIGIN,
+        );
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/recordings/{recording_id}/retry"));
+        request = if csrf {
+            request
+                .header(
+                    "cookie",
+                    format!("{}; {CSRF_COOKIE_NAME}=token", caller.access_cookie),
+                )
+                .header(CSRF_HEADER_NAME, "token")
+        } else {
+            request.header("cookie", caller.access_cookie.clone())
+        };
+        app.oneshot(request.body(Body::empty()).expect("valid request"))
+            .await
+            .expect("router call succeeds")
+            .status()
+    }
+
+    /// A recording of the caller's that processing gave up on, with its take's job.
+    async fn failed_recording(pool: &PgPool, caller: &Caller) -> uuid::Uuid {
+        let (_, body) = post(pool, caller, valid_body(), true).await;
+        let recording_id: uuid::Uuid = body["recording_id"]
+            .as_str()
+            .expect("recording_id")
+            .parse()
+            .expect("uuid");
+        let take_id: uuid::Uuid = body["take_id"]
+            .as_str()
+            .expect("take_id")
+            .parse()
+            .expect("uuid");
+        sqlx::query!(
+            "UPDATE recordings SET state = 'failed' WHERE id = $1",
+            recording_id
+        )
+        .execute(pool)
+        .await
+        .expect("fail the recording");
+        sqlx::query!(
+            r#"INSERT INTO media_jobs (take_id, workspace_id, recording_id, mime_type, duration_ms,
+                                       chunks, state, attempts, last_error)
+               VALUES ($1, $2, $3, 'video/webm', 1000, '[]'::jsonb, 'failed', 5, 'gave up')"#,
+            take_id,
+            caller.workspace_id.into_uuid(),
+            recording_id,
+        )
+        .execute(pool)
+        .await
+        .expect("media job");
+        recording_id
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn retry_reprocesses_a_failed_recording(pool: PgPool) {
+        let alice = caller(&pool).await;
+        let recording_id = failed_recording(&pool, &alice).await;
+
+        assert_eq!(
+            retry(&pool, &alice, recording_id, true).await,
+            StatusCode::ACCEPTED
+        );
+
+        let state = sqlx::query_scalar!(
+            r#"SELECT state::text AS "state!" FROM recordings WHERE id = $1"#,
+            recording_id
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("recording");
+        assert_eq!(state, "processing");
+        let job = sqlx::query!(
+            r#"SELECT state::text AS "state!", attempts, last_error FROM media_jobs
+               WHERE recording_id = $1"#,
+            recording_id
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("media job");
+        assert_eq!((job.state.as_str(), job.attempts), ("queued", 0));
+        assert!(job.last_error.is_none());
+        let queued = sqlx::query_scalar!(
+            r#"SELECT count(*) AS "n!" FROM jobs WHERE kind = 'ProcessTake' AND done_at IS NULL"#
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("jobs");
+        assert_eq!(queued, 1);
+
+        // A second press finds it processing again: nothing more is queued.
+        assert_eq!(
+            retry(&pool, &alice, recording_id, true).await,
+            StatusCode::CONFLICT
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn retry_needs_the_csrf_token_and_an_editing_role(pool: PgPool) {
+        let alice = caller(&pool).await;
+        let recording_id = failed_recording(&pool, &alice).await;
+        assert_eq!(
+            retry(&pool, &alice, recording_id, false).await,
+            StatusCode::FORBIDDEN
+        );
+
+        sqlx::query!(
+            "UPDATE memberships SET role = 'viewer' WHERE workspace_id = $1 AND user_id = $2",
+            alice.workspace_id.into_uuid(),
+            alice.user_id.into_uuid(),
+        )
+        .execute(&pool)
+        .await
+        .expect("demote to viewer");
+        assert_eq!(
+            retry(&pool, &alice, recording_id, true).await,
+            StatusCode::FORBIDDEN
         );
     }
 }

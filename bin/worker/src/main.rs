@@ -1,5 +1,6 @@
 mod handler;
 mod handlers;
+mod recipients;
 mod relay;
 
 use std::sync::Arc;
@@ -12,6 +13,7 @@ use handlers::send_email::SendEmailHandler;
 use handlers::sweep_stale_uploads::SweepStaleUploadsHandler;
 use ingest::IngestService;
 use media::{MediaService, MediaTools, ScratchSpace, TakeFinalizedMessage};
+use messaging::{MessagingService, RecordingReadyMessage};
 use platform::{JobQueue, Mailer, SmtpMailer};
 use relay::{OutboxRelay, SubscriberError, SubscriberRegistry};
 use sqlx::PgPool;
@@ -77,12 +79,26 @@ async fn main() -> anyhow::Result<()> {
         scratch,
         tools,
     ));
+    let tenancy = Arc::new(tenancy::TenancyService::new(pool.clone()));
+    let identity = Arc::new(identity::IdentityService::new(
+        pool.clone(),
+        JobQueue::new(pool.clone()),
+        Arc::new(platform::SystemClock),
+        config.public_base_url.clone(),
+        identity::decode_session_secret(&config.session_secret),
+        tenancy,
+    ));
+    let messaging = Arc::new(MessagingService::new(
+        Arc::new(recipients::IdentityRecipients::new(identity)),
+        JobQueue::new(pool.clone()),
+        config.public_base_url.clone(),
+    ));
     let worker_id = format!("worker-{}", std::process::id());
     tracing::info!(worker_id, "worker started");
 
     tokio::try_join!(
         run_job_loop(pool.clone(), worker_id, mailer, ingest, media.clone()),
-        run_outbox_relay_loop(pool.clone(), media),
+        run_outbox_relay_loop(pool.clone(), media, messaging),
         run_scheduler_loop(pool),
     )?;
     Ok(())
@@ -203,8 +219,13 @@ async fn with_heartbeat<T>(
     }
 }
 
-/// Relays `outbox_events` to in-process subscribers: media processes finalized takes.
-async fn run_outbox_relay_loop(pool: PgPool, media: Arc<MediaService>) -> anyhow::Result<()> {
+/// Relays `outbox_events` to in-process subscribers: media processes finalized takes,
+/// messaging emails the creator when a recording is ready.
+async fn run_outbox_relay_loop(
+    pool: PgPool,
+    media: Arc<MediaService>,
+    messaging: Arc<MessagingService>,
+) -> anyhow::Result<()> {
     let mut registry = SubscriberRegistry::new();
     registry.subscribe("TakeFinalized", move |payload| {
         let media = media.clone();
@@ -225,6 +246,23 @@ async fn run_outbox_relay_loop(pool: PgPool, media: Arc<MediaService>) -> anyhow
                 }
                 Err(error) => Err(SubscriberError::Failed(error.to_string())),
             }
+        }
+    });
+    registry.subscribe("RecordingReady", move |payload| {
+        let messaging = messaging.clone();
+        async move {
+            let message: RecordingReadyMessage = match serde_json::from_value(payload) {
+                Ok(message) => message,
+                Err(error) => {
+                    tracing::error!(%error, "RecordingReady: unreadable event, skipped");
+                    return Ok(());
+                }
+            };
+            messaging
+                .recording_ready(message)
+                .await
+                .map(|_| ())
+                .map_err(|error| SubscriberError::Failed(error.to_string()))
         }
     });
     let relay = OutboxRelay::new(pool.clone());

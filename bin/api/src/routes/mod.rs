@@ -113,6 +113,12 @@ pub fn table() -> Vec<Route> {
         ),
         Route::new(
             Method::POST,
+            "/api/v1/recordings/{recording_id}/retry",
+            Workspace,
+            recordings::retry_recording,
+        ),
+        Route::new(
+            Method::POST,
             "/api/v1/takes/{take_id}/chunks/{idx}/url",
             Workspace,
             takes::presign_chunks,

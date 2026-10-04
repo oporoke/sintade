@@ -15,6 +15,7 @@ catalog = { path = "../../crates/catalog" }
 identity = { path = "../../crates/identity" }
 ingest = { path = "../../crates/ingest" }
 kernel = { path = "../../crates/kernel" }
+media = { path = "../../crates/media" }
 platform = { path = "../../crates/platform" }
 tenancy = { path = "../../crates/tenancy" }
 serde = { version = "1.0.229", features = ["derive"] }
