@@ -1,13 +1,14 @@
 use std::sync::Arc;
 
 use kernel::{RecordingId, TakeId, WorkspaceId};
-use platform::{Clock, JobQueue, JobQueueError};
+use platform::{Clock, JobQueue, JobQueueError, ObjectStore, StorageError};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
-use crate::domain::{ChunkManifest, ManifestChunk, ManifestError};
+use crate::domain::{ChunkManifest, Container, ManifestChunk, ManifestError, source_key};
 use crate::infra;
-use crate::infra::scratch::ScratchSpace;
+use crate::infra::scratch::{ScratchDir, ScratchSpace};
+use crate::infra::source::{AssembleError, assemble_source};
 
 /// The job kind that turns a finalized take into renditions (docs/design.md §10 Process).
 pub const PROCESS_TAKE: &str = "ProcessTake";
@@ -63,6 +64,9 @@ pub enum ProcessOutcome {
     AlreadyFinished,
     /// No such take to process (the recording was deleted meanwhile).
     NotFound,
+    /// The take's input can't be processed (a corrupt or missing chunk, an unplayable file);
+    /// it failed for good and the job is finished.
+    Rejected,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -76,20 +80,59 @@ pub enum ProcessError {
     #[error("scratch disk: {0}")]
     Scratch(#[from] std::io::Error),
 
+    #[error("assembling the source: {0}")]
+    Assemble(AssembleError),
+
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
 }
 
+/// Input the pipeline can't use: the take fails for good (ADR-0012 §7).
+#[derive(Debug)]
+struct Rejection(String);
+
+/// A pipeline step's failure: retry it, or give up on the take.
+enum StepError {
+    Retry(ProcessError),
+    Reject(Rejection),
+}
+
+impl From<AssembleError> for StepError {
+    fn from(error: AssembleError) -> Self {
+        if error.is_permanent() {
+            Self::Reject(Rejection(error.to_string()))
+        } else {
+            Self::Retry(ProcessError::Assemble(error))
+        }
+    }
+}
+
+impl<E: Into<ProcessError>> From<E> for StepError {
+    fn from(error: E) -> Self {
+        Self::Retry(error.into())
+    }
+}
+
 pub struct MediaService {
     pool: PgPool,
+    store: Arc<dyn ObjectStore>,
     clock: Arc<dyn Clock>,
     scratch: ScratchSpace,
 }
 
 impl MediaService {
-    pub fn new(pool: PgPool, clock: Arc<dyn Clock>, scratch: ScratchSpace) -> Self {
+    pub fn new(
+        pool: PgPool,
+        store: Arc<dyn ObjectStore>,
+        clock: Arc<dyn Clock>,
+        scratch: ScratchSpace,
+    ) -> Self {
         Self {
             pool,
+            store,
             clock,
             scratch,
         }
@@ -151,7 +194,7 @@ impl MediaService {
             return Ok(ProcessOutcome::AlreadyFinished);
         }
 
-        let chunks: Vec<ManifestChunk> = serde_json::from_value(job.chunks)?;
+        let chunks: Vec<ManifestChunk> = serde_json::from_value(job.chunks.clone())?;
         let manifest = ChunkManifest::new(
             chunks.clone(),
             u32::try_from(chunks.len()).unwrap_or(u32::MAX),
@@ -168,15 +211,50 @@ impl MediaService {
             scratch = %scratch.path().display(),
             "ProcessTake started"
         );
-        // The pipeline (download, verify, concatenate, probe, transcode) arrives Days 44-47.
+        let result = self.run_pipeline(&job, &manifest, &scratch).await;
         scratch.remove().await?;
-        Ok(ProcessOutcome::Ran)
+        match result {
+            Ok(()) => Ok(ProcessOutcome::Ran),
+            Err(StepError::Retry(error)) => Err(error),
+            Err(StepError::Reject(Rejection(reason))) => {
+                tracing::warn!(%reason, "ProcessTake rejected the take");
+                infra::mark_rejected(
+                    &self.pool,
+                    job.take_id,
+                    job.workspace_id,
+                    &reason,
+                    self.clock.now(),
+                )
+                .await?;
+                Ok(ProcessOutcome::Rejected)
+            }
+        }
+    }
+
+    /// docs/design.md §10 Process. Steps 1–2 so far: fetch every chunk, verify it, concatenate
+    /// into the source file and store it. Probing and renditions follow (Days 45–47).
+    async fn run_pipeline(
+        &self,
+        job: &infra::MediaJobRow,
+        manifest: &ChunkManifest,
+        scratch: &ScratchDir,
+    ) -> Result<(), StepError> {
+        let container = Container::from_mime(&job.mime_type);
+        let source = scratch.file(&format!("source.{}", container.extension()));
+        let bytes = assemble_source(self.store.as_ref(), manifest, &source).await?;
+        let key = source_key(job.workspace_id, job.recording_id, job.take_id, container);
+        self.store
+            .put_file(&key, &source, container.content_type())
+            .await?;
+        tracing::info!(bytes, key = %key, "source assembled and stored");
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::MemoryStore;
 
     const HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
@@ -262,12 +340,76 @@ mod tests {
     }
 
     fn service(pool: &PgPool) -> MediaService {
+        service_with(pool).0
+    }
+
+    fn service_with(pool: &PgPool) -> (MediaService, Arc<MemoryStore>) {
         let root =
             std::env::temp_dir().join(format!("sintade-media-test-{}", uuid::Uuid::now_v7()));
-        MediaService::new(
+        let store = Arc::new(MemoryStore::default());
+        let media = MediaService::new(
             pool.clone(),
+            store.clone(),
             Arc::new(platform::SystemClock),
             ScratchSpace::new(root),
+        );
+        (media, store)
+    }
+
+    /// Splits `bytes` into chunks of `chunk_size`, stores them where ingest would, and
+    /// returns the `TakeFinalized` that lists them.
+    fn upload_chunks(
+        store: &MemoryStore,
+        seeded: &Seeded,
+        bytes: &[u8],
+        chunk_size: usize,
+    ) -> TakeFinalizedMessage {
+        let parts: Vec<&[u8]> = bytes.chunks(chunk_size).collect();
+        let mut message = message(seeded, u32::try_from(parts.len()).expect("few chunks"));
+        for (chunk, part) in message.data.chunks.iter_mut().zip(parts) {
+            store.insert(&chunk.key, part.to_vec());
+            chunk.size_bytes = u32::try_from(part.len()).expect("small chunk");
+            chunk.sha256 = crate::testing::sha256_hex(part);
+        }
+        message
+    }
+
+    async fn run(media: &MediaService, seeded: &Seeded) -> ProcessOutcome {
+        media
+            .process_take(ProcessTake {
+                take_id: seeded.take,
+                workspace_id: seeded.workspace,
+            })
+            .await
+            .expect("process")
+    }
+
+    async fn job_state(pool: &PgPool, take: TakeId) -> (String, Option<String>) {
+        let row = sqlx::query!(
+            r#"SELECT state::text AS "state!", last_error FROM media_jobs WHERE take_id = $1"#,
+            take.into_uuid()
+        )
+        .fetch_one(pool)
+        .await
+        .expect("media job");
+        (row.state, row.last_error)
+    }
+
+    async fn scratch_is_empty(media: &MediaService) -> bool {
+        let mut entries = tokio::fs::read_dir(media.scratch().root())
+            .await
+            .expect("scratch root");
+        let empty = entries.next_entry().await.expect("read").is_none();
+        tokio::fs::remove_dir_all(media.scratch().root())
+            .await
+            .expect("tidy");
+        empty
+    }
+
+    fn source_of(seeded: &Seeded) -> String {
+        format!(
+            "ws/{}/rec/{}/takes/{}/source.webm",
+            seeded.workspace, seeded.recording, seeded.take
         )
     }
 
@@ -335,9 +477,9 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn process_take_starts_and_cleans_its_scratch_dir(pool: PgPool) {
         let seeded = seed(&pool).await;
-        let media = service(&pool);
+        let (media, store) = service_with(&pool);
         media
-            .enqueue_processing(message(&seeded, 2))
+            .enqueue_processing(upload_chunks(&store, &seeded, &[9u8; 1_500], 1_000))
             .await
             .expect("enqueue");
 
@@ -387,5 +529,96 @@ mod tests {
             media.process_take(elsewhere).await.expect("run"),
             ProcessOutcome::NotFound
         );
+    }
+
+    /// Day 44: the chunks, verified, concatenate into the stored source, byte for byte.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn chunks_are_verified_and_concatenated_into_the_stored_source(pool: PgPool) {
+        let seeded = seed(&pool).await;
+        let (media, store) = service_with(&pool);
+        let original: Vec<u8> = (0..10_000u32).map(|n| (n * 7 % 256) as u8).collect();
+        media
+            .enqueue_processing(upload_chunks(&store, &seeded, &original, 3_000))
+            .await
+            .expect("enqueue");
+
+        assert_eq!(run(&media, &seeded).await, ProcessOutcome::Ran);
+        assert_eq!(store.bytes(&source_of(&seeded)), Some(original));
+        assert_eq!(
+            store.content_type(&source_of(&seeded)).as_deref(),
+            Some("video/webm")
+        );
+        assert!(scratch_is_empty(&media).await);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_chunk_that_does_not_match_its_hash_rejects_the_take(pool: PgPool) {
+        let seeded = seed(&pool).await;
+        let (media, store) = service_with(&pool);
+        let message = upload_chunks(&store, &seeded, &[1u8; 5_000], 2_000);
+        // Storage holds different bytes (same size) than the client hashed for chunk 1.
+        store.insert(&message.data.chunks[1].key, vec![2u8; 2_000]);
+        media.enqueue_processing(message).await.expect("enqueue");
+
+        assert_eq!(run(&media, &seeded).await, ProcessOutcome::Rejected);
+        assert_eq!(
+            job_state(&pool, seeded.take).await,
+            (
+                "failed".to_string(),
+                Some("chunk 1 doesn't match its recorded SHA-256".to_string())
+            )
+        );
+        assert_eq!(store.bytes(&source_of(&seeded)), None, "nothing stored");
+        assert!(
+            scratch_is_empty(&media).await,
+            "cleaned up after a failure too"
+        );
+        // A duplicate job finds it finished.
+        assert_eq!(run(&media, &seeded).await, ProcessOutcome::AlreadyFinished);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_missing_chunk_rejects_the_take(pool: PgPool) {
+        let seeded = seed(&pool).await;
+        let (media, store) = service_with(&pool);
+        let message = upload_chunks(&store, &seeded, &[1u8; 5_000], 2_000);
+        store.remove(&message.data.chunks[2].key);
+        media.enqueue_processing(message).await.expect("enqueue");
+
+        assert_eq!(run(&media, &seeded).await, ProcessOutcome::Rejected);
+        assert_eq!(
+            job_state(&pool, seeded.take).await.1.as_deref(),
+            Some("chunk 2 is missing from storage")
+        );
+        assert!(scratch_is_empty(&media).await);
+    }
+
+    /// Day 44's Check: a real WebM, cut into chunks like a recorder does, comes back as a
+    /// source file that matches every chunk hash and decodes from start to end.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_real_webm_reassembles_into_a_playable_source(pool: PgPool) {
+        let Some(webm) = crate::testing::generated_webm(4).await else {
+            return; // no FFmpeg on this machine (CI requires it: MEDIA_REQUIRE_FFMPEG)
+        };
+        let seeded = seed(&pool).await;
+        let (media, store) = service_with(&pool);
+        let original = tokio::fs::read(&webm).await.expect("read fixture");
+        media
+            .enqueue_processing(upload_chunks(&store, &seeded, &original, 16 * 1024))
+            .await
+            .expect("enqueue");
+
+        assert_eq!(run(&media, &seeded).await, ProcessOutcome::Ran);
+        let source = store.bytes(&source_of(&seeded)).expect("source stored");
+        assert_eq!(source, original);
+        let reassembled = webm.with_extension("reassembled.webm");
+        tokio::fs::write(&reassembled, &source)
+            .await
+            .expect("write");
+        assert!(
+            crate::testing::decodes_fully(&reassembled).await,
+            "the reassembled source plays to the end"
+        );
+        assert!(scratch_is_empty(&media).await);
     }
 }

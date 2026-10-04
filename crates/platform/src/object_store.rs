@@ -1,9 +1,13 @@
+use std::path::Path;
+use std::pin::Pin;
 use std::time::Duration;
 
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::presigning::PresigningConfig;
+use aws_sdk_s3::primitives::ByteStream;
+use tokio::io::AsyncRead;
 use url::Url;
 
 #[derive(Debug, thiserror::Error)]
@@ -21,12 +25,24 @@ pub struct ObjectMeta {
     pub content_type: Option<String>,
 }
 
+/// An object's bytes, streamed (a chunk, a source file): never buffered whole in memory.
+pub type ObjectReader = Pin<Box<dyn AsyncRead + Send>>;
+
 #[async_trait::async_trait]
 pub trait ObjectStore: Send + Sync {
     async fn presign_put(&self, key: &str, ttl: Duration) -> Result<Url, StorageError>;
     async fn presign_get(&self, key: &str, ttl: Duration) -> Result<Url, StorageError>;
     async fn head(&self, key: &str) -> Result<Option<ObjectMeta>, StorageError>;
     async fn delete_prefix(&self, prefix: &str) -> Result<u64, StorageError>;
+    /// Streams the object at `key`, or `None` if there is none.
+    async fn get(&self, key: &str) -> Result<Option<ObjectReader>, StorageError>;
+    /// Uploads a local file to `key` (renditions written by the worker). Returns its size.
+    async fn put_file(
+        &self,
+        key: &str,
+        path: &Path,
+        content_type: &str,
+    ) -> Result<u64, StorageError>;
 }
 
 pub struct S3ObjectStore {
@@ -125,6 +141,48 @@ impl ObjectStore for S3ObjectStore {
         }
     }
 
+    async fn get(&self, key: &str) -> Result<Option<ObjectReader>, StorageError> {
+        let result = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await;
+        match result {
+            Ok(output) => Ok(Some(Box::pin(output.body.into_async_read()))),
+            Err(SdkError::ServiceError(service_error)) if service_error.err().is_no_such_key() => {
+                Ok(None)
+            }
+            Err(error) => Err(StorageError::Request(error.to_string())),
+        }
+    }
+
+    async fn put_file(
+        &self,
+        key: &str,
+        path: &Path,
+        content_type: &str,
+    ) -> Result<u64, StorageError> {
+        let size = tokio::fs::metadata(path)
+            .await
+            .map_err(|e| StorageError::Request(format!("{}: {e}", path.display())))?
+            .len();
+        let body = ByteStream::from_path(path)
+            .await
+            .map_err(|e| StorageError::Request(e.to_string()))?;
+        self.client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .content_type(content_type)
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| StorageError::Request(e.to_string()))?;
+        Ok(size)
+    }
+
     async fn delete_prefix(&self, prefix: &str) -> Result<u64, StorageError> {
         let mut deleted = 0u64;
         let mut continuation_token = None;
@@ -178,6 +236,43 @@ mod tests {
             &std::env::var("S3_ACCESS_KEY").expect("S3_ACCESS_KEY set"),
             &std::env::var("S3_SECRET_KEY").expect("S3_SECRET_KEY set"),
         )
+    }
+
+    #[tokio::test]
+    async fn put_file_then_get_streams_it_back() {
+        use tokio::io::AsyncReadExt;
+
+        let store = test_store();
+        let prefix = format!("test/put-file-{}/", uuid::Uuid::now_v7());
+        let key = format!("{prefix}source.webm");
+        let path = std::env::temp_dir().join(format!("sintade-put-file-{}", uuid::Uuid::now_v7()));
+        let body: Vec<u8> = (0..200_000u32).map(|n| (n % 251) as u8).collect();
+        tokio::fs::write(&path, &body)
+            .await
+            .expect("write temp file");
+
+        let size = store
+            .put_file(&key, &path, "video/webm")
+            .await
+            .expect("put_file succeeds");
+        assert_eq!(size, body.len() as u64);
+        let meta = store.head(&key).await.expect("head").expect("exists");
+        assert_eq!(meta.content_type.as_deref(), Some("video/webm"));
+
+        let mut reader = store.get(&key).await.expect("get").expect("exists");
+        let mut downloaded = Vec::new();
+        reader.read_to_end(&mut downloaded).await.expect("read");
+        assert_eq!(downloaded, body);
+        assert!(
+            store
+                .get(&format!("{prefix}missing"))
+                .await
+                .expect("get")
+                .is_none()
+        );
+
+        store.delete_prefix(&prefix).await.expect("tidy");
+        tokio::fs::remove_file(&path).await.expect("tidy");
     }
 
     #[tokio::test]
