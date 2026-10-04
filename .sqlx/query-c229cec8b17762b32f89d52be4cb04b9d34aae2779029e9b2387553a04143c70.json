@@ -1,0 +1,86 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT id, owner_id, title, state::text AS \"state!\", duration_ms, created_at\n        FROM recordings\n        WHERE workspace_id = $1\n          AND trashed_at IS NULL\n          AND state NOT IN ('abandoned', 'trashed')\n          AND ($2::timestamptz IS NULL OR (created_at, id) < ($2, $3))\n        ORDER BY created_at DESC, id DESC\n        LIMIT $4\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "recordings",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "owner_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "recordings",
+            "name": "owner_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "recordings",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "state!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "duration_ms",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "recordings",
+            "name": "duration_ms"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "recordings",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      true,
+      false
+    ]
+  },
+  "hash": "c229cec8b17762b32f89d52be4cb04b9d34aae2779029e9b2387553a04143c70"
+}

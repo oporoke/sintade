@@ -293,7 +293,12 @@ const ANY_MIC = 'any';
             } @else if (shareError()) {
               <p data-testid="recorder-share-error">{{ shareError() }}</p>
             }
-            <button type="button" (click)="shareDialog().open()" data-testid="recorder-share" i18n>
+            <button
+              type="button"
+              (click)="shareDialog().open(done.recordingId)"
+              data-testid="recorder-share"
+              i18n
+            >
               Share…
             </button>
             <app-share-dialog #shareDialogRef [recordingId]="done.recordingId" />

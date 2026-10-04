@@ -76,3 +76,58 @@ mod tests {
         );
     }
 }
+
+/// Recordings per library page (docs/design.md §9: cursor pagination).
+pub const LIBRARY_PAGE_SIZE: i64 = 24;
+
+/// Where the next library page starts: after the recording created at `created_at` with `id`
+/// (the list is newest first, ties broken by id). Opaque to clients: `"<unix micros>.<uuid>"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cursor {
+    pub created_at_micros: i64,
+    pub id: uuid::Uuid,
+}
+
+impl Cursor {
+    pub fn encode(self) -> String {
+        format!("{}.{}", self.created_at_micros, self.id.simple())
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        let (micros, id) = raw.split_once('.')?;
+        Some(Self {
+            created_at_micros: micros.parse().ok()?,
+            id: uuid::Uuid::parse_str(id).ok()?,
+        })
+    }
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+
+    #[test]
+    fn a_cursor_round_trips() {
+        let cursor = Cursor {
+            created_at_micros: 1_790_000_000_123_456,
+            id: uuid::Uuid::now_v7(),
+        };
+        assert_eq!(Cursor::parse(&cursor.encode()), Some(cursor));
+    }
+
+    #[test]
+    fn garbage_is_not_a_cursor() {
+        for raw in [
+            "",
+            "x",
+            "12",
+            "12.",
+            ".abc",
+            "abc.def",
+            "12.not-a-uuid",
+            "1.2.3",
+        ] {
+            assert_eq!(Cursor::parse(raw), None, "{raw:?}");
+        }
+    }
+}

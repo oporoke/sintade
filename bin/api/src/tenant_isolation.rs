@@ -53,6 +53,13 @@ type Count = fn(PgPool, WorkspaceId) -> BoxFuture<i64>;
 enum Probe {
     /// The route reads or mutates an existing resource.
     Owned(Setup),
+    /// The route lists the caller's workspace. `seed` puts a recording with a recognisable
+    /// title in the given workspace and returns it; the harness checks the owner's listing has
+    /// it and another workspace's listing does not.
+    Listing {
+        request: fn() -> Request<Body>,
+        seed: fn(PgPool, WorkspaceId) -> BoxFuture<String>,
+    },
     /// The route creates a resource in the caller's workspace. `request` builds the call (the
     /// harness adds the session cookie); `count` checks where the result landed.
     Create {
@@ -107,6 +114,19 @@ fn tenant_table() -> Vec<(Method, &'static str, Probe)> {
                     post_json(&format!("/api/v1/recordings/{recording_id}/retry"), "")
                 })
             }),
+        ),
+        (
+            Method::GET,
+            "/api/v1/recordings",
+            Probe::Listing {
+                request: || get("/api/v1/recordings"),
+                seed: |pool, workspace_id| {
+                    Box::pin(async move {
+                        let id = ready_recording_in(&pool, workspace_id).await;
+                        id.to_string()
+                    })
+                },
+            },
         ),
         (
             Method::GET,
@@ -533,7 +553,16 @@ async fn tenant(pool: &PgPool, label: &str) -> Tenant {
     }
 }
 
-async fn send(app: &Router, mut request: Request<Body>, cookie: Option<&str>) -> StatusCode {
+async fn send(app: &Router, request: Request<Body>, cookie: Option<&str>) -> StatusCode {
+    send_full(app, request, cookie).await.0
+}
+
+/// Like `send`, with the response body as text.
+async fn send_full(
+    app: &Router,
+    mut request: Request<Body>,
+    cookie: Option<&str>,
+) -> (StatusCode, String) {
     if let Some(cookie) = cookie {
         // Keep any cookie the request already carries (e.g. the CSRF cookie).
         let header = match request.headers().get(axum::http::header::COOKIE) {
@@ -548,11 +577,16 @@ async fn send(app: &Router, mut request: Request<Body>, cookie: Option<&str>) ->
             header.parse().expect("valid cookie header"),
         );
     }
-    app.clone()
+    let response = app
+        .clone()
         .oneshot(request)
         .await
-        .expect("router call succeeds")
-        .status()
+        .expect("router call succeeds");
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read body");
+    (status, String::from_utf8_lossy(&bytes).into_owned())
 }
 
 #[test]
@@ -679,6 +713,36 @@ async fn every_workspace_route_hides_other_tenants_resources(pool: PgPool) {
                     as_alice.is_success(),
                     "{} {}: owner of workspace A got {as_alice}; the cross-tenant 404 proves \
                      nothing if the route 404s for everyone",
+                    route.method,
+                    route.path
+                );
+            }
+            Probe::Listing { request, seed } => {
+                let marker = seed(pool.clone(), alice.workspace_id).await;
+                let (as_bob, bob_body) = send_full(&app, request(), Some(&bob.cookie)).await;
+                assert!(
+                    as_bob.is_success(),
+                    "{} {}: member of workspace B got {as_bob}",
+                    route.method,
+                    route.path
+                );
+                assert!(
+                    !bob_body.contains(&marker),
+                    "{} {}: workspace B's listing shows workspace A's recording",
+                    route.method,
+                    route.path
+                );
+                let (as_alice, alice_body) = send_full(&app, request(), Some(&alice.cookie)).await;
+                assert!(
+                    as_alice.is_success(),
+                    "{} {}: {as_alice}",
+                    route.method,
+                    route.path
+                );
+                assert!(
+                    alice_body.contains(&marker),
+                    "{} {}: the owner's listing misses their own recording; the check above \
+                     proves nothing without it",
                     route.method,
                     route.path
                 );

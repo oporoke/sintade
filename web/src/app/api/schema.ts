@@ -186,7 +186,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** The workspace's library: 24 recordings per page, newest first, with signed thumbnails. */
+        get: operations["list_recordings"];
         put?: never;
         /**
          * Starts a recording: creates the recording and its first take in the caller's current
@@ -617,8 +618,26 @@ export interface components {
             /** Format: int32 */
             size_bytes: number;
         };
+        RecordingList: {
+            items: components["schemas"]["RecordingSummary"][];
+            /** @description Pass as `cursor` for the next page; `null` on the last one. */
+            next_cursor?: string | null;
+        };
         /** @enum {string} */
         RecordingStateName: "processing";
+        RecordingSummary: {
+            /** @description RFC 3339. */
+            created_at: string;
+            /** Format: int32 */
+            duration_ms?: number | null;
+            /** Format: uuid */
+            id: string;
+            /** @description A signed thumbnail URL (15 minutes) once the poster exists. */
+            poster_url?: string | null;
+            /** @description `recording`, `uploading`, `processing`, `ready` or `failed`. */
+            state: string;
+            title: string;
+        };
         RegisterBody: {
             display_name: string;
             email: string;
@@ -1054,6 +1073,56 @@ export interface operations {
                 };
             };
             /** @description Invalid display name */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_recordings: {
+        parameters: {
+            query?: {
+                /** @description The previous page's `next_cursor` */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of recordings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordingList"];
+                };
+            };
+            /** @description No valid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a member of the session's workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unreadable cursor */
             422: {
                 headers: {
                     [name: string]: unknown;

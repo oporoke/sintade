@@ -10,7 +10,8 @@ use crate::routes::links::{
 };
 use crate::routes::me::{__path_me, __path_update_me};
 use crate::routes::recordings::{
-    __path_create_recording, __path_download_recording, __path_retry_recording,
+    __path_create_recording, __path_download_recording, __path_list_recordings,
+    __path_retry_recording,
 };
 use crate::routes::takes::{
     __path_ack_chunk, __path_finalize_take, __path_presign_chunks, __path_take_status,
@@ -37,6 +38,7 @@ use crate::routes::watch::{__path_download, __path_playback, __path_watch};
         me,
         update_me,
         create_recording,
+        list_recordings,
         retry_recording,
         create_link,
         list_links,

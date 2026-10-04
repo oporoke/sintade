@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT recording_id, storage_key\n            FROM renditions\n            WHERE workspace_id = $1 AND recording_id = ANY($2)\n              AND kind = 'thumbnail' AND variant = 'poster'\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "recording_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "renditions",
+            "name": "recording_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "storage_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "renditions",
+            "name": "storage_key"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "3b50e61ae959eb8cac5177288168defdd0eacae7a97c9f9c0e784c552c1b46e3"
+}

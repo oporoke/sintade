@@ -5,5 +5,8 @@ mod domain;
 pub mod events;
 mod infra;
 
-pub use app::{CatalogService, Measured, NewRecording, RecordingOwner, Reopened, WatchInfo};
-pub use domain::{MAX_TITLE_CHARS, Title, TitleError};
+pub use app::{
+    CatalogService, LibraryItem, LibraryPage, Measured, NewRecording, RecordingOwner, Reopened,
+    WatchInfo,
+};
+pub use domain::{Cursor, LIBRARY_PAGE_SIZE, MAX_TITLE_CHARS, Title, TitleError};

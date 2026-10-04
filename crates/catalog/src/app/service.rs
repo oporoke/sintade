@@ -1,9 +1,9 @@
 use kernel::{RecordingId, TakeId, UserId, WorkspaceId};
 use sqlx::PgConnection;
 
-use crate::domain::Title;
+use crate::domain::{Cursor, LIBRARY_PAGE_SIZE, Title};
 use crate::infra;
-pub use crate::infra::{RecordingOwner, Reopened, WatchInfo};
+pub use crate::infra::{LibraryItem, RecordingOwner, Reopened, WatchInfo};
 
 /// A recording to create, in state `recording`, with its first take already chosen.
 #[derive(Debug, Clone)]
@@ -128,6 +128,30 @@ impl CatalogService {
         infra::watch_info(conn, id, workspace_id).await
     }
 
+    /// One library page: the workspace's recordings, newest first, plus the cursor of the next
+    /// page when there is one.
+    #[tracing::instrument(skip_all, fields(workspace_id = %workspace_id))]
+    pub async fn library_page(
+        &self,
+        conn: &mut PgConnection,
+        workspace_id: WorkspaceId,
+        cursor: Option<Cursor>,
+    ) -> Result<LibraryPage, sqlx::Error> {
+        let mut items =
+            infra::list_library(conn, workspace_id, cursor, LIBRARY_PAGE_SIZE + 1).await?;
+        let next = if items.len() as i64 > LIBRARY_PAGE_SIZE {
+            items.truncate(LIBRARY_PAGE_SIZE as usize);
+            items.last().map(|last| Cursor {
+                created_at_micros: i64::try_from(last.created_at.unix_timestamp_nanos() / 1_000)
+                    .unwrap_or_default(),
+                id: last.id.into_uuid(),
+            })
+        } else {
+            None
+        };
+        Ok(LibraryPage { items, next })
+    }
+
     /// Whether the recording exists in the workspace (trashed ones included: the caller decides
     /// what trashed means).
     #[tracing::instrument(skip_all, fields(recording_id = %id, workspace_id = %workspace_id))]
@@ -160,4 +184,11 @@ pub struct Measured {
     pub width: i32,
     pub height: i32,
     pub size_bytes: i64,
+}
+
+/// A page of the library and where the next one starts.
+#[derive(Debug)]
+pub struct LibraryPage {
+    pub items: Vec<LibraryItem>,
+    pub next: Option<Cursor>,
 }

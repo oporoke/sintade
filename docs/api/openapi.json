@@ -420,6 +420,66 @@
       }
     },
     "/api/v1/recordings": {
+      "get": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "The workspace's library: 24 recordings per page, newest first, with signed thumbnails.",
+        "operationId": "list_recordings",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The previous page's `next_cursor`",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of recordings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordingList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not a member of the session's workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unreadable cursor",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": [
           "recordings"
@@ -1992,11 +2052,73 @@
           }
         }
       },
+      "RecordingList": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecordingSummary"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` for the next page; `null` on the last one."
+          }
+        }
+      },
       "RecordingStateName": {
         "type": "string",
         "enum": [
           "processing"
         ]
+      },
+      "RecordingSummary": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "state",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "description": "RFC 3339."
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "poster_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A signed thumbnail URL (15 minutes) once the poster exists."
+          },
+          "state": {
+            "type": "string",
+            "description": "`recording`, `uploading`, `processing`, `ready` or `failed`."
+          },
+          "title": {
+            "type": "string"
+          }
+        }
       },
       "RegisterBody": {
         "type": "object",

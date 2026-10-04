@@ -1,0 +1,152 @@
+import { TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
+
+import { LIBRARY_API, LibraryPort, RecordingSummary } from '../../core/library-api.service';
+import { SHARE_API } from '../../core/share-api.service';
+import { LibraryPage } from './library-page';
+
+function item(n: number, patch: Partial<RecordingSummary> = {}): RecordingSummary {
+  return {
+    id: `rec-${n}`,
+    title: `Recording ${n}`,
+    state: 'ready',
+    duration_ms: 65_000,
+    created_at: '2026-10-05T08:00:00Z',
+    poster_url: `https://store/poster-${n}.jpg`,
+    ...patch,
+  };
+}
+
+async function open(api: Partial<LibraryPort>) {
+  TestBed.configureTestingModule({
+    imports: [LibraryPage],
+    providers: [
+      provideRouter([]),
+      { provide: LIBRARY_API, useValue: api },
+      {
+        provide: SHARE_API,
+        useValue: { list: vi.fn().mockResolvedValue([]), create: vi.fn() },
+      },
+    ],
+  });
+  const fixture = TestBed.createComponent(LibraryPage);
+  fixture.detectChanges();
+  const settle = async () => {
+    await new Promise((resolve) => setTimeout(resolve));
+    fixture.detectChanges();
+  };
+  await settle();
+  const root = fixture.nativeElement as HTMLElement;
+  const all = (id: string) => Array.from(root.querySelectorAll(`[data-testid="${id}"]`));
+  return { root, all, settle, q: (id: string) => root.querySelector(`[data-testid="${id}"]`) };
+}
+
+describe('LibraryPage', () => {
+  it('lists recordings with thumbnail, length, date and state', async () => {
+    const list = vi.fn().mockResolvedValue({
+      items: [item(1), item(2, { state: 'processing', poster_url: null, duration_ms: null })],
+      next_cursor: null,
+    });
+    const { all, q } = await open({ list });
+    expect(list).toHaveBeenCalledWith(null);
+    const cards = all('library-item');
+    expect(cards).toHaveLength(2);
+    expect(cards[0].querySelector('img')?.getAttribute('src')).toBe('https://store/poster-1.jpg');
+    expect(cards[0].querySelector('[data-testid="library-title"]')?.textContent).toBe(
+      'Recording 1',
+    );
+    expect(cards[0].querySelector('[data-testid="library-duration"]')?.textContent).toBe(
+      '1 min 5 s',
+    );
+    expect(cards[0].querySelector('time')?.getAttribute('datetime')).toBe('2026-10-05T08:00:00Z');
+    expect(cards[0].querySelector('[data-testid="library-state"]')).toBeNull();
+    expect(cards[0].querySelector('[data-testid="library-download"]')).not.toBeNull();
+    // A recording still being processed: placeholder, state label, no download.
+    expect(cards[1].querySelector('img')).toBeNull();
+    expect(cards[1].querySelector('[data-testid="library-state"]')?.textContent).toBe('Processing');
+    expect(cards[1].querySelector('[data-testid="library-download"]')).toBeNull();
+    expect(q('library-more')).toBeNull();
+    expect(q('library-empty')).toBeNull();
+  });
+
+  it('shows an empty state that points at the recorder', async () => {
+    const { q } = await open({ list: vi.fn().mockResolvedValue({ items: [], next_cursor: null }) });
+    expect(q('library-empty')).not.toBeNull();
+    expect(q('library-record')?.getAttribute('href')).toBe('/record');
+  });
+
+  it('loads the next page with the cursor and appends it', async () => {
+    const list = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [item(1)], next_cursor: 'c1' })
+      .mockResolvedValueOnce({ items: [item(2)], next_cursor: null });
+    const { all, q, settle } = await open({ list });
+    expect(all('library-item')).toHaveLength(1);
+    (q('library-more') as HTMLButtonElement).click();
+    await settle();
+    expect(list).toHaveBeenLastCalledWith('c1');
+    expect(all('library-item').map((c) => c.getAttribute('data-recording-id'))).toEqual([
+      'rec-1',
+      'rec-2',
+    ]);
+    expect(q('library-more')).toBeNull();
+  });
+
+  it('reports a failed load and retries', async () => {
+    const list = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('down'))
+      .mockResolvedValueOnce({ items: [item(1)], next_cursor: null });
+    const { all, q, settle } = await open({ list });
+    expect(q('library-error')).not.toBeNull();
+    expect(q('library-empty')).toBeNull();
+    (q('library-error')?.querySelector('button') as HTMLButtonElement).click();
+    await settle();
+    expect(q('library-error')).toBeNull();
+    expect(all('library-item')).toHaveLength(1);
+  });
+
+  it('opens the Share dialog for the chosen recording', async () => {
+    const list = vi.fn().mockResolvedValue({ items: [item(1), item(2)], next_cursor: null });
+    const shareList = vi.fn().mockResolvedValue([]);
+    TestBed.configureTestingModule({
+      imports: [LibraryPage],
+      providers: [
+        provideRouter([]),
+        { provide: LIBRARY_API, useValue: { list } },
+        { provide: SHARE_API, useValue: { list: shareList, create: vi.fn() } },
+      ],
+    });
+    const fixture = TestBed.createComponent(LibraryPage);
+    fixture.detectChanges();
+    await new Promise((resolve) => setTimeout(resolve));
+    fixture.detectChanges();
+    const buttons = fixture.nativeElement.querySelectorAll('[data-testid="library-share"]');
+    (buttons[1] as HTMLButtonElement).click();
+    await new Promise((resolve) => setTimeout(resolve));
+    expect(shareList).toHaveBeenCalledWith('rec-2');
+  });
+
+  it('starts a download from the signed URL', async () => {
+    const download = vi.fn().mockResolvedValue({
+      url: 'https://store/x.mp4?sig',
+      filename: 'Recording 1.mp4',
+      expires_in_s: 900,
+    });
+    const { all, settle } = await open({
+      list: vi.fn().mockResolvedValue({ items: [item(1)], next_cursor: null }),
+      download,
+    });
+    const clicked: HTMLAnchorElement[] = [];
+    const spy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      clicked.push(this);
+    });
+    (all('library-download')[0] as HTMLButtonElement).click();
+    await settle();
+    spy.mockRestore();
+    expect(download).toHaveBeenCalledWith('rec-1');
+    expect(clicked[0].download).toBe('Recording 1.mp4');
+  });
+});
