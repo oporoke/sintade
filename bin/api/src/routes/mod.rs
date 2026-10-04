@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod links;
 pub mod me;
 pub mod recordings;
 pub mod takes;
@@ -116,6 +117,30 @@ pub fn table() -> Vec<Route> {
             "/api/v1/recordings/{recording_id}/retry",
             Workspace,
             recordings::retry_recording,
+        ),
+        Route::new(
+            Method::POST,
+            "/api/v1/recordings/{recording_id}/links",
+            Workspace,
+            links::create_link,
+        ),
+        Route::new(
+            Method::GET,
+            "/api/v1/recordings/{recording_id}/links",
+            Workspace,
+            links::list_links,
+        ),
+        Route::new(
+            Method::PATCH,
+            "/api/v1/recordings/{recording_id}/links/{link_id}",
+            Workspace,
+            links::update_link,
+        ),
+        Route::new(
+            Method::DELETE,
+            "/api/v1/recordings/{recording_id}/links/{link_id}",
+            Workspace,
+            links::revoke_link,
         ),
         Route::new(
             Method::POST,

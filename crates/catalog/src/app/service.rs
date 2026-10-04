@@ -116,6 +116,18 @@ impl CatalogService {
         infra::mark_failed(conn, id, workspace_id).await
     }
 
+    /// Whether the recording exists in the workspace (trashed ones included: the caller decides
+    /// what trashed means).
+    #[tracing::instrument(skip_all, fields(recording_id = %id, workspace_id = %workspace_id))]
+    pub async fn exists_in_workspace(
+        &self,
+        conn: &mut PgConnection,
+        id: RecordingId,
+        workspace_id: WorkspaceId,
+    ) -> Result<bool, sqlx::Error> {
+        infra::exists_in_workspace(conn, id, workspace_id).await
+    }
+
     /// `Failed → Processing` for a manual retry. Runs on media's transaction, so the state and
     /// the re-queued job commit together.
     #[tracing::instrument(skip_all, fields(recording_id = %id, workspace_id = %workspace_id))]

@@ -13,5 +13,6 @@ pub use error::AppError;
 pub use event::{DomainEvent, EventEnvelope};
 pub use id::Id;
 pub use ids::{
-    Recording, RecordingId, Session, SessionId, Take, TakeId, User, UserId, Workspace, WorkspaceId,
+    Recording, RecordingId, Session, SessionId, ShareLink, ShareLinkId, Take, TakeId, User, UserId,
+    Workspace, WorkspaceId,
 };

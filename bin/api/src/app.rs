@@ -32,6 +32,7 @@ pub struct AppState {
     pub tenancy: Arc<TenancyService>,
     pub ingest: Arc<IngestService>,
     pub retry: Arc<RetryService>,
+    pub sharing: Arc<sharing::SharingService>,
     pub rate_limiter: Arc<RateLimiter>,
     pub clock: Arc<dyn Clock>,
 }
@@ -52,6 +53,11 @@ pub fn build_router(
             retry: Arc::new(RetryService::new(
                 pool.clone(),
                 Arc::new(catalog::CatalogService::new()),
+            )),
+            sharing: Arc::new(sharing::SharingService::new(
+                pool.clone(),
+                Arc::new(catalog::CatalogService::new()),
+                clock.clone(),
             )),
             pool,
             identity,
@@ -81,7 +87,13 @@ pub(crate) fn build_router_from(
                 .parse::<HeaderValue>()
                 .expect("PUBLIC_BASE_URL must be a valid header value"),
         )
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+        ])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
             axum::http::HeaderName::from_static("x-csrf-token"),

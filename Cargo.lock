@@ -39,6 +39,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sharing",
  "sqlx",
  "tenancy",
  "time",
@@ -2487,6 +2488,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
+]
+
+[[package]]
+name = "sharing"
+version = "0.1.0"
+dependencies = [
+ "catalog",
+ "kernel",
+ "platform",
+ "rand",
+ "serde",
+ "sqlx",
+ "thiserror",
+ "time",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

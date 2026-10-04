@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE share_links SET revoked_at = COALESCE(revoked_at, now())\n        WHERE id = $3 AND workspace_id = $1 AND recording_id = $2\n        RETURNING id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "14578f3b0aa296eabbeda12651328377e6f54d65482963d2820b9390a47b9c2b"
+}

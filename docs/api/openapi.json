@@ -500,6 +500,300 @@
         }
       }
     },
+    "/api/v1/recordings/{recording_id}/links": {
+      "get": {
+        "tags": [
+          "sharing"
+        ],
+        "summary": "Lists a recording's share links, newest first (revoked ones included).",
+        "operationId": "list_links",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "description": "The recording",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The recording's links",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ShareLinkResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such recording in the caller's workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "sharing"
+        ],
+        "summary": "Creates a share link for a recording in the caller's workspace.",
+        "operationId": "create_link",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "description": "The recording to share",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateLinkBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Link created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareLinkResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing CSRF token, or the role can't edit recordings",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such recording in the caller's workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid expiry",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/recordings/{recording_id}/links/{link_id}": {
+      "delete": {
+        "tags": [
+          "sharing"
+        ],
+        "summary": "Revokes a link: it stops working immediately. Idempotent.",
+        "operationId": "revoke_link",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "description": "The recording",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "link_id",
+            "in": "path",
+            "description": "The link",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Link revoked"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing CSRF token, or the role can't edit recordings",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such link in the caller's workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "sharing"
+        ],
+        "summary": "Changes a live link's visibility, download flag or expiry.",
+        "operationId": "update_link",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "description": "The recording",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "link_id",
+            "in": "path",
+            "description": "The link",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateLinkBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Link updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareLinkResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing CSRF token, or the role can't edit recordings",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such live link in the caller's workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid expiry",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/recordings/{recording_id}/retry": {
       "post": {
         "tags": [
@@ -1035,6 +1329,37 @@
           }
         }
       },
+      "CreateLinkBody": {
+        "type": "object",
+        "properties": {
+          "allow_download": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether viewers may download the MP4. Defaults to `false`."
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 instant after which the link stops working; in the future."
+          },
+          "visibility": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/VisibilityDto",
+                "description": "Defaults to `link` (anyone with the link)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "CreateRecordingBody": {
         "type": "object",
         "required": [
@@ -1402,6 +1727,54 @@
           }
         }
       },
+      "ShareLinkResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "recording_id",
+          "slug",
+          "visibility",
+          "allow_download",
+          "created_at"
+        ],
+        "properties": {
+          "allow_download": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339, or `null` for no expiry."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "recording_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339, or `null` while the link works."
+          },
+          "slug": {
+            "type": "string",
+            "description": "The public identifier: the watch page is `/s/{slug}`."
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/VisibilityDto"
+          }
+        }
+      },
       "TakeStatusResponse": {
         "type": "object",
         "required": [
@@ -1441,6 +1814,35 @@
           }
         }
       },
+      "UpdateLinkBody": {
+        "type": "object",
+        "properties": {
+          "allow_download": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A future RFC 3339 instant sets the expiry; `null` removes it; absent leaves it."
+          },
+          "visibility": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/VisibilityDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "UpdateProfileBody": {
         "type": "object",
         "required": [
@@ -1462,6 +1864,15 @@
             "type": "string"
           }
         }
+      },
+      "VisibilityDto": {
+        "type": "string",
+        "enum": [
+          "private",
+          "workspace",
+          "link",
+          "public"
+        ]
       }
     }
   }
