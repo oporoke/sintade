@@ -7,16 +7,23 @@ use std::time::Duration;
 
 use handler::{HandlerRegistry, JobCtx, JobHandler};
 use handlers::noop::NoopHandler;
+use handlers::process_take::ProcessTakeHandler;
 use handlers::send_email::SendEmailHandler;
 use handlers::sweep_stale_uploads::SweepStaleUploadsHandler;
 use ingest::IngestService;
+use media::{MediaService, ScratchSpace, TakeFinalizedMessage};
 use platform::{JobQueue, Mailer, SmtpMailer};
-use relay::{OutboxRelay, SubscriberRegistry};
+use relay::{OutboxRelay, SubscriberError, SubscriberRegistry};
 use sqlx::PgPool;
 
 const FROM_ADDRESS: &str = "no-reply@sintade.app";
 
 const LOCK_DURATION: Duration = Duration::from_secs(30);
+/// How often a running job renews its lock: well inside `LOCK_DURATION`, so a long job (a
+/// 30-minute take's transcode) is never reclaimed by another worker while it runs.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+/// Scratch directories this old at startup belong to no running job.
+const SCRATCH_LEFTOVER_AGE: Duration = Duration::from_secs(6 * 60 * 60);
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const RELAY_FALLBACK_INTERVAL: Duration = Duration::from_secs(5);
 /// How often `SweepStaleUploads` is scheduled (its thresholds are 24 h and 7 days).
@@ -42,14 +49,21 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(catalog::CatalogService::new()),
         Arc::new(billing::BillingService::new()),
         store,
-        clock,
+        clock.clone(),
     ));
+    let scratch = ScratchSpace::new(&config.worker_scratch_dir);
+    match scratch.sweep_leftovers(SCRATCH_LEFTOVER_AGE).await {
+        Ok(0) => {}
+        Ok(removed) => tracing::info!(removed, "swept leftover scratch dirs"),
+        Err(error) => tracing::warn!(%error, "could not sweep the scratch dir"),
+    }
+    let media = Arc::new(MediaService::new(pool.clone(), clock, scratch));
     let worker_id = format!("worker-{}", std::process::id());
     tracing::info!(worker_id, "worker started");
 
     tokio::try_join!(
-        run_job_loop(pool.clone(), worker_id, mailer, ingest),
-        run_outbox_relay_loop(pool.clone()),
+        run_job_loop(pool.clone(), worker_id, mailer, ingest, media.clone()),
+        run_outbox_relay_loop(pool.clone(), media),
         run_scheduler_loop(pool),
     )?;
     Ok(())
@@ -75,12 +89,14 @@ async fn run_job_loop(
     worker_id: String,
     mailer: Arc<dyn Mailer>,
     ingest: Arc<IngestService>,
+    media: Arc<MediaService>,
 ) -> anyhow::Result<()> {
     let queue = JobQueue::new(pool);
     let mut registry = HandlerRegistry::new();
     registry.register(NoopHandler);
     registry.register(SendEmailHandler::new(mailer));
     registry.register(SweepStaleUploadsHandler::new(ingest));
+    registry.register(ProcessTakeHandler::new(media));
 
     loop {
         match queue.claim_next(&worker_id, LOCK_DURATION).await? {
@@ -89,7 +105,9 @@ async fn run_job_loop(
                     job_id: claimed.id,
                     attempt: claimed.attempts,
                 };
-                match registry.dispatch(&claimed.kind, ctx, claimed.payload).await {
+                let dispatched = registry.dispatch(&claimed.kind, ctx, claimed.payload);
+                let result = with_heartbeat(&queue, claimed.id, &worker_id, dispatched).await;
+                match result {
                     Ok(()) => {
                         queue.complete(claimed.id).await?;
                     }
@@ -104,10 +122,54 @@ async fn run_job_loop(
     }
 }
 
-/// Relays `outbox_events` to in-process subscribers. No subscribers are registered yet --
-/// real modules register theirs here once they exist (e.g. media on `TakeFinalized`).
-async fn run_outbox_relay_loop(pool: PgPool) -> anyhow::Result<()> {
-    let registry = SubscriberRegistry::new();
+/// Runs a job while renewing its lock every [`HEARTBEAT_INTERVAL`].
+async fn with_heartbeat<T>(
+    queue: &JobQueue,
+    job_id: platform::JobId,
+    worker_id: &str,
+    job: impl std::future::Future<Output = T>,
+) -> T {
+    tokio::pin!(job);
+    let mut beat = tokio::time::interval(HEARTBEAT_INTERVAL);
+    beat.tick().await; // the first tick is immediate; the claim just set the lock
+    loop {
+        tokio::select! {
+            result = &mut job => return result,
+            _ = beat.tick() => {
+                match queue.extend_lock(job_id, worker_id, LOCK_DURATION).await {
+                    Ok(true) => {}
+                    Ok(false) => tracing::warn!(%job_id, "job lock lost; another worker may run it"),
+                    Err(error) => tracing::warn!(%job_id, %error, "could not renew the job lock"),
+                }
+            }
+        }
+    }
+}
+
+/// Relays `outbox_events` to in-process subscribers: media processes finalized takes.
+async fn run_outbox_relay_loop(pool: PgPool, media: Arc<MediaService>) -> anyhow::Result<()> {
+    let mut registry = SubscriberRegistry::new();
+    registry.subscribe("TakeFinalized", move |payload| {
+        let media = media.clone();
+        async move {
+            let message: TakeFinalizedMessage = match serde_json::from_value(payload) {
+                Ok(message) => message,
+                Err(error) => {
+                    // Retrying can't fix a malformed event; log it and move on.
+                    tracing::error!(%error, "TakeFinalized: unreadable event, skipped");
+                    return Ok(());
+                }
+            };
+            match media.enqueue_processing(message).await {
+                Ok(_) => Ok(()),
+                Err(media::EnqueueError::InvalidManifest(error)) => {
+                    tracing::error!(%error, "TakeFinalized: invalid chunk manifest, skipped");
+                    Ok(())
+                }
+                Err(error) => Err(SubscriberError::Failed(error.to_string())),
+            }
+        }
+    });
     let relay = OutboxRelay::new(pool.clone());
     let mut listener = platform::listen(&pool, platform::NOTIFY_CHANNEL).await?;
 

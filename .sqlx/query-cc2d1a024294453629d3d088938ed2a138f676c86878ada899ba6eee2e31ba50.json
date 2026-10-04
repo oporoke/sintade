@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE media_jobs\n        SET state = 'running', attempts = attempts + 1, started_at = $3\n        WHERE take_id = $1 AND workspace_id = $2 AND state IN ('queued', 'running')\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cc2d1a024294453629d3d088938ed2a138f676c86878ada899ba6eee2e31ba50"
+}

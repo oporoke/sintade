@@ -5,9 +5,6 @@ use std::pin::Pin;
 use serde_json::Value;
 use sqlx::PgPool;
 
-// No real subscriber is registered yet (see main.rs), so the bin target's dead-code lint
-// can't see this being used even though tests exercise it.
-#[allow(dead_code)]
 #[derive(Debug, thiserror::Error)]
 pub enum SubscriberError {
     #[error("{0}")]
@@ -28,7 +25,6 @@ impl SubscriberRegistry {
         Self::default()
     }
 
-    #[allow(dead_code)]
     pub fn subscribe<F, Fut>(&mut self, event_type: &str, handler: F)
     where
         F: Fn(Value) -> Fut + Send + Sync + 'static,
