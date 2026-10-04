@@ -186,7 +186,12 @@ describe('uploadRecoveredTake', () => {
       return finalize(takeId, chunkCount, durationMs);
     };
 
-    const result = await uploadRecoveredTake({ api: server, store, takeId: LOCAL, uploader: { put } });
+    const result = await uploadRecoveredTake({
+      api: server,
+      store,
+      takeId: LOCAL,
+      uploader: { put },
+    });
 
     expect(server.created).toBe(1);
     expect(result.take_id).toBe('server-take-1');
