@@ -722,16 +722,20 @@ async fn every_workspace_route_hides_other_tenants_resources(pool: PgPool) {
 
         match probe {
             Probe::Owned(setup) => {
-                let as_bob = send(
-                    &app,
-                    setup(pool.clone(), alice.workspace_id).await,
-                    Some(&bob.cookie),
-                )
-                .await;
+                let request = setup(pool.clone(), alice.workspace_id).await;
+                let before = snapshot(&pool, alice.workspace_id).await;
+                let as_bob = send(&app, request, Some(&bob.cookie)).await;
                 assert_eq!(
                     as_bob,
                     StatusCode::NOT_FOUND,
                     "{} {}: workspace B reached workspace A's resource",
+                    route.method,
+                    route.path
+                );
+                assert_eq!(
+                    snapshot(&pool, alice.workspace_id).await,
+                    before,
+                    "{} {}: workspace B's refused request still changed workspace A's data",
                     route.method,
                     route.path
                 );
@@ -879,7 +883,8 @@ async fn viewer_routes_hide_private_links_from_other_tenants(pool: PgPool) {
         .filter(|route| route.access == Access::Viewer)
         .collect();
     assert!(!viewer_routes.is_empty());
-    for route in viewer_routes {
+    let before = snapshot(&pool, alice.workspace_id).await;
+    for route in &viewer_routes {
         let request = || {
             Request::builder()
                 .method(route.method.clone())
@@ -899,12 +904,154 @@ async fn viewer_routes_hide_private_links_from_other_tenants(pool: PgPool) {
                 route.path
             );
         }
+        assert_eq!(
+            snapshot(&pool, alice.workspace_id).await,
+            before,
+            "{} {}: refused viewers changed workspace A's data",
+            route.method,
+            route.path
+        );
         let as_owner = send(&app, request(), Some(&alice.cookie)).await;
         assert!(
             as_owner != StatusCode::NOT_FOUND && as_owner != StatusCode::UNAUTHORIZED,
             "{} {}: the owner got {as_owner}; the 404s above prove nothing otherwise",
             route.method,
             route.path
+        );
+    }
+}
+
+/// Every row a workspace owns, as one string, so a test can tell whether anything changed.
+async fn snapshot(pool: &PgPool, workspace_id: WorkspaceId) -> String {
+    let ws = workspace_id.into_uuid();
+    let mut out = String::new();
+    macro_rules! table {
+        ($name:literal, $query:expr) => {{
+            let rows: Vec<serde_json::Value> = sqlx::query_scalar($query)
+                .bind(ws)
+                .fetch_all(pool)
+                .await
+                .expect(concat!("snapshot ", $name));
+            out.push_str(&format!("{}: {}\n", $name, serde_json::Value::Array(rows)));
+        }};
+    }
+    table!(
+        "recordings",
+        "SELECT to_jsonb(t) FROM recordings t WHERE workspace_id = $1 ORDER BY id"
+    );
+    table!(
+        "takes",
+        "SELECT to_jsonb(t) FROM takes t WHERE workspace_id = $1 ORDER BY id"
+    );
+    table!(
+        "chunks",
+        "SELECT to_jsonb(t) FROM chunks t WHERE workspace_id = $1 ORDER BY take_id, idx"
+    );
+    table!(
+        "share_links",
+        "SELECT to_jsonb(t) FROM share_links t WHERE workspace_id = $1 ORDER BY id"
+    );
+    table!(
+        "renditions",
+        "SELECT to_jsonb(t) FROM renditions t WHERE workspace_id = $1 ORDER BY id"
+    );
+    table!(
+        "media_jobs",
+        "SELECT to_jsonb(t) FROM media_jobs t WHERE workspace_id = $1 ORDER BY take_id"
+    );
+    table!(
+        "memberships",
+        "SELECT to_jsonb(t) FROM memberships t WHERE workspace_id = $1 ORDER BY user_id"
+    );
+    table!(
+        "outbox_events",
+        "SELECT payload FROM outbox_events WHERE payload->>'workspace_id' = $1::uuid::text ORDER BY id"
+    );
+    out
+}
+
+/// The source of the function a route is mounted with: its signature (`fn name(…) -> …`) and
+/// body, found by name in the handler's module file.
+fn handler_source(route: &Route) -> (String, String) {
+    let segments: Vec<&str> = route.handler_name.split("::").collect();
+    let name = segments.last().copied().expect("a handler name");
+    let module = segments[segments.len() - 2];
+    let file = if module == "app" {
+        "src/app.rs".to_string()
+    } else {
+        format!("src/routes/{module}.rs")
+    };
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
+    let source = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+    let start = source
+        .find(&format!("fn {name}("))
+        .unwrap_or_else(|| panic!("{} is not defined in {path:?}", route.handler_name));
+    let rest = &source[start..];
+    let signature_end = rest.find("{\n").unwrap_or(rest.len());
+    let body_end = rest.find("\n}\n").unwrap_or(rest.len());
+    (
+        rest[..signature_end].to_string(),
+        rest[signature_end..body_end].to_string(),
+    )
+}
+
+/// A route is classified by what its handler actually takes, so a handler that reads workspace
+/// data can't be filed under `Public` or `Session` and escape the isolation tests:
+/// `WorkspaceContext` → `Workspace`, `MaybeSession` → `Viewer`, `SessionClaims` → `Session`.
+#[test]
+fn every_route_is_classified_by_what_its_handler_takes() {
+    for route in routes::table() {
+        let (signature, _) = handler_source(&route);
+        let taken = if signature.contains("WorkspaceContext") {
+            Access::Workspace
+        } else if signature.contains("MaybeSession") {
+            Access::Viewer
+        } else if signature.contains("SessionClaims") {
+            Access::Session
+        } else {
+            Access::Public
+        };
+        assert_eq!(
+            route.access, taken,
+            "{} {} ({}) is classified {:?} but its handler takes the extractors of {:?}",
+            route.method, route.path, route.handler_name, route.access, taken
+        );
+    }
+}
+
+/// Routes that change state behind a session must check the CSRF token. These are the
+/// exceptions, each with the reason.
+const NO_CSRF: &[(&str, &str)] = &[
+    (
+        "/api/v1/auth/refresh",
+        "keyed by the refresh cookie, SameSite=Lax, no body",
+    ),
+    (
+        "/api/v1/auth/logout",
+        "keyed by the refresh cookie; idempotent",
+    ),
+];
+
+#[test]
+fn every_state_changing_session_route_checks_csrf() {
+    for route in routes::table() {
+        let mutating = matches!(
+            route.method,
+            Method::POST | Method::PATCH | Method::PUT | Method::DELETE
+        );
+        if !mutating || route.access == Access::Public {
+            continue;
+        }
+        if NO_CSRF.iter().any(|(path, _)| *path == route.path) {
+            continue;
+        }
+        let (_, body) = handler_source(&route);
+        assert!(
+            body.contains("verify_csrf("),
+            "{} {} ({}) changes state for a signed-in caller but never calls verify_csrf",
+            route.method,
+            route.path,
+            route.handler_name
         );
     }
 }
