@@ -1,16 +1,19 @@
 use std::sync::Arc;
 
+use billing::BillingService;
 use kernel::{RecordingId, TakeId, WorkspaceId};
 use platform::{Clock, JobQueue, JobQueueError, ObjectStore, StorageError};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
-use crate::domain::probe::{ProbeRejection, SourceInfo, validate};
-use crate::domain::{ChunkManifest, Container, ManifestChunk, ManifestError, source_key};
+use crate::domain::probe::ProbeRejection;
+use crate::domain::{ChunkManifest, Container, ManifestChunk, ManifestError, mp4_key, source_key};
 use crate::infra;
 use crate::infra::scratch::{ScratchDir, ScratchSpace};
 use crate::infra::source::{AssembleError, assemble_source};
-use crate::infra::tools::{MediaTools, Probed, ToolError, probe};
+use crate::infra::tools::{MediaTools, ToolError};
+
+use super::transcode::{TranscodeError, TranscodeReport, transcode_file};
 
 /// The job kind that turns a finalized take into renditions (docs/design.md §10 Process).
 pub const PROCESS_TAKE: &str = "ProcessTake";
@@ -91,6 +94,9 @@ pub enum ProcessError {
     #[error(transparent)]
     Tool(#[from] ToolError),
 
+    #[error("the MP4 doesn't check out: {0}")]
+    BadOutput(String),
+
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
 }
@@ -115,6 +121,18 @@ impl From<AssembleError> for StepError {
     }
 }
 
+impl From<TranscodeError> for StepError {
+    fn from(error: TranscodeError) -> Self {
+        match error {
+            TranscodeError::Rejected(rejection) => rejection.into(),
+            TranscodeError::Tool(error) => Self::Retry(error.into()),
+            TranscodeError::Io(error) => Self::Retry(error.into()),
+            // FFmpeg exited cleanly but wrote something unusable: worth another attempt.
+            TranscodeError::BadOutput(reason) => Self::Retry(ProcessError::BadOutput(reason)),
+        }
+    }
+}
+
 impl From<ProbeRejection> for StepError {
     fn from(rejection: ProbeRejection) -> Self {
         Self::Reject(Rejection(rejection.to_string()))
@@ -130,6 +148,7 @@ impl<E: Into<ProcessError>> From<E> for StepError {
 pub struct MediaService {
     pool: PgPool,
     store: Arc<dyn ObjectStore>,
+    billing: Arc<BillingService>,
     clock: Arc<dyn Clock>,
     scratch: ScratchSpace,
     tools: MediaTools,
@@ -139,6 +158,7 @@ impl MediaService {
     pub fn new(
         pool: PgPool,
         store: Arc<dyn ObjectStore>,
+        billing: Arc<BillingService>,
         clock: Arc<dyn Clock>,
         scratch: ScratchSpace,
         tools: MediaTools,
@@ -146,6 +166,7 @@ impl MediaService {
         Self {
             pool,
             store,
+            billing,
             clock,
             scratch,
             tools,
@@ -228,7 +249,7 @@ impl MediaService {
         let result = self.run_pipeline(&job, &manifest, &scratch).await;
         scratch.remove().await?;
         match result {
-            Ok(()) => Ok(ProcessOutcome::Ran),
+            Ok(_report) => Ok(ProcessOutcome::Ran),
             Err(StepError::Retry(error)) => Err(error),
             Err(StepError::Reject(Rejection(reason))) => {
                 tracing::warn!(%reason, "ProcessTake rejected the take");
@@ -245,15 +266,16 @@ impl MediaService {
         }
     }
 
-    /// docs/design.md §10 Process. Steps 1–3 so far: fetch every chunk, verify it, concatenate
-    /// into the source file and store it (kept even if rejected, for support), then validate it
-    /// with ffprobe. Renditions follow (Days 46–47).
+    /// docs/design.md §10 Process. Steps 1–4 so far: fetch every chunk, verify it,
+    /// concatenate into the source file and store it (kept even if rejected, for support),
+    /// validate it with ffprobe, then make and store the fast-start MP4. The poster, rendition
+    /// rows and the recording's state follow (Day 47).
     async fn run_pipeline(
         &self,
         job: &infra::MediaJobRow,
         manifest: &ChunkManifest,
         scratch: &ScratchDir,
-    ) -> Result<(), StepError> {
+    ) -> Result<TranscodeReport, StepError> {
         let container = Container::from_mime(&job.mime_type);
         let source = scratch.file(&format!("source.{}", container.extension()));
         let bytes = assemble_source(self.store.as_ref(), manifest, &source).await?;
@@ -263,31 +285,34 @@ impl MediaService {
             .await?;
         tracing::info!(bytes, key = %key, "source assembled and stored");
 
-        let info = self.validate_source(&source, container).await?;
+        let max_height = self
+            .billing
+            .entitlements(job.workspace_id)
+            .await
+            .max_resolution;
+        let mp4 = scratch.file("default.mp4");
+        let expected_ms = u32::try_from(job.duration_ms).unwrap_or(0);
+        let report = transcode_file(
+            &self.tools,
+            &source,
+            container,
+            &mp4,
+            max_height,
+            expected_ms,
+        )
+        .await?;
+        let mp4_key = mp4_key(job.workspace_id, job.recording_id);
+        self.store.put_file(&mp4_key, &mp4, "video/mp4").await?;
         tracing::info!(
-            video = %info.video_codec,
-            audio = info.audio_codec.as_deref().unwrap_or("none"),
-            width = info.width,
-            height = info.height,
-            remux = info.is_remuxable(),
-            "source validated"
+            key = %mp4_key,
+            plan = ?report.plan,
+            bytes = report.mp4_bytes,
+            width = report.mp4.width,
+            height = report.mp4.height,
+            duration_ms = report.mp4.duration_ms,
+            "MP4 stored"
         );
-        Ok(())
-    }
-
-    /// §10 Process step 3: ffprobe, then the acceptance rules (`domain::probe::validate`).
-    async fn validate_source(
-        &self,
-        source: &std::path::Path,
-        container: Container,
-    ) -> Result<SourceInfo, StepError> {
-        match probe(&self.tools, source).await? {
-            Probed::Unreadable { detail } => {
-                tracing::warn!(%detail, "ffprobe can't read the source");
-                Err(ProbeRejection::Unreadable.into())
-            }
-            Probed::Readable(report) => Ok(validate(&report, container)?),
-        }
+        Ok(report)
     }
 }
 
@@ -390,6 +415,7 @@ mod tests {
         let media = MediaService::new(
             pool.clone(),
             store.clone(),
+            Arc::new(BillingService::new()),
             Arc::new(platform::SystemClock),
             ScratchSpace::new(root),
             MediaTools::default(),
@@ -592,6 +618,13 @@ mod tests {
 
         assert_eq!(run(&media, &seeded).await, ProcessOutcome::Ran);
         assert_eq!(store.bytes(&source_of(&seeded)), Some(original));
+        let mp4 = store
+            .bytes(&format!(
+                "ws/{}/rec/{}/mp4/default.mp4",
+                seeded.workspace, seeded.recording
+            ))
+            .expect("the MP4 is stored");
+        assert!(crate::testing::is_fast_start(&mp4));
         assert_eq!(
             store.content_type(&source_of(&seeded)).as_deref(),
             Some("video/webm")

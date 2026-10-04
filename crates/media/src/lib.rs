@@ -9,8 +9,10 @@ mod testing;
 
 pub use app::{
     EnqueueError, MediaService, PROCESS_TAKE, ProcessError, ProcessOutcome, ProcessTake,
-    TakeFinalizedData, TakeFinalizedMessage,
+    TakeFinalizedData, TakeFinalizedMessage, TranscodeError, TranscodeReport, transcode_file,
 };
-pub use domain::{ChunkManifest, ManifestChunk, ManifestError};
+pub use domain::probe::SourceInfo;
+pub use domain::transcode::Mp4Plan;
+pub use domain::{ChunkManifest, Container, ManifestChunk, ManifestError};
 pub use infra::scratch::{ScratchDir, ScratchSpace};
 pub use infra::tools::MediaTools;

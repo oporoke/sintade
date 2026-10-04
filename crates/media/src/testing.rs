@@ -169,3 +169,10 @@ pub async fn fixture(name: &str) -> Vec<u8> {
         .await
         .unwrap_or_else(|error| panic!("fixture {name}: {error}"))
 }
+
+/// The `moov` (index) box comes before `mdat` (media): playback and seeking can start from the
+/// first bytes (`-movflags +faststart`).
+pub fn is_fast_start(mp4: &[u8]) -> bool {
+    let find = |tag: &[u8]| mp4.windows(4).position(|window| window == tag);
+    matches!((find(b"moov"), find(b"mdat")), (Some(moov), Some(mdat)) if moov < mdat)
+}

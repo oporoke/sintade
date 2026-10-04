@@ -1402,7 +1402,7 @@ Queue: Postgres `jobs` table polled with `SELECT … FOR UPDATE SKIP LOCKED`, pe
 
 | Job | Trigger | Purpose | Phase |
 | --- | --- | --- | --- |
-| `ProcessTake` | `TakeFinalized` | Concat, validate, MP4, poster | MVP 🟡 (subscribed and scratch-managed, Day 43; chunks verified + concatenated into `source.webm`, Day 44; ffprobe validation, Day 45) |
+| `ProcessTake` | `TakeFinalized` | Concat, validate, MP4, poster | MVP 🟡 (subscribed and scratch-managed, Day 43; chunks verified + concatenated into `source.webm`, Day 44; ffprobe validation, Day 45; fast-start MP4 + Safari remux, Day 46) |
 | `BuildHls` | After `ProcessTake` | HLS ladder (lazy: only viewed recordings) | V1 |
 | `GenerateSprite` | After `ProcessTake` | Scrub sprite + VTT | V1 |
 | `Transcribe` | `AudioReady` | whisper.cpp transcript + captions | V1 |
