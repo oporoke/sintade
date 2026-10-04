@@ -1,6 +1,6 @@
 mod retry;
 mod service;
-mod transcode;
+pub(crate) mod transcode;
 
 pub use retry::{RetryError, RetryService};
 pub use service::{

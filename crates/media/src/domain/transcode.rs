@@ -61,6 +61,10 @@ pub fn mp4_args(input: &Path, output: &Path, info: &SourceInfo, plan: Mp4Plan) -
                 "yuv420p",
                 "-fps_mode",
                 "vfr",
+                // A keyframe at least every 2 s of media time, so seeking is quick even
+                // across a pause gap (variable frame rate defeats a frame-count GOP).
+                "-force_key_frames",
+                "expr:gte(t,n_forced*2)",
                 "-vf",
                 &scale,
             ]);

@@ -2,7 +2,7 @@
 
 The files `ProcessTake` is tested against (docs/design.md §18). Media's tests read them from
 here; expected properties live next to the tests (`crates/media/src/infra/probe_fixtures.rs`,
-and the pipeline goldens from Day 49).
+and the pipeline goldens in `golden_pipeline.rs`: a new media fixture fails CI until it has expectations there).
 
 | File | What it stands for | Source |
 | --- | --- | --- |
