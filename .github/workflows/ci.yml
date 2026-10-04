@@ -46,6 +46,10 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Install FFmpeg
+        # media's pipeline tests run the real ffmpeg/ffprobe (§18 media pipeline);
+        # MEDIA_REQUIRE_FFMPEG makes them fail rather than skip if it's missing.
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ffmpeg
       - name: Start MinIO
         # `services:` containers can't be given a command, and MinIO's image requires one
         # (`server /data ...`) -- it just prints its help text and exits without it. Run it as
@@ -76,6 +80,8 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo sqlx prepare --check --workspace
       - run: cargo test --workspace
+        env:
+          MEDIA_REQUIRE_FFMPEG: "1"
 
   web:
     runs-on: ubuntu-latest

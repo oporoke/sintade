@@ -400,7 +400,7 @@ Versions are not pinned yet; they will be fixed in `rust-toolchain.toml`, `Cargo
 | Query layer | sqlx (compile-checked queries) | `TODO: Verify` | Database access, migrations |
 | Database | PostgreSQL | 16+ | Relational data, FTS, job queue, LISTEN/NOTIFY |
 | Object storage | MinIO (S3 API) | `TODO: Verify` | Media storage |
-| Media processing | FFmpeg + ffprobe | ≥ 6.0 | Remux, transcode, HLS, thumbnails |
+| Media processing | FFmpeg + ffprobe | ≥ 6.0, on `PATH` (the worker runs them; `media`'s tests skip FFmpeg-dependent cases without it, so set `MEDIA_REQUIRE_FFMPEG=1` to make a missing FFmpeg fail, as CI does). Without root: a static build (e.g. johnvansickle.com) in `~/.local/bin` | Remux, transcode, HLS, thumbnails |
 | Transcription | whisper.cpp | `TODO: Verify` | Captions and transcripts (V1) |
 | API docs | utoipa (OpenAPI 3.1) → openapi-typescript | 6 / 7.13 | Contract in `docs/api/openapi.json`; TS DTOs in `web/src/app/api/schema.ts` (`just openapi`; drift fails `just check` and CI's `contract` job) — ✅ Day 19 |
 | Password hashing | argon2id | — | Credential storage |
@@ -1401,7 +1401,7 @@ Queue: Postgres `jobs` table polled with `SELECT … FOR UPDATE SKIP LOCKED`, pe
 
 | Job | Trigger | Purpose | Phase |
 | --- | --- | --- | --- |
-| `ProcessTake` | `TakeFinalized` | Concat, validate, MP4, poster | MVP 🟡 (subscribed and scratch-managed, Day 43) |
+| `ProcessTake` | `TakeFinalized` | Concat, validate, MP4, poster | MVP 🟡 (subscribed and scratch-managed, Day 43; chunks verified + concatenated into `source.webm`, Day 44) |
 | `BuildHls` | After `ProcessTake` | HLS ladder (lazy: only viewed recordings) | V1 |
 | `GenerateSprite` | After `ProcessTake` | Scrub sprite + VTT | V1 |
 | `Transcribe` | `AudioReady` | whisper.cpp transcript + captions | V1 |

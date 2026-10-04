@@ -760,6 +760,17 @@ mod tests {
                     content_type: None,
                 }))
         }
+        async fn get(&self, _key: &str) -> Result<Option<platform::ObjectReader>, StorageError> {
+            Err(StorageError::Request("not used by ingest".to_string()))
+        }
+        async fn put_file(
+            &self,
+            _key: &str,
+            _path: &std::path::Path,
+            _content_type: &str,
+        ) -> Result<u64, StorageError> {
+            Err(StorageError::Request("not used by ingest".to_string()))
+        }
         async fn delete_prefix(&self, prefix: &str) -> Result<u64, StorageError> {
             self.deleted.lock().expect("lock").push(prefix.to_string());
             let mut objects = self.objects.lock().expect("lock");

@@ -4,6 +4,8 @@ mod app;
 mod domain;
 pub mod events;
 mod infra;
+#[cfg(test)]
+mod testing;
 
 pub use app::{
     EnqueueError, MediaService, PROCESS_TAKE, ProcessError, ProcessOutcome, ProcessTake,

@@ -1727,15 +1727,18 @@ dependencies = [
 name = "media"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "kernel",
  "platform",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "sqlx",
  "thiserror",
  "time",
  "tokio",
  "tracing",
+ "url",
  "uuid",
 ]
 

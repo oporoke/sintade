@@ -1,6 +1,52 @@
 //! Media's pure rules: the chunk manifest a take is processed from. No I/O here.
 
+use kernel::{RecordingId, TakeId, WorkspaceId};
 use serde::{Deserialize, Serialize};
+
+/// The container a take was recorded in, from its MIME type: WebM (Chrome, Firefox) or MP4
+/// (Safari).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Container {
+    Webm,
+    Mp4,
+}
+
+impl Container {
+    pub fn from_mime(mime: &str) -> Self {
+        if mime.trim().to_ascii_lowercase().starts_with("video/mp4") {
+            Self::Mp4
+        } else {
+            Self::Webm
+        }
+    }
+
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Webm => "webm",
+            Self::Mp4 => "mp4",
+        }
+    }
+
+    pub fn content_type(self) -> &'static str {
+        match self {
+            Self::Webm => "video/webm",
+            Self::Mp4 => "video/mp4",
+        }
+    }
+}
+
+/// Where a take's concatenated original lives (docs/design.md §8 storage layout).
+pub fn source_key(
+    workspace_id: WorkspaceId,
+    recording_id: RecordingId,
+    take_id: TakeId,
+    container: Container,
+) -> String {
+    format!(
+        "ws/{workspace_id}/rec/{recording_id}/takes/{take_id}/source.{}",
+        container.extension()
+    )
+}
 
 /// One stored chunk of a take, as `TakeFinalized` listed it (ADR-0012).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,6 +145,18 @@ pub fn parse_sha256(hex: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
+/// Bytes → lowercase hex.
+#[cfg(test)]
+pub fn to_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    out
+}
+
 fn hex_digit(digit: u8) -> Option<u8> {
     match digit {
         b'0'..=b'9' => Some(digit - b'0'),
@@ -160,10 +218,27 @@ mod tests {
     }
 
     #[test]
+    fn the_source_key_follows_the_storage_layout() {
+        let (w, r, t) = (
+            WorkspaceId::new_v7(),
+            RecordingId::new_v7(),
+            TakeId::new_v7(),
+        );
+        assert_eq!(
+            source_key(w, r, t, Container::from_mime("video/webm;codecs=vp9,opus")),
+            format!("ws/{w}/rec/{r}/takes/{t}/source.webm")
+        );
+        assert_eq!(
+            source_key(w, r, t, Container::from_mime("video/mp4;codecs=avc1,mp4a")),
+            format!("ws/{w}/rec/{r}/takes/{t}/source.mp4")
+        );
+        assert_eq!(Container::Mp4.content_type(), "video/mp4");
+    }
+
+    #[test]
     fn hex_digests_parse() {
         let bytes = parse_sha256(HASH).expect("valid hex");
-        assert_eq!(bytes[0], 0xe3);
-        assert_eq!(bytes[31], 0x55);
+        assert_eq!(to_hex(&bytes), HASH);
         assert_eq!(parse_sha256(&HASH.to_uppercase()), Some(bytes));
         assert_eq!(parse_sha256("abc"), None);
     }

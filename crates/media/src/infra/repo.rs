@@ -91,3 +91,28 @@ pub async fn mark_running(
     .await?;
     Ok(result.rows_affected() == 1)
 }
+
+/// `running` → `failed` for input processing can't use (a corrupt chunk, a file ffprobe
+/// rejects): retrying won't help, so the job ends here.
+pub async fn mark_rejected(
+    executor: impl PgExecutor<'_>,
+    take_id: TakeId,
+    workspace_id: WorkspaceId,
+    reason: &str,
+    now: OffsetDateTime,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"
+        UPDATE media_jobs
+        SET state = 'failed', last_error = $3, finished_at = $4
+        WHERE take_id = $1 AND workspace_id = $2
+        "#,
+        take_id.into_uuid(),
+        workspace_id.into_uuid(),
+        reason,
+        now,
+    )
+    .execute(executor)
+    .await?;
+    Ok(())
+}

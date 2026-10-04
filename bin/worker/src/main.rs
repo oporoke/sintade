@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
         pool.clone(),
         Arc::new(catalog::CatalogService::new()),
         Arc::new(billing::BillingService::new()),
-        store,
+        store.clone(),
         clock.clone(),
     ));
     let scratch = ScratchSpace::new(&config.worker_scratch_dir);
@@ -57,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
         Ok(removed) => tracing::info!(removed, "swept leftover scratch dirs"),
         Err(error) => tracing::warn!(%error, "could not sweep the scratch dir"),
     }
-    let media = Arc::new(MediaService::new(pool.clone(), clock, scratch));
+    let media = Arc::new(MediaService::new(pool.clone(), store, clock, scratch));
     let worker_id = format!("worker-{}", std::process::id());
     tracing::info!(worker_id, "worker started");
 

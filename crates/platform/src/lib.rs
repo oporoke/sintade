@@ -19,7 +19,7 @@ pub use error::PlatformError;
 pub use job_queue::{ClaimedJob, FailOutcome, JobId, JobQueue, JobQueueError};
 pub use mailer::{EmailMessage, Mailer, MailerError, SmtpMailer};
 pub use notify::listen;
-pub use object_store::{ObjectMeta, ObjectStore, S3ObjectStore, StorageError};
+pub use object_store::{ObjectMeta, ObjectReader, ObjectStore, S3ObjectStore, StorageError};
 pub use outbox::{NOTIFY_CHANNEL, Outbox, OutboxError};
 pub use rate_limit::RateLimiter;
 pub use telemetry::init as init_telemetry;
