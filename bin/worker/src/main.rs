@@ -71,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
     let media = Arc::new(MediaService::new(
         pool.clone(),
         store,
+        Arc::new(catalog::CatalogService::new()),
         Arc::new(billing::BillingService::new()),
         clock,
         scratch,
@@ -159,6 +160,7 @@ async fn run_job_loop(
                 let ctx = JobCtx {
                     job_id: claimed.id,
                     attempt: claimed.attempts,
+                    max_attempts: claimed.max_attempts,
                 };
                 let dispatched = registry.dispatch(&claimed.kind, ctx, claimed.payload);
                 let result = with_heartbeat(&queue, claimed.id, &worker_id, dispatched).await;

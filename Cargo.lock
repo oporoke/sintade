@@ -1729,6 +1729,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "billing",
+ "catalog",
  "kernel",
  "platform",
  "serde",

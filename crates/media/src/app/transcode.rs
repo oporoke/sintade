@@ -2,8 +2,8 @@ use std::path::Path;
 
 use crate::domain::Container;
 use crate::domain::probe::{ProbeRejection, SourceInfo, validate};
-use crate::domain::transcode::{Mp4Plan, ffmpeg_deadline, mp4_args};
-use crate::infra::tools::{MediaTools, Probed, ToolError, probe, run_ffmpeg};
+use crate::domain::transcode::{Mp4Plan, ffmpeg_deadline, mp4_args, poster_args};
+use crate::infra::tools::{MediaTools, Probed, ToolError, probe, run, run_ffmpeg};
 
 /// What making the MP4 produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,10 +88,92 @@ pub async fn transcode_file(
     })
 }
 
+/// The poster as written: its picture size and file size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PosterReport {
+    pub width: u32,
+    pub height: u32,
+    pub bytes: u64,
+}
+
+/// A poster frame is quick: one decode and one JPEG.
+const POSTER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// §10 Process step 5: the poster JPEG from the finished MP4.
+pub async fn make_poster(
+    tools: &MediaTools,
+    mp4: &Path,
+    output: &Path,
+    duration_ms: u32,
+) -> Result<PosterReport, TranscodeError> {
+    let mut command = tokio::process::Command::new(&tools.ffmpeg);
+    command.args(poster_args(mp4, output, duration_ms));
+    let result = run(command, POSTER_TIMEOUT).await?;
+    if !result.status.success() {
+        return Err(TranscodeError::Tool(ToolError::Failed {
+            tool: tools.ffmpeg.clone(),
+            status: result.status.to_string(),
+            stderr_tail: String::from_utf8_lossy(&result.stderr)
+                .lines()
+                .last()
+                .unwrap_or_default()
+                .to_string(),
+        }));
+    }
+    let Probed::Readable(report) = probe(tools, output).await? else {
+        return Err(TranscodeError::BadOutput(
+            "the poster isn't readable".to_string(),
+        ));
+    };
+    let stream = report
+        .streams
+        .first()
+        .ok_or_else(|| TranscodeError::BadOutput("the poster has no picture".to_string()))?;
+    Ok(PosterReport {
+        width: stream.width.unwrap_or(0),
+        height: stream.height.unwrap_or(0),
+        bytes: tokio::fs::metadata(output).await?.len(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testing::{ffmpeg_available, fixture_path, is_fast_start};
+
+    #[tokio::test]
+    async fn a_poster_is_cut_from_the_mp4() {
+        if !ffmpeg_available().await {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("sintade-poster-{}", uuid::Uuid::now_v7()));
+        tokio::fs::create_dir_all(&dir).await.expect("dir");
+        let mp4 = dir.join("default.mp4");
+        let report = transcode_file(
+            &MediaTools::default(),
+            &fixture_path("real_chrome_vp9_opus_10s.webm"),
+            Container::Webm,
+            &mp4,
+            1080,
+            10_000,
+        )
+        .await
+        .expect("mp4");
+        let poster = dir.join("poster.jpg");
+        let made = make_poster(
+            &MediaTools::default(),
+            &mp4,
+            &poster,
+            report.mp4.duration_ms.unwrap_or(0),
+        )
+        .await
+        .expect("poster");
+        assert_eq!((made.width, made.height), (1280, 720));
+        let bytes = tokio::fs::read(&poster).await.expect("read");
+        assert_eq!(&bytes[..3], &[0xFF, 0xD8, 0xFF], "a JPEG");
+        assert_eq!(made.bytes, bytes.len() as u64);
+        tokio::fs::remove_dir_all(&dir).await.expect("tidy");
+    }
 
     async fn make(name: &str, container: Container, max_height: u32) -> (TranscodeReport, Vec<u8>) {
         let out = std::env::temp_dir().join(format!("sintade-mp4-{}.mp4", uuid::Uuid::now_v7()));

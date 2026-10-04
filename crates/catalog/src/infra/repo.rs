@@ -104,3 +104,67 @@ pub async fn mark_abandoned(
     .await?;
     Ok(changed.into_iter().map(RecordingId::from_uuid).collect())
 }
+
+/// Who owns a recording and what it's called: what "ready"/"failed" notices need.
+pub struct RecordingOwner {
+    pub owner_id: UserId,
+    pub title: String,
+}
+
+/// `processing` → `ready` with what the MP4 measured. `None` if the recording isn't
+/// `processing` in that workspace (trashed or abandoned meanwhile).
+#[allow(clippy::too_many_arguments)]
+pub async fn mark_ready(
+    conn: &mut PgConnection,
+    id: RecordingId,
+    workspace_id: WorkspaceId,
+    duration_ms: i32,
+    width: i32,
+    height: i32,
+    size_bytes: i64,
+) -> Result<Option<RecordingOwner>, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"
+        UPDATE recordings
+        SET state = 'ready', duration_ms = $3, width = $4, height = $5, size_bytes = $6,
+            updated_at = now()
+        WHERE id = $1 AND workspace_id = $2 AND state = 'processing'
+        RETURNING owner_id, title
+        "#,
+        id.into_uuid(),
+        workspace_id.into_uuid(),
+        duration_ms,
+        width,
+        height,
+        size_bytes,
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(row.map(|row| RecordingOwner {
+        owner_id: UserId::from_uuid(row.owner_id),
+        title: row.title,
+    }))
+}
+
+/// `processing` → `failed`. `None` if the recording isn't `processing` in that workspace.
+pub async fn mark_failed(
+    conn: &mut PgConnection,
+    id: RecordingId,
+    workspace_id: WorkspaceId,
+) -> Result<Option<RecordingOwner>, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"
+        UPDATE recordings SET state = 'failed', updated_at = now()
+        WHERE id = $1 AND workspace_id = $2 AND state = 'processing'
+        RETURNING owner_id, title
+        "#,
+        id.into_uuid(),
+        workspace_id.into_uuid(),
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(row.map(|row| RecordingOwner {
+        owner_id: UserId::from_uuid(row.owner_id),
+        title: row.title,
+    }))
+}

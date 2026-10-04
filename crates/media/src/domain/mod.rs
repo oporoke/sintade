@@ -43,6 +43,11 @@ pub fn mp4_key(workspace_id: WorkspaceId, recording_id: RecordingId) -> String {
     format!("ws/{workspace_id}/rec/{recording_id}/mp4/default.mp4")
 }
 
+/// Where a recording's poster lives (docs/design.md §8 storage layout).
+pub fn poster_key(workspace_id: WorkspaceId, recording_id: RecordingId) -> String {
+    format!("ws/{workspace_id}/rec/{recording_id}/img/poster.jpg")
+}
+
 /// Where a take's concatenated original lives (docs/design.md §8 storage layout).
 pub fn source_key(
     workspace_id: WorkspaceId,

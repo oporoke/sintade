@@ -3,6 +3,7 @@ use sqlx::PgConnection;
 
 use crate::domain::Title;
 use crate::infra;
+pub use crate::infra::RecordingOwner;
 
 /// A recording to create, in state `recording`, with its first take already chosen.
 #[derive(Debug, Clone)]
@@ -80,4 +81,47 @@ impl CatalogService {
     ) -> Result<Vec<RecordingId>, sqlx::Error> {
         infra::mark_abandoned(conn, recordings).await
     }
+
+    /// `Processing → Ready` once media has the MP4 (docs/design.md §4), with what the MP4
+    /// measured. Runs on media's transaction, so the state, the renditions and `RecordingReady`
+    /// commit together (ADR-0012). `None`: the recording isn't `processing` any more.
+    #[tracing::instrument(skip_all, fields(recording_id = %id, workspace_id = %workspace_id))]
+    pub async fn mark_ready(
+        &self,
+        conn: &mut PgConnection,
+        id: RecordingId,
+        workspace_id: WorkspaceId,
+        measured: Measured,
+    ) -> Result<Option<RecordingOwner>, sqlx::Error> {
+        infra::mark_ready(
+            conn,
+            id,
+            workspace_id,
+            measured.duration_ms,
+            measured.width,
+            measured.height,
+            measured.size_bytes,
+        )
+        .await
+    }
+
+    /// `Processing → Failed` (bad input, or processing gave up). Runs on media's transaction.
+    #[tracing::instrument(skip_all, fields(recording_id = %id, workspace_id = %workspace_id))]
+    pub async fn mark_failed(
+        &self,
+        conn: &mut PgConnection,
+        id: RecordingId,
+        workspace_id: WorkspaceId,
+    ) -> Result<Option<RecordingOwner>, sqlx::Error> {
+        infra::mark_failed(conn, id, workspace_id).await
+    }
+}
+
+/// What a finished MP4 measured: the recording's duration, picture size and file size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Measured {
+    pub duration_ms: i32,
+    pub width: i32,
+    pub height: i32,
+    pub size_bytes: i64,
 }

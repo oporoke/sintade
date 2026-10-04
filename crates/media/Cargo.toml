@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 billing = { version = "0.1.0", path = "../billing" }
+catalog = { version = "0.1.0", path = "../catalog" }
 kernel = { version = "0.1.0", path = "../kernel" }
 platform = { version = "0.1.0", path = "../platform" }
 serde = { version = "1.0.229", features = ["derive"] }

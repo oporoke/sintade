@@ -1,19 +1,26 @@
 use std::sync::Arc;
 
 use billing::BillingService;
+use catalog::{CatalogService, Measured};
 use kernel::{RecordingId, TakeId, WorkspaceId};
-use platform::{Clock, JobQueue, JobQueueError, ObjectStore, StorageError};
+use platform::{Clock, JobQueue, JobQueueError, ObjectStore, Outbox, OutboxError, StorageError};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
 use crate::domain::probe::ProbeRejection;
-use crate::domain::{ChunkManifest, Container, ManifestChunk, ManifestError, mp4_key, source_key};
+use crate::domain::{
+    ChunkManifest, Container, ManifestChunk, ManifestError, mp4_key, poster_key, source_key,
+};
 use crate::infra;
 use crate::infra::scratch::{ScratchDir, ScratchSpace};
 use crate::infra::source::{AssembleError, assemble_source};
 use crate::infra::tools::{MediaTools, ToolError};
 
-use super::transcode::{TranscodeError, TranscodeReport, transcode_file};
+use super::transcode::{
+    PosterReport, TranscodeError, TranscodeReport, make_poster, transcode_file,
+};
+use crate::domain::transcode::Mp4Plan;
+use crate::events::{ProcessingFailed, RecordingReady};
 
 /// The job kind that turns a finalized take into renditions (docs/design.md §10 Process).
 pub const PROCESS_TAKE: &str = "ProcessTake";
@@ -97,6 +104,9 @@ pub enum ProcessError {
     #[error("the MP4 doesn't check out: {0}")]
     BadOutput(String),
 
+    #[error(transparent)]
+    Outbox(#[from] OutboxError),
+
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
 }
@@ -148,8 +158,10 @@ impl<E: Into<ProcessError>> From<E> for StepError {
 pub struct MediaService {
     pool: PgPool,
     store: Arc<dyn ObjectStore>,
+    catalog: Arc<CatalogService>,
     billing: Arc<BillingService>,
     clock: Arc<dyn Clock>,
+    outbox: Outbox,
     scratch: ScratchSpace,
     tools: MediaTools,
 }
@@ -158,6 +170,7 @@ impl MediaService {
     pub fn new(
         pool: PgPool,
         store: Arc<dyn ObjectStore>,
+        catalog: Arc<CatalogService>,
         billing: Arc<BillingService>,
         clock: Arc<dyn Clock>,
         scratch: ScratchSpace,
@@ -166,7 +179,9 @@ impl MediaService {
         Self {
             pool,
             store,
+            catalog,
             billing,
+            outbox: Outbox::new(clock.clone()),
             clock,
             scratch,
             tools,
@@ -217,9 +232,15 @@ impl MediaService {
     }
 
     /// Runs `ProcessTake` for one take in a scratch directory that is removed afterwards,
-    /// whatever happens.
+    /// whatever happens. Ends with the recording `ready` (renditions recorded,
+    /// `RecordingReady`), or `failed` (`ProcessingFailed`) when the input is unusable or this
+    /// was the `last_attempt` and it failed too (ADR-0012 §7).
     #[tracing::instrument(skip_all, fields(take_id = %request.take_id, workspace_id = %request.workspace_id))]
-    pub async fn process_take(&self, request: ProcessTake) -> Result<ProcessOutcome, ProcessError> {
+    pub async fn process_take(
+        &self,
+        request: ProcessTake,
+        last_attempt: bool,
+    ) -> Result<ProcessOutcome, ProcessError> {
         let Some(job) = infra::find_job(&self.pool, request.take_id, request.workspace_id).await?
         else {
             return Ok(ProcessOutcome::NotFound);
@@ -229,11 +250,31 @@ impl MediaService {
             return Ok(ProcessOutcome::AlreadyFinished);
         }
 
-        let chunks: Vec<ManifestChunk> = serde_json::from_value(job.chunks.clone())?;
-        let manifest = ChunkManifest::new(
-            chunks.clone(),
-            u32::try_from(chunks.len()).unwrap_or(u32::MAX),
-        )?;
+        match self.run_in_scratch(&job).await {
+            Ok(produced) => {
+                self.finish_ready(&job, &produced).await?;
+                Ok(ProcessOutcome::Ran)
+            }
+            Err(StepError::Reject(Rejection(reason))) => {
+                tracing::warn!(%reason, "ProcessTake rejected the take");
+                self.fail(&job, &reason, &reason).await?;
+                Ok(ProcessOutcome::Rejected)
+            }
+            Err(StepError::Retry(error)) => {
+                if last_attempt {
+                    tracing::error!(%error, "ProcessTake failed on its last attempt");
+                    self.fail(&job, GAVE_UP, &error.to_string()).await?;
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn run_in_scratch(&self, job: &infra::MediaJobRow) -> Result<Produced, StepError> {
+        let chunks: Vec<ManifestChunk> =
+            serde_json::from_value(job.chunks.clone()).map_err(ProcessError::from)?;
+        let count = u32::try_from(chunks.len()).unwrap_or(u32::MAX);
+        let manifest = ChunkManifest::new(chunks, count).map_err(ProcessError::from)?;
 
         let scratch = self.scratch.create(job.take_id).await?;
         tracing::info!(
@@ -246,36 +287,21 @@ impl MediaService {
             scratch = %scratch.path().display(),
             "ProcessTake started"
         );
-        let result = self.run_pipeline(&job, &manifest, &scratch).await;
+        let result = self.run_pipeline(job, &manifest, &scratch).await;
         scratch.remove().await?;
-        match result {
-            Ok(_report) => Ok(ProcessOutcome::Ran),
-            Err(StepError::Retry(error)) => Err(error),
-            Err(StepError::Reject(Rejection(reason))) => {
-                tracing::warn!(%reason, "ProcessTake rejected the take");
-                infra::mark_rejected(
-                    &self.pool,
-                    job.take_id,
-                    job.workspace_id,
-                    &reason,
-                    self.clock.now(),
-                )
-                .await?;
-                Ok(ProcessOutcome::Rejected)
-            }
-        }
+        result
     }
 
-    /// docs/design.md §10 Process. Steps 1–4 so far: fetch every chunk, verify it,
-    /// concatenate into the source file and store it (kept even if rejected, for support),
-    /// validate it with ffprobe, then make and store the fast-start MP4. The poster, rendition
-    /// rows and the recording's state follow (Day 47).
+    /// docs/design.md §10 Process steps 1–5: fetch every chunk, verify it, concatenate into
+    /// the source file and store it (kept even if rejected, for support), validate it with
+    /// ffprobe, make and store the fast-start MP4, then the poster. The caller records the
+    /// outcome.
     async fn run_pipeline(
         &self,
         job: &infra::MediaJobRow,
         manifest: &ChunkManifest,
         scratch: &ScratchDir,
-    ) -> Result<TranscodeReport, StepError> {
+    ) -> Result<Produced, StepError> {
         let container = Container::from_mime(&job.mime_type);
         let source = scratch.file(&format!("source.{}", container.extension()));
         let bytes = assemble_source(self.store.as_ref(), manifest, &source).await?;
@@ -312,9 +338,153 @@ impl MediaService {
             duration_ms = report.mp4.duration_ms,
             "MP4 stored"
         );
-        Ok(report)
+
+        let duration_ms = report.mp4.duration_ms.unwrap_or(expected_ms);
+        let poster_path = scratch.file("poster.jpg");
+        let poster = make_poster(&self.tools, &mp4, &poster_path, duration_ms).await?;
+        let poster_key = poster_key(job.workspace_id, job.recording_id);
+        self.store
+            .put_file(&poster_key, &poster_path, "image/jpeg")
+            .await?;
+        Ok(Produced {
+            report,
+            duration_ms,
+            mp4_key,
+            poster,
+            poster_key,
+        })
+    }
+
+    /// The renditions, `Processing → Ready`, the job done and `RecordingReady`: one
+    /// transaction. A recording that left `processing` meanwhile (trashed) keeps its state; the
+    /// renditions are recorded all the same.
+    async fn finish_ready(
+        &self,
+        job: &infra::MediaJobRow,
+        produced: &Produced,
+    ) -> Result<(), ProcessError> {
+        let report = &produced.report;
+        let mut tx = self.pool.begin().await?;
+        infra::upsert_rendition(
+            &mut tx,
+            job.workspace_id,
+            job.recording_id,
+            job.take_id,
+            "mp4",
+            "default",
+            &produced.mp4_key,
+            i64::try_from(report.mp4_bytes).unwrap_or(i64::MAX),
+            serde_json::json!({
+                "duration_ms": produced.duration_ms,
+                "width": report.mp4.width,
+                "height": report.mp4.height,
+                "video_codec": report.mp4.video_codec,
+                "audio_codec": report.mp4.audio_codec,
+                "remuxed": report.plan == Mp4Plan::Remux,
+                "source_video_codec": report.source.video_codec,
+            }),
+        )
+        .await?;
+        infra::upsert_rendition(
+            &mut tx,
+            job.workspace_id,
+            job.recording_id,
+            job.take_id,
+            "thumbnail",
+            "poster",
+            &produced.poster_key,
+            i64::try_from(produced.poster.bytes).unwrap_or(i64::MAX),
+            serde_json::json!({ "width": produced.poster.width, "height": produced.poster.height }),
+        )
+        .await?;
+        infra::mark_done(&mut tx, job.take_id, job.workspace_id, self.clock.now()).await?;
+        let measured = Measured {
+            duration_ms: i32::try_from(produced.duration_ms).unwrap_or(i32::MAX),
+            width: i32::try_from(report.mp4.width).unwrap_or(0),
+            height: i32::try_from(report.mp4.height).unwrap_or(0),
+            size_bytes: i64::try_from(report.mp4_bytes).unwrap_or(i64::MAX),
+        };
+        match self
+            .catalog
+            .mark_ready(&mut tx, job.recording_id, job.workspace_id, measured)
+            .await?
+        {
+            Some(owner) => {
+                self.outbox
+                    .push(
+                        &mut tx,
+                        &RecordingReady {
+                            recording_id: job.recording_id,
+                            take_id: job.take_id,
+                            workspace_id: job.workspace_id,
+                            owner_id: owner.owner_id,
+                            title: owner.title,
+                            duration_ms: produced.duration_ms,
+                            width: report.mp4.width,
+                            height: report.mp4.height,
+                        },
+                    )
+                    .await?;
+            }
+            None => tracing::info!("the recording left processing meanwhile; state unchanged"),
+        }
+        tx.commit().await?;
+        tracing::info!(recording_id = %job.recording_id, "recording ready");
+        Ok(())
+    }
+
+    /// The job `failed` (with `detail` for support), `Processing → Failed` and
+    /// `ProcessingFailed { reason }` for the creator: one transaction.
+    async fn fail(
+        &self,
+        job: &infra::MediaJobRow,
+        reason: &str,
+        detail: &str,
+    ) -> Result<(), ProcessError> {
+        let mut tx = self.pool.begin().await?;
+        infra::mark_rejected(
+            &mut *tx,
+            job.take_id,
+            job.workspace_id,
+            detail,
+            self.clock.now(),
+        )
+        .await?;
+        if let Some(owner) = self
+            .catalog
+            .mark_failed(&mut tx, job.recording_id, job.workspace_id)
+            .await?
+        {
+            self.outbox
+                .push(
+                    &mut tx,
+                    &ProcessingFailed {
+                        recording_id: job.recording_id,
+                        take_id: job.take_id,
+                        workspace_id: job.workspace_id,
+                        owner_id: owner.owner_id,
+                        title: owner.title,
+                        reason: reason.to_string(),
+                    },
+                )
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 }
+
+/// What a successful pipeline run left in storage.
+struct Produced {
+    report: TranscodeReport,
+    duration_ms: u32,
+    mp4_key: String,
+    poster: PosterReport,
+    poster_key: String,
+}
+
+/// What the creator is told when processing gave up after its retries.
+const GAVE_UP: &str = "processing failed after several attempts";
 
 #[cfg(test)]
 mod tests {
@@ -409,16 +579,21 @@ mod tests {
     }
 
     fn service_with(pool: &PgPool) -> (MediaService, Arc<MemoryStore>) {
+        service_with_tools(pool, MediaTools::default())
+    }
+
+    fn service_with_tools(pool: &PgPool, tools: MediaTools) -> (MediaService, Arc<MemoryStore>) {
         let root =
             std::env::temp_dir().join(format!("sintade-media-test-{}", uuid::Uuid::now_v7()));
         let store = Arc::new(MemoryStore::default());
         let media = MediaService::new(
             pool.clone(),
             store.clone(),
+            Arc::new(CatalogService::new()),
             Arc::new(BillingService::new()),
             Arc::new(platform::SystemClock),
             ScratchSpace::new(root),
-            MediaTools::default(),
+            tools,
         );
         (media, store)
     }
@@ -443,10 +618,13 @@ mod tests {
 
     async fn run(media: &MediaService, seeded: &Seeded) -> ProcessOutcome {
         media
-            .process_take(ProcessTake {
-                take_id: seeded.take,
-                workspace_id: seeded.workspace,
-            })
+            .process_take(
+                ProcessTake {
+                    take_id: seeded.take,
+                    workspace_id: seeded.workspace,
+                },
+                false,
+            )
             .await
             .expect("process")
     }
@@ -559,7 +737,7 @@ mod tests {
             workspace_id: seeded.workspace,
         };
         assert_eq!(
-            media.process_take(request).await.expect("run"),
+            media.process_take(request, false).await.expect("run"),
             ProcessOutcome::Ran
         );
         let row = sqlx::query!(
@@ -569,7 +747,8 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("media job");
-        assert_eq!((row.state.as_str(), row.attempts), ("running", 1));
+        // Started (attempt counted), and since Day 47 run to the end.
+        assert_eq!((row.state.as_str(), row.attempts), ("done", 1));
         assert!(row.started_at.is_some());
 
         let mut left = tokio::fs::read_dir(media.scratch().root())
@@ -597,7 +776,7 @@ mod tests {
             workspace_id: WorkspaceId::new_v7(),
         };
         assert_eq!(
-            media.process_take(elsewhere).await.expect("run"),
+            media.process_take(elsewhere, false).await.expect("run"),
             ProcessOutcome::NotFound
         );
     }
@@ -750,6 +929,229 @@ mod tests {
             reason.starts_with("the recording is in an unexpected format"),
             "{reason}"
         );
+        assert!(scratch_is_empty(&media).await);
+    }
+
+    async fn recording_row(
+        pool: &PgPool,
+        seeded: &Seeded,
+    ) -> (String, Option<i32>, Option<i32>, Option<i32>, Option<i64>) {
+        let row = sqlx::query!(
+            r#"SELECT state::text AS "state!", duration_ms, width, height, size_bytes
+               FROM recordings WHERE id = $1"#,
+            seeded.recording.into_uuid()
+        )
+        .fetch_one(pool)
+        .await
+        .expect("recording");
+        (
+            row.state,
+            row.duration_ms,
+            row.width,
+            row.height,
+            row.size_bytes,
+        )
+    }
+
+    async fn events(pool: &PgPool, event_type: &str) -> Vec<serde_json::Value> {
+        sqlx::query_scalar!(
+            "SELECT payload FROM outbox_events WHERE event_type = $1 ORDER BY id",
+            event_type
+        )
+        .fetch_all(pool)
+        .await
+        .expect("outbox")
+    }
+
+    async fn enqueue_fixture(
+        media: &MediaService,
+        store: &MemoryStore,
+        seeded: &Seeded,
+        name: &str,
+    ) {
+        let bytes = crate::testing::fixture(name).await;
+        media
+            .enqueue_processing(upload_chunks(store, seeded, &bytes, 64 * 1024))
+            .await
+            .expect("enqueue");
+    }
+
+    /// Day 47's Check, `Processing → Ready`: the recording takes what the MP4 measured, both
+    /// renditions are recorded, the job is done and `RecordingReady` is in the outbox.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn processing_becomes_ready_with_renditions_and_recording_ready(pool: PgPool) {
+        if !crate::testing::ffmpeg_available().await {
+            return;
+        }
+        let seeded = seed(&pool).await;
+        let (media, store) = service_with(&pool);
+        enqueue_fixture(&media, &store, &seeded, "real_chrome_vp9_opus_10s.webm").await;
+
+        assert_eq!(run(&media, &seeded).await, ProcessOutcome::Ran);
+
+        let (state, duration, width, height, size) = recording_row(&pool, &seeded).await;
+        assert_eq!(state, "ready");
+        assert!(
+            (9_000..11_500).contains(&duration.expect("duration")),
+            "{duration:?}"
+        );
+        assert_eq!((width, height), (Some(1280), Some(720)));
+        let mp4_key = format!(
+            "ws/{}/rec/{}/mp4/default.mp4",
+            seeded.workspace, seeded.recording
+        );
+        let poster_key = format!(
+            "ws/{}/rec/{}/img/poster.jpg",
+            seeded.workspace, seeded.recording
+        );
+        assert_eq!(size, store.bytes(&mp4_key).map(|bytes| bytes.len() as i64));
+        assert_eq!(
+            store.content_type(&poster_key).as_deref(),
+            Some("image/jpeg")
+        );
+
+        let renditions = sqlx::query!(
+            r#"SELECT kind::text AS "kind!", variant, storage_key, size_bytes, meta
+               FROM renditions WHERE recording_id = $1 AND workspace_id = $2 ORDER BY kind"#,
+            seeded.recording.into_uuid(),
+            seeded.workspace.into_uuid()
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("renditions");
+        let summary: Vec<(String, String, String)> = renditions
+            .iter()
+            .map(|row| {
+                (
+                    row.kind.clone(),
+                    row.variant.clone(),
+                    row.storage_key.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("mp4".to_string(), "default".to_string(), mp4_key),
+                ("thumbnail".to_string(), "poster".to_string(), poster_key),
+            ]
+        );
+        assert_eq!(renditions[0].meta["video_codec"], "h264");
+        assert_eq!(renditions[0].meta["remuxed"], false);
+        assert_eq!(renditions[1].meta["width"], 1280);
+        assert_eq!(
+            job_state(&pool, seeded.take).await,
+            ("done".to_string(), None)
+        );
+
+        let ready = events(&pool, "RecordingReady").await;
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0]["workspace_id"], seeded.workspace.to_string());
+        assert_eq!(
+            ready[0]["data"]["recording_id"],
+            seeded.recording.to_string()
+        );
+        assert_eq!(ready[0]["data"]["title"], "Test");
+        assert_eq!(ready[0]["data"]["width"], 1280);
+        assert!(events(&pool, "ProcessingFailed").await.is_empty());
+
+        // A duplicate job changes nothing.
+        assert_eq!(run(&media, &seeded).await, ProcessOutcome::AlreadyFinished);
+        assert_eq!(events(&pool, "RecordingReady").await.len(), 1);
+        assert!(scratch_is_empty(&media).await);
+    }
+
+    /// `Processing → Failed` for bad input: at once, with the reason for the creator.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_rejected_take_fails_the_recording_with_processing_failed(pool: PgPool) {
+        if !crate::testing::ffmpeg_available().await {
+            return;
+        }
+        let seeded = seed(&pool).await;
+        let (media, store) = service_with(&pool);
+        enqueue_fixture(&media, &store, &seeded, "not_a_video.webm").await;
+
+        assert_eq!(run(&media, &seeded).await, ProcessOutcome::Rejected);
+        assert_eq!(recording_row(&pool, &seeded).await.0, "failed");
+        let failed = events(&pool, "ProcessingFailed").await;
+        assert_eq!(failed.len(), 1);
+        assert_eq!(
+            failed[0]["data"]["reason"],
+            "the recording isn't a readable video file"
+        );
+        assert!(events(&pool, "RecordingReady").await.is_empty());
+        assert!(scratch_is_empty(&media).await);
+    }
+
+    /// A passing failure leaves the recording `processing` for the retry; the last attempt's
+    /// failure makes it `failed` (docs/design.md US-21: fails 5 times → `failed`).
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn only_the_last_failed_attempt_fails_the_recording(pool: PgPool) {
+        let seeded = seed(&pool).await;
+        let broken = MediaTools {
+            ffmpeg: "/nonexistent/ffmpeg".to_string(),
+            ffprobe: "/nonexistent/ffprobe".to_string(),
+        };
+        let (media, store) = service_with_tools(&pool, broken);
+        media
+            .enqueue_processing(upload_chunks(&store, &seeded, &[1u8; 3_000], 1_000))
+            .await
+            .expect("enqueue");
+        let request = ProcessTake {
+            take_id: seeded.take,
+            workspace_id: seeded.workspace,
+        };
+
+        let early = media.process_take(request, false).await;
+        assert!(matches!(early, Err(ProcessError::Tool(_))), "{early:?}");
+        assert_eq!(recording_row(&pool, &seeded).await.0, "processing");
+        assert_eq!(job_state(&pool, seeded.take).await.0, "running");
+        assert!(events(&pool, "ProcessingFailed").await.is_empty());
+
+        let last = media.process_take(request, true).await;
+        assert!(
+            matches!(last, Err(ProcessError::Tool(_))),
+            "the job still dead-letters"
+        );
+        assert_eq!(recording_row(&pool, &seeded).await.0, "failed");
+        let (state, detail) = job_state(&pool, seeded.take).await;
+        assert_eq!(state, "failed");
+        assert!(detail.expect("detail").contains("/nonexistent/ffprobe"));
+        let failed = events(&pool, "ProcessingFailed").await;
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0]["data"]["reason"], GAVE_UP);
+        assert!(scratch_is_empty(&media).await);
+    }
+
+    /// A recording trashed while it was processing stays trashed; its renditions are kept for
+    /// a restore, and nobody is told it's ready.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_recording_that_left_processing_keeps_its_state(pool: PgPool) {
+        if !crate::testing::ffmpeg_available().await {
+            return;
+        }
+        let seeded = seed(&pool).await;
+        let (media, store) = service_with(&pool);
+        enqueue_fixture(&media, &store, &seeded, "vp9_no_audio.webm").await;
+        sqlx::query!(
+            "UPDATE recordings SET state = 'trashed', trashed_at = now() WHERE id = $1",
+            seeded.recording.into_uuid()
+        )
+        .execute(&pool)
+        .await
+        .expect("trash");
+
+        assert_eq!(run(&media, &seeded).await, ProcessOutcome::Ran);
+        assert_eq!(recording_row(&pool, &seeded).await.0, "trashed");
+        assert!(events(&pool, "RecordingReady").await.is_empty());
+        let renditions = sqlx::query_scalar!(
+            r#"SELECT count(*) AS "n!" FROM renditions WHERE recording_id = $1"#,
+            seeded.recording.into_uuid()
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(renditions, 2);
         assert!(scratch_is_empty(&media).await);
     }
 }

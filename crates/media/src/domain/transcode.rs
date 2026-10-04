@@ -83,6 +83,31 @@ pub fn mp4_args(input: &Path, output: &Path, info: &SourceInfo, plan: Mp4Plan) -
     args
 }
 
+/// `ffmpeg` arguments for the poster (§10 Process step 5): one frame at 1 s (at 0 s for a
+/// take shorter than 2 s), at most 1280 px wide.
+pub fn poster_args(mp4: &Path, output: &Path, duration_ms: u32) -> Vec<OsString> {
+    let at = if duration_ms >= 2_000 { "1" } else { "0" };
+    let mut args: Vec<OsString> = ["-hide_banner", "-nostdin", "-y", "-ss", at, "-i"]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+    args.push(mp4.as_os_str().to_owned());
+    args.extend(
+        [
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=min(1280\\,iw):-2",
+            "-q:v",
+            "3",
+        ]
+        .into_iter()
+        .map(OsString::from),
+    );
+    args.push(output.as_os_str().to_owned());
+    args
+}
+
 /// How long an FFmpeg run may take before it's killed: 3x the recording's length (the target
 /// is 0.5x, §11), and never less than 10 minutes, so a short take on a busy worker isn't cut
 /// off.
@@ -202,6 +227,19 @@ mod tests {
         ));
         assert!(!args.contains("-c:a"), "{args}");
         assert!(!args.contains("loudnorm"), "{args}");
+    }
+
+    #[test]
+    fn the_poster_is_a_frame_at_one_second_at_most_1280_wide() {
+        let args = joined(&poster_args(
+            Path::new("default.mp4"),
+            Path::new("poster.jpg"),
+            10_000,
+        ));
+        assert!(args.contains("-ss 1 -i default.mp4 -frames:v 1"), "{args}");
+        assert!(args.contains("scale=min(1280\\,iw):-2"), "{args}");
+        let short = joined(&poster_args(Path::new("a.mp4"), Path::new("p.jpg"), 1_500));
+        assert!(short.contains("-ss 0"), "{short}");
     }
 
     #[test]

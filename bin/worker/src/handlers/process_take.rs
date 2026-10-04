@@ -24,7 +24,7 @@ impl JobHandler for ProcessTakeHandler {
     async fn run(&self, ctx: &JobCtx, payload: Self::Payload) -> Result<(), JobError> {
         let outcome = self
             .media
-            .process_take(payload)
+            .process_take(payload, ctx.is_last_attempt())
             .await
             .map_err(|error| JobError::Failed(error.to_string()))?;
         if outcome != ProcessOutcome::Ran {
