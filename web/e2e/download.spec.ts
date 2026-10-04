@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { signUpAndLogIn } from './support/auth';
-import { anonymousPage, apiAs, recordAndShare } from './support/share';
+import { anonymousPage, apiAs, openWhenProcessed, recordAndShare } from './support/share';
 import { expect, test } from './support/test';
 
 /**
@@ -25,11 +25,7 @@ test('the owner downloads the MP4 and it decodes offline; viewers need the link 
 
   // The owner, signed in, opens the link once it is processed.
   const watch = await page.context().newPage();
-  await watch.goto(`/s/${shared.slug}`);
-  await expect(async () => {
-    await watch.reload();
-    await expect(watch.getByTestId('watch-video')).toBeVisible({ timeout: 2_000 });
-  }).toPass({ timeout: 60_000, intervals: [1_000] });
+  await openWhenProcessed(watch, shared.slug);
 
   const [download] = await Promise.all([
     watch.waitForEvent('download'),
@@ -58,8 +54,7 @@ test('the owner downloads the MP4 and it decodes offline; viewers need the link 
 
   // A stranger: no Download until the link allows it.
   const stranger = await anonymousPage(browser);
-  await stranger.goto(`/s/${shared.slug}`);
-  await expect(stranger.getByTestId('watch-video')).toBeVisible({ timeout: 15_000 });
+  await openWhenProcessed(stranger, shared.slug);
   await expect(stranger.getByTestId('watch-download')).toHaveCount(0);
   const denied = await stranger.evaluate(
     async (slug) => (await fetch(`/api/v1/s/${slug}/download`)).status,

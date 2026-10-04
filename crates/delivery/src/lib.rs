@@ -25,10 +25,23 @@ pub enum DeliveryError {
     Storage(#[from] StorageError),
 }
 
+/// Which file a grant points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackKind {
+    /// The fast-start MP4: seekable, plays everywhere.
+    Mp4,
+    /// The original recording, while the MP4 is still being made: plays at once in browsers
+    /// that support its format, but isn't indexed for seeking.
+    Preview,
+}
+
 /// What a viewer's player is given.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaybackGrant {
-    pub mp4_url: String,
+    pub kind: PlaybackKind,
+    pub url: String,
+    /// The MIME type of `url` (`video/mp4`, or the original's: `video/webm`).
+    pub content_type: String,
     pub poster_url: Option<String>,
     pub expires_in_s: u64,
 }
@@ -51,12 +64,15 @@ impl DeliveryService {
         Self { store, renditions }
     }
 
-    /// Signed URLs for the recording's MP4 (and poster), or `None` while no MP4 exists.
+    /// Signed URLs for the recording: its MP4 when it exists, otherwise (if `allow_preview`) the
+    /// original, so a viewer can watch seconds after the recording stops. `None` when there is
+    /// nothing playable.
     #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
     pub async fn grant(
         &self,
         workspace_id: WorkspaceId,
         recording_id: RecordingId,
+        allow_preview: bool,
     ) -> Result<Option<PlaybackGrant>, DeliveryError> {
         let Some(keys) = self
             .renditions
@@ -65,17 +81,24 @@ impl DeliveryService {
         else {
             return Ok(None);
         };
-        let mp4_url = self
-            .store
-            .presign_get(&keys.mp4, GRANT_TTL)
-            .await?
-            .to_string();
+        let (kind, key, content_type) = match (&keys.mp4, &keys.source) {
+            (Some(mp4), _) => (PlaybackKind::Mp4, mp4.clone(), "video/mp4".to_string()),
+            (None, Some(source)) if allow_preview => (
+                PlaybackKind::Preview,
+                source.key.clone(),
+                source.content_type.clone(),
+            ),
+            _ => return Ok(None),
+        };
+        let url = self.store.presign_get(&key, GRANT_TTL).await?.to_string();
         let poster_url = match keys.poster {
             Some(key) => Some(self.store.presign_get(&key, GRANT_TTL).await?.to_string()),
             None => None,
         };
         Ok(Some(PlaybackGrant {
-            mp4_url,
+            kind,
+            url,
+            content_type,
             poster_url,
             expires_in_s: GRANT_TTL.as_secs(),
         }))
@@ -89,17 +112,18 @@ impl DeliveryService {
         recording_id: RecordingId,
         title: &str,
     ) -> Result<Option<DownloadGrant>, DeliveryError> {
-        let Some(keys) = self
+        let Some(mp4) = self
             .renditions
             .playback_keys(workspace_id, recording_id)
             .await?
+            .and_then(|keys| keys.mp4)
         else {
             return Ok(None);
         };
         let filename = download_filename(title);
         let url = self
             .store
-            .presign_download(&keys.mp4, GRANT_TTL, &filename)
+            .presign_download(&mp4, GRANT_TTL, &filename)
             .await?
             .to_string();
         Ok(Some(DownloadGrant {
@@ -137,7 +161,7 @@ impl DeliveryService {
         recording_id: RecordingId,
     ) -> Result<Option<String>, DeliveryError> {
         Ok(self
-            .grant(workspace_id, recording_id)
+            .grant(workspace_id, recording_id, true)
             .await?
             .and_then(|grant| grant.poster_url))
     }
@@ -232,12 +256,14 @@ mod tests {
     async fn a_grant_has_signed_urls_that_expire_in_fifteen_minutes(pool: PgPool) {
         let (workspace, recording) = seed(&pool, true).await;
         let grant = service(pool)
-            .grant(workspace, recording)
+            .grant(workspace, recording, false)
             .await
             .expect("grant")
             .expect("an MP4 exists");
+        assert_eq!(grant.kind, PlaybackKind::Mp4);
+        assert_eq!(grant.content_type, "video/mp4");
         assert_eq!(grant.expires_in_s, 900);
-        for url in [Some(&grant.mp4_url), grant.poster_url.as_ref()]
+        for url in [Some(&grant.url), grant.poster_url.as_ref()]
             .into_iter()
             .flatten()
         {
@@ -246,7 +272,7 @@ mod tests {
             assert_eq!(query.get("X-Amz-Expires").map(|v| v.as_ref()), Some("900"));
             assert!(query.contains_key("X-Amz-Signature"));
         }
-        assert!(grant.mp4_url.contains("default.mp4"));
+        assert!(grant.url.contains("default.mp4"));
         assert!(
             grant
                 .poster_url
@@ -294,16 +320,72 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "../../migrations")]
-    async fn no_mp4_means_no_grant(pool: PgPool) {
+    async fn no_mp4_and_no_source_means_no_grant(pool: PgPool) {
         let (workspace, recording) = seed(&pool, false).await;
         let delivery = service(pool);
+        for allow_preview in [false, true] {
+            assert!(
+                delivery
+                    .grant(workspace, recording, allow_preview)
+                    .await
+                    .expect("grant")
+                    .is_none()
+            );
+        }
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn the_source_plays_while_the_mp4_is_still_being_made(pool: PgPool) {
+        let (workspace, recording) = seed(&pool, false).await;
+        let take = sqlx::query_scalar!(
+            "SELECT id FROM takes WHERE recording_id = $1",
+            recording.into_uuid()
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("take");
+        sqlx::query!(
+            "INSERT INTO renditions (id, workspace_id, recording_id, take_id, kind, variant, storage_key, meta)
+             VALUES ($1, $2, $3, $4, 'source', 'default', 'ws/rec/takes/t/source.webm',
+                     '{\"content_type\": \"video/webm\"}')",
+            uuid::Uuid::now_v7(),
+            workspace.into_uuid(),
+            recording.into_uuid(),
+            take
+        )
+        .execute(&pool)
+        .await
+        .expect("source");
+        let delivery = service(pool);
+
+        // Only when the caller allows a preview…
         assert!(
             delivery
-                .grant(workspace, recording)
+                .grant(workspace, recording, false)
                 .await
                 .expect("grant")
                 .is_none()
         );
+        let grant = delivery
+            .grant(workspace, recording, true)
+            .await
+            .expect("grant")
+            .expect("the source is playable");
+        assert_eq!(grant.kind, PlaybackKind::Preview);
+        assert_eq!(grant.content_type, "video/webm");
+        assert!(grant.url.contains("source.webm"));
+        assert!(grant.poster_url.is_some());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn the_mp4_wins_once_it_exists(pool: PgPool) {
+        let (workspace, recording) = seed(&pool, true).await;
+        let grant = service(pool)
+            .grant(workspace, recording, true)
+            .await
+            .expect("grant")
+            .expect("grant");
+        assert_eq!(grant.kind, PlaybackKind::Mp4);
     }
 
     #[sqlx::test(migrations = "../../migrations")]
@@ -313,7 +395,7 @@ mod tests {
         let delivery = service(pool);
         assert!(
             delivery
-                .grant(other_workspace, recording)
+                .grant(other_workspace, recording, true)
                 .await
                 .expect("grant")
                 .is_none()

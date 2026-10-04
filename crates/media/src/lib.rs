@@ -9,7 +9,7 @@ mod testing;
 
 pub use app::{
     EnqueueError, MediaService, PROCESS_TAKE, PlaybackKeys, ProcessError, ProcessOutcome,
-    ProcessTake, RenditionReader, RetryError, RetryService, TakeFinalizedData,
+    ProcessTake, RenditionReader, RetryError, RetryService, SourceKey, TakeFinalizedData,
     TakeFinalizedMessage, TranscodeError, TranscodeReport, transcode_file,
 };
 pub use domain::probe::SourceInfo;

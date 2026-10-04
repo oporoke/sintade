@@ -1,10 +1,21 @@
 use kernel::{RecordingId, WorkspaceId};
 use sqlx::PgPool;
 
+/// The original recording file, playable by most browsers while the MP4 is still being made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceKey {
+    pub key: String,
+    /// `video/webm` (Chrome, Firefox) or `video/mp4` (Safari).
+    pub content_type: String,
+}
+
 /// The storage keys a viewer can be given for a recording.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaybackKeys {
-    pub mp4: String,
+    /// The fast-start MP4, once it exists.
+    pub mp4: Option<String>,
+    /// The concatenated original, once it exists.
+    pub source: Option<SourceKey>,
     pub poster: Option<String>,
 }
 
@@ -45,7 +56,8 @@ impl RenditionReader {
             .collect())
     }
 
-    /// The default MP4 and poster of a recording, or `None` while there is no MP4.
+    /// The default MP4, the original and the poster of a recording; `None` while there is
+    /// nothing to play yet.
     #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
     pub async fn playback_keys(
         &self,
@@ -54,24 +66,36 @@ impl RenditionReader {
     ) -> Result<Option<PlaybackKeys>, sqlx::Error> {
         let rows = sqlx::query!(
             r#"
-            SELECT kind::text AS "kind!", storage_key
+            SELECT kind::text AS "kind!", storage_key, meta
             FROM renditions
             WHERE workspace_id = $1 AND recording_id = $2
-              AND ((kind = 'mp4' AND variant = 'default') OR (kind = 'thumbnail' AND variant = 'poster'))
+              AND ((kind = 'mp4' AND variant = 'default')
+                OR (kind = 'source' AND variant = 'default')
+                OR (kind = 'thumbnail' AND variant = 'poster'))
             "#,
             workspace_id.into_uuid(),
             recording_id.into_uuid(),
         )
         .fetch_all(&self.pool)
         .await?;
-        let key = |kind: &str| {
-            rows.iter()
-                .find(|row| row.kind == kind)
-                .map(|row| row.storage_key.clone())
-        };
-        Ok(key("mp4").map(|mp4| PlaybackKeys {
+        let find = |kind: &str| rows.iter().find(|row| row.kind == kind);
+        let mp4 = find("mp4").map(|row| row.storage_key.clone());
+        let source = find("source").map(|row| SourceKey {
+            key: row.storage_key.clone(),
+            content_type: row
+                .meta
+                .get("content_type")
+                .and_then(|value| value.as_str())
+                .unwrap_or("video/webm")
+                .to_string(),
+        });
+        if mp4.is_none() && source.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(PlaybackKeys {
             mp4,
-            poster: key("thumbnail"),
+            source,
+            poster: find("thumbnail").map(|row| row.storage_key.clone()),
         }))
     }
 }

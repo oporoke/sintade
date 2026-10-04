@@ -49,10 +49,23 @@ pub struct WatchResponse {
     pub poster_url: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PlaybackKind {
+    /// The fast-start MP4: seekable, plays in every browser.
+    Mp4,
+    /// The original recording, offered while the MP4 is still being made.
+    Preview,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PlaybackResponse {
-    /// A signed URL for the fast-start MP4.
-    pub mp4_url: String,
+    pub kind: PlaybackKind,
+    /// A signed URL for the video.
+    pub url: String,
+    /// The video's MIME type, e.g. `video/mp4` or (for a preview) `video/webm`. A browser that
+    /// can't play it should keep showing the processing notice.
+    pub content_type: String,
     pub poster_url: Option<String>,
     /// Seconds the URLs stay valid (900).
     pub expires_in_s: u64,
@@ -231,14 +244,15 @@ pub async fn playback(
         }
         Decision::Allow => {}
     }
-    if resolved.info.state != "ready" {
+    // A recording that is still `processing` may already have its original to preview.
+    if !matches!(resolved.info.state.as_str(), "ready" | "processing") {
         return Err(
             AppError::Conflict("this recording is still being processed".to_string()).into(),
         );
     }
     let grant = state
         .delivery
-        .grant(resolved.workspace_id, resolved.recording_id)
+        .grant(resolved.workspace_id, resolved.recording_id, true)
         .await
         .map_err(|error| {
             tracing::error!(%error, "playback: could not sign");
@@ -252,7 +266,12 @@ pub async fn playback(
     Ok(no_store((
         StatusCode::OK,
         Json(PlaybackResponse {
-            mp4_url: grant.mp4_url,
+            kind: match grant.kind {
+                delivery::PlaybackKind::Mp4 => PlaybackKind::Mp4,
+                delivery::PlaybackKind::Preview => PlaybackKind::Preview,
+            },
+            url: grant.url,
+            content_type: grant.content_type,
             poster_url: grant.poster_url,
             expires_in_s: grant.expires_in_s,
             duration_ms: resolved
@@ -342,7 +361,7 @@ mod tests {
     use axum::http::{Method, StatusCode};
     use sqlx::PgPool;
 
-    use crate::routes::testkit::{call, caller, link, recording, renditions};
+    use crate::routes::testkit::{call, caller, link, recording, renditions, source_only};
 
     fn watch_uri(slug: &str) -> String {
         format!("/api/v1/s/{slug}")
@@ -381,7 +400,9 @@ mod tests {
         let play = call(&pool, None, Method::GET, &playback_uri(&slug), None).await;
         assert_eq!(play.status, StatusCode::OK, "{}", play.body);
         assert_eq!(play.body["expires_in_s"], 900);
-        let mp4 = play.body["mp4_url"].as_str().expect("mp4 url");
+        assert_eq!(play.body["kind"], "mp4");
+        assert_eq!(play.body["content_type"], "video/mp4");
+        let mp4 = play.body["url"].as_str().expect("url");
         assert!(
             mp4.contains("default.mp4") && mp4.contains("X-Amz-Expires=900"),
             "{mp4}"
@@ -480,6 +501,43 @@ mod tests {
                 "{uri}"
             );
         }
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_processing_recording_plays_its_original_until_the_mp4_exists(pool: PgPool) {
+        let owner = caller(&pool).await;
+        let id = recording(&pool, &owner, "processing").await;
+        source_only(&pool, &owner, id).await;
+        let (slug, _) = link(&pool, &owner, id, "link").await;
+
+        let play = call(&pool, None, Method::GET, &playback_uri(&slug), None).await;
+        assert_eq!(play.status, StatusCode::OK, "{}", play.body);
+        assert_eq!(play.body["kind"], "preview");
+        assert_eq!(play.body["content_type"], "video/webm");
+        assert!(
+            play.body["url"]
+                .as_str()
+                .is_some_and(|u| u.contains("source.webm"))
+        );
+        // The watch data still says processing, so the page keeps checking for the MP4.
+        let page = call(&pool, None, Method::GET, &watch_uri(&slug), None).await;
+        assert_eq!(page.body["state"], "processing");
+
+        // A private link doesn't leak the original either.
+        let (private, _) = link(&pool, &owner, id, "private").await;
+        let hidden = call(&pool, None, Method::GET, &playback_uri(&private), None).await;
+        assert_eq!(hidden.status, StatusCode::NOT_FOUND);
+
+        // A failed recording's original is not offered.
+        sqlx::query!(
+            "UPDATE recordings SET state = 'failed' WHERE id = $1",
+            id.into_uuid()
+        )
+        .execute(&pool)
+        .await
+        .expect("fail");
+        let failed = call(&pool, None, Method::GET, &playback_uri(&slug), None).await;
+        assert_eq!(failed.status, StatusCode::CONFLICT);
     }
 
     #[sqlx::test(migrations = "../../migrations")]

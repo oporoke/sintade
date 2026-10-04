@@ -2085,13 +2085,26 @@
           }
         }
       },
+      "PlaybackKind": {
+        "type": "string",
+        "enum": [
+          "mp4",
+          "preview"
+        ]
+      },
       "PlaybackResponse": {
         "type": "object",
         "required": [
-          "mp4_url",
+          "kind",
+          "url",
+          "content_type",
           "expires_in_s"
         ],
         "properties": {
+          "content_type": {
+            "type": "string",
+            "description": "The video's MIME type, e.g. `video/mp4` or (for a preview) `video/webm`. A browser that\ncan't play it should keep showing the processing notice."
+          },
           "duration_ms": {
             "type": [
               "integer",
@@ -2106,15 +2119,18 @@
             "description": "Seconds the URLs stay valid (900).",
             "minimum": 0
           },
-          "mp4_url": {
-            "type": "string",
-            "description": "A signed URL for the fast-start MP4."
+          "kind": {
+            "$ref": "#/components/schemas/PlaybackKind"
           },
           "poster_url": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "url": {
+            "type": "string",
+            "description": "A signed URL for the video."
           }
         }
       },

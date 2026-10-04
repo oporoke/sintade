@@ -2,6 +2,7 @@ import {
   ChangeDetectionStrategy,
   Component,
   ElementRef,
+  DestroyRef,
   OnInit,
   inject,
   signal,
@@ -13,6 +14,9 @@ import { PlaybackData, WatchApi, WatchData, WatchHttpError } from '../../core/wa
 import { formatDuration } from '../recorder/format';
 import { PLAYBACK_SPEEDS, keyAction, seekTarget } from './player-keys';
 
+/** How often a recording that is still processing is checked (docs/design.md §10 Watch). */
+export const STATUS_POLL_MS = 1000;
+
 type View =
   | { kind: 'loading' }
   | { kind: 'not-found' }
@@ -20,7 +24,7 @@ type View =
   | { kind: 'login' }
   | { kind: 'processing'; watch: WatchData }
   | { kind: 'failed'; watch: WatchData }
-  | { kind: 'ready'; watch: WatchData; playback: PlaybackData };
+  | { kind: 'ready'; watch: WatchData; playback: PlaybackData; preview: boolean };
 
 /**
  * The public watch page (`/s/:slug`, docs/design.md §10 Watch): poster, MP4 player with speed,
@@ -95,13 +99,19 @@ type View =
       }
       @if (page.kind === 'processing') {
         <p data-testid="watch-processing" role="status" i18n>
-          This recording is still being processed.
+          This recording is still being processed. It will appear here as soon as it's ready.
         </p>
       }
       @if (page.kind === 'failed') {
         <p data-testid="watch-failed" role="alert" i18n>This recording couldn't be processed.</p>
       }
       @if (page.kind === 'ready') {
+        @if (page.preview) {
+          <p data-testid="watch-preview" role="status" i18n>
+            Preview — the full-quality version is still being prepared. Seeking may be limited until
+            then.
+          </p>
+        }
         <div
           #player
           class="player"
@@ -116,9 +126,11 @@ type View =
             controls
             playsinline
             preload="auto"
-            [src]="page.playback.mp4_url"
+            [src]="page.playback.url"
             [attr.poster]="page.playback.poster_url"
             (loadeddata)="onFirstFrame()"
+            (loadedmetadata)="onMetadata()"
+            (pause)="onPause()"
           ></video>
           <div class="bar">
             <label>
@@ -156,6 +168,7 @@ type View =
 export class WatchPage implements OnInit {
   private readonly route = inject(ActivatedRoute);
   private readonly api = inject(WatchApi);
+  private readonly destroyRef = inject(DestroyRef);
 
   protected readonly speeds = PLAYBACK_SPEEDS;
   protected readonly view = signal<View>({ kind: 'loading' });
@@ -167,9 +180,18 @@ export class WatchPage implements OnInit {
   private readonly video = viewChild<ElementRef<HTMLVideoElement>>('video');
   private readonly player = viewChild<ElementRef<HTMLElement>>('player');
   private startedAt = 0;
+  private pollTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The MP4's grant, once it exists while the preview is still on screen. */
+  private upgrade: PlaybackData | null = null;
+  /** Where the video was when it was switched to the MP4. */
+  private resume: { at: number; play: boolean } | null = null;
 
   protected current() {
     return this.view();
+  }
+
+  constructor() {
+    this.destroyRef.onDestroy(() => this.stopPolling());
   }
 
   ngOnInit(): void {
@@ -181,25 +203,110 @@ export class WatchPage implements OnInit {
   }
 
   protected async load(): Promise<void> {
-    const slug = this.route.snapshot.paramMap.get('slug') ?? '';
+    this.stopPolling();
+    this.upgrade = null;
     this.startedAt = performance.now();
     this.firstFrameMs.set(null);
     this.view.set({ kind: 'loading' });
+    await this.refresh();
+  }
+
+  private slug(): string {
+    return this.route.snapshot.paramMap.get('slug') ?? '';
+  }
+
+  /** Reads the recording's state and picks what to show; keeps polling while it's processing. */
+  private async refresh(): Promise<void> {
+    const slug = this.slug();
     try {
       const watch = await this.api.watch(slug);
       if (watch.requirement === 'login') {
         this.view.set({ kind: 'login' });
-      } else if (watch.state === 'processing') {
-        this.view.set({ kind: 'processing', watch });
       } else if (watch.state === 'failed') {
         this.view.set({ kind: 'failed', watch });
+      } else if (watch.state === 'processing') {
+        await this.whileProcessing(slug, watch);
       } else {
-        const playback = await this.api.playback(slug);
-        this.view.set({ kind: 'ready', watch, playback });
+        await this.becameReady(slug, watch);
       }
     } catch (error) {
       const status = error instanceof WatchHttpError ? error.status : 0;
       this.view.set({ kind: status === 404 || status === 401 ? 'not-found' : 'error' });
+      this.stopPolling();
+    }
+  }
+
+  /** Processing: play the original if there is one this browser can play, else wait. */
+  private async whileProcessing(slug: string, watch: WatchData): Promise<void> {
+    const current = this.view();
+    if (current.kind === 'ready') {
+      // Already previewing: just keep checking for the MP4.
+      this.schedulePoll();
+      return;
+    }
+    try {
+      const playback = await this.api.playback(slug);
+      if (playback.kind === 'preview' && canPlay(playback.content_type)) {
+        this.view.set({ kind: 'ready', watch, playback, preview: true });
+      } else {
+        this.view.set({ kind: 'processing', watch });
+      }
+    } catch (error) {
+      if (error instanceof WatchHttpError && (error.status === 404 || error.status === 401)) {
+        throw error;
+      }
+      this.view.set({ kind: 'processing', watch });
+    }
+    this.schedulePoll();
+  }
+
+  private async becameReady(slug: string, watch: WatchData): Promise<void> {
+    const playback = await this.api.playback(slug);
+    const current = this.view();
+    if (current.kind === 'ready' && current.preview) {
+      // Swap from the preview to the MP4 without interrupting someone who is watching.
+      this.upgrade = playback;
+      this.view.set({ ...current, watch });
+      this.applyUpgradeIfIdle();
+    } else {
+      this.view.set({ kind: 'ready', watch, playback, preview: false });
+    }
+    this.stopPolling();
+  }
+
+  private schedulePoll(): void {
+    this.stopPolling();
+    this.pollTimer = setTimeout(() => void this.refresh(), STATUS_POLL_MS);
+  }
+
+  private stopPolling(): void {
+    if (this.pollTimer !== null) {
+      clearTimeout(this.pollTimer);
+      this.pollTimer = null;
+    }
+  }
+
+  protected onPause(): void {
+    this.applyUpgradeIfIdle();
+  }
+
+  private applyUpgradeIfIdle(): void {
+    const video = this.video()?.nativeElement;
+    const upgrade = this.upgrade;
+    const current = this.view();
+    if (!upgrade || current.kind !== 'ready' || (video && !video.paused && !video.ended)) {
+      return;
+    }
+    this.upgrade = null;
+    this.resume = video && video.currentTime > 0 ? { at: video.currentTime, play: false } : null;
+    this.view.set({ kind: 'ready', watch: current.watch, playback: upgrade, preview: false });
+  }
+
+  protected onMetadata(): void {
+    const video = this.video()?.nativeElement;
+    if (video && this.resume) {
+      video.currentTime = this.resume.at;
+      this.resume = null;
     }
   }
 
@@ -225,7 +332,7 @@ export class WatchPage implements OnInit {
   protected async download(): Promise<void> {
     this.downloadError.set(false);
     try {
-      const grant = await this.api.download(this.route.snapshot.paramMap.get('slug') ?? '');
+      const grant = await this.api.download(this.slug());
       const link = document.createElement('a');
       link.href = grant.url;
       link.download = grant.filename;
@@ -281,4 +388,10 @@ export class WatchPage implements OnInit {
         break;
     }
   }
+}
+
+/** Whether this browser can play a video of `contentType` (a WebM preview in Safari, say, can't). */
+function canPlay(contentType: string): boolean {
+  const probe = document.createElement('video');
+  return typeof probe.canPlayType === 'function' && probe.canPlayType(contentType) !== '';
 }

@@ -99,6 +99,34 @@ pub async fn renditions(pool: &PgPool, caller: &Caller, recording: RecordingId) 
     }
 }
 
+/// Only the original (`source.webm`) of a recording, as it is while the MP4 is being made.
+pub async fn source_only(pool: &PgPool, caller: &Caller, recording: RecordingId) {
+    let take = uuid::Uuid::now_v7();
+    sqlx::query!(
+        "INSERT INTO takes (id, workspace_id, recording_id, mime_type, has_system_audio,
+                            has_mic, has_camera, finalized_at)
+         VALUES ($1, $2, $3, 'video/webm', false, true, false, now())",
+        take,
+        caller.workspace_id.into_uuid(),
+        recording.into_uuid(),
+    )
+    .execute(pool)
+    .await
+    .expect("take");
+    sqlx::query!(
+        "INSERT INTO renditions (id, workspace_id, recording_id, take_id, kind, variant, storage_key, meta)
+         VALUES ($1, $2, $3, $4, 'source', 'default', 'ws/rec/takes/t/source.webm',
+                 '{\"content_type\": \"video/webm\"}')",
+        uuid::Uuid::now_v7(),
+        caller.workspace_id.into_uuid(),
+        recording.into_uuid(),
+        take,
+    )
+    .execute(pool)
+    .await
+    .expect("source");
+}
+
 pub struct Reply {
     pub status: StatusCode,
     pub body: Value,
