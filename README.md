@@ -286,7 +286,7 @@ See [14. Authentication](#14-authentication).
 
 Personal workspace auto-created at signup (MVP). V1: multi-workspace membership, roles, invites, shared library. V2: team spaces, admin policies, audit log.
 
-### 4.15 Billing and plans — 📋 V1 (stub in MVP)
+### 4.15 Billing and plans — 🟡 MVP stub done (Day 41); plans 📋 V1
 
 MVP: billing module returns hard-coded free-tier entitlements (50 recordings, 10 min each, up to 1080p). V1: TZS plans and seats, direct mobile money APIs (M-Pesa, Airtel Money, Mixx by Yas, HaloPesa), usage metering, proration, invoices. Endpoints: `GET /billing/entitlements`, `POST /billing/checkout`, `POST /webhooks/payments/{provider}`.
 
@@ -736,10 +736,10 @@ Validation: password ≥ 10 characters, checked against a top-100k breached-pass
 
 | Method | Path | Auth | Description | Notable statuses |
 | --- | --- | --- | --- | --- |
-| POST | `/recordings` | Session (workspace member with `CreateRecording`, CSRF) | ✅ Create recording + take in the session's workspace; returns `recording_id`, `take_id` (Day 33). Upload session and entitlement checks not yet (`upload_sessions` deferred; entitlements Day 41) | 201, 403 (CSRF or viewer role), 422 (title or MIME type), 402/403 on entitlement (`TODO: Verify`, Day 41) |
+| POST | `/recordings` | Session (workspace member with `CreateRecording`, CSRF) | ✅ Create recording + take in the session's workspace; returns `recording_id`, `take_id`, `max_duration_ms` (Day 33). Free-tier recording limit enforced under a per-workspace lock (Day 41, ADR-0011); `upload_sessions` deferred | 201, 402 (plan's recording limit reached), 403 (CSRF or viewer role), 422 (title or MIME type) |
 | POST | `/takes/{id}/chunks/{idx}/url` | Session (owner) | ✅ Presigned PUT (5 min); `?count=1..10` for batches (Day 34) | 200, 404 (not the owner's take), 409 (finalized), 422 (range) |
 | POST | `/takes/{id}/chunks/{idx}/ack` | Session (owner) | ✅ Confirm size + SHA-256; idempotent on (`take_id`, `idx`); stored object must exist with that size (Day 35) | 200 (`acked` / `already_acked`), 409 (hash mismatch or finalized), 422 (not uploaded, size mismatch, invalid) |
-| POST | `/takes/{id}/finalize` | Session (owner) | ✅ Declare chunk count and duration; recording → `processing`, `TakeFinalized` to the outbox (Day 36; `ProcessTake` enqueue arrives with M5) | 202, 409 (other count / recording closed), 422 (`missing` indexes listed) |
+| POST | `/takes/{id}/finalize` | Session (owner) | ✅ Declare chunk count and duration; recording → `processing`, `TakeFinalized` to the outbox (Day 36; `ProcessTake` enqueue arrives with M5). Takes longer than the plan allows are refused (Day 41) | 202, 402 (longer than the plan allows), 409 (other count / recording closed or abandoned), 422 (`missing` indexes listed) |
 | GET | `/takes/{id}/status` | Session (owner) | ✅ Received chunk indexes (resume), finalized flag (Day 36) | 200, 404 |
 | GET | `/recordings` | Session | List, filter, search; cursor pagination | 200 |
 | GET | `/recordings/{id}` | Session | Read | 200, 404 |
@@ -1311,7 +1311,7 @@ Error code catalogue: `TODO: Verify` (problem `type` URIs to be defined).
 | Rules | Creates recording (`state = recording`), take and upload session atomically |
 | DB changes | Insert `recordings`, `takes` (+ upload session) |
 | Side effects | None |
-| Failure | Entitlement exceeded → error (`TODO: Verify` status) |
+| Failure | Entitlement exceeded → `402` problem+json (ADR-0011) |
 
 ### Upload chunk / acknowledge
 
@@ -1408,11 +1408,11 @@ Queue: Postgres `jobs` table polled with `SELECT … FOR UPDATE SKIP LOCKED`, pe
 | `SendEmail` | Messaging events | Deliver email | MVP |
 | `DeliverWebhook` | Domain events | Outbound webhooks | V2 |
 | `PurgeRecording` / `PurgeTrash` | Trash older than 30 days | Delete rows + storage prefix | MVP |
-| `SweepStaleUploads` | Scheduled | Abandon sessions idle > 24 h; delete chunks after 7 days | MVP |
+| `SweepStaleUploads` | Scheduled (hourly) | Abandon uploads idle > 24 h; delete chunks after 7 days | MVP ✅ (Day 41) |
 | Outbox relay | Continuous | Dispatch `outbox_events` to subscribers | MVP |
 | Payment reconciliation | Daily | Reconcile operator transactions | V1 |
 
-Scheduler mechanism for periodic jobs: `TODO: Verify` (expected: jobs re-enqueued with future `run_at`).
+Scheduler mechanism for periodic jobs: each worker runs a scheduler loop that enqueues the job with `JobQueue::enqueue_unless_pending`, so only one copy is ever queued (ADR-0011).
 
 ---
 
