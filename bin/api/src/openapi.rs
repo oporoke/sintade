@@ -6,7 +6,7 @@ use crate::routes::auth::{
     __path_register, __path_reset_password,
 };
 use crate::routes::me::{__path_me, __path_update_me};
-use crate::routes::recordings::__path_create_recording;
+use crate::routes::recordings::{__path_create_recording, __path_retry_recording};
 use crate::routes::takes::{
     __path_ack_chunk, __path_finalize_take, __path_presign_chunks, __path_take_status,
 };
@@ -31,6 +31,7 @@ use crate::routes::verify_email::__path_verify_email;
         me,
         update_me,
         create_recording,
+        retry_recording,
         presign_chunks,
         ack_chunk,
         take_status,

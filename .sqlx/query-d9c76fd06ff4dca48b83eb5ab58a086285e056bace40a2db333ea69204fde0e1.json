@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE media_jobs\n        SET state = 'queued', attempts = 0, last_error = NULL, started_at = NULL,\n            finished_at = NULL\n        WHERE take_id = (\n            SELECT take_id FROM media_jobs\n            WHERE recording_id = $1 AND workspace_id = $2\n            ORDER BY created_at DESC LIMIT 1\n        )\n        RETURNING take_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "take_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "media_jobs",
+            "name": "take_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d9c76fd06ff4dca48b83eb5ab58a086285e056bace40a2db333ea69204fde0e1"
+}

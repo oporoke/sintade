@@ -489,6 +489,7 @@ const GAVE_UP: &str = "processing failed after several attempts";
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::retry::{RetryError, RetryService};
     use crate::testing::MemoryStore;
 
     const HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -627,6 +628,17 @@ mod tests {
             )
             .await
             .expect("process")
+    }
+
+    async fn pending_process_jobs(pool: &PgPool, take: TakeId) -> i64 {
+        sqlx::query_scalar!(
+            r#"SELECT count(*) AS "n!" FROM jobs
+               WHERE kind = 'ProcessTake' AND payload->>'take_id' = $1 AND done_at IS NULL"#,
+            take.to_string(),
+        )
+        .fetch_one(pool)
+        .await
+        .expect("jobs")
     }
 
     async fn job_state(pool: &PgPool, take: TakeId) -> (String, Option<String>) {
@@ -1121,6 +1133,99 @@ mod tests {
         assert_eq!(failed.len(), 1);
         assert_eq!(failed[0]["data"]["reason"], GAVE_UP);
         assert!(scratch_is_empty(&media).await);
+    }
+
+    /// Day 48's Check, "retry reprocesses": a recording that failed goes back to `processing`,
+    /// its job is reset and queued again, and the next run makes it `ready`.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn retry_requeues_a_failed_recording_and_it_becomes_ready(pool: PgPool) {
+        if !crate::testing::ffmpeg_available().await {
+            return;
+        }
+        let seeded = seed(&pool).await;
+        let broken = MediaTools {
+            ffmpeg: "/nonexistent/ffmpeg".to_string(),
+            ffprobe: "/nonexistent/ffprobe".to_string(),
+        };
+        let (failing, store) = service_with_tools(&pool, broken);
+        enqueue_fixture(&failing, &store, &seeded, "vp9_no_audio.webm").await;
+        let request = ProcessTake {
+            take_id: seeded.take,
+            workspace_id: seeded.workspace,
+        };
+        failing
+            .process_take(request, true)
+            .await
+            .expect_err("the broken tools fail");
+        assert_eq!(recording_row(&pool, &seeded).await.0, "failed");
+        assert_eq!(job_state(&pool, seeded.take).await.0, "failed");
+
+        // The tools are fixed; the creator presses retry.
+        let working = MediaService::new(
+            pool.clone(),
+            store.clone(),
+            Arc::new(CatalogService::new()),
+            Arc::new(BillingService::new()),
+            Arc::new(platform::SystemClock),
+            ScratchSpace::new(
+                std::env::temp_dir().join(format!("sintade-media-test-{}", uuid::Uuid::now_v7())),
+            ),
+            MediaTools::default(),
+        );
+        let before = pending_process_jobs(&pool, seeded.take).await;
+        RetryService::new(pool.clone(), Arc::new(CatalogService::new()))
+            .retry_processing(seeded.workspace, seeded.recording)
+            .await
+            .expect("retry");
+        assert_eq!(recording_row(&pool, &seeded).await.0, "processing");
+        assert_eq!(
+            job_state(&pool, seeded.take).await,
+            ("queued".to_string(), None)
+        );
+        assert_eq!(
+            pending_process_jobs(&pool, seeded.take).await,
+            before + 1,
+            "a fresh ProcessTake is queued"
+        );
+
+        assert_eq!(run(&working, &seeded).await, ProcessOutcome::Ran);
+        assert_eq!(recording_row(&pool, &seeded).await.0, "ready");
+        assert_eq!(events(&pool, "RecordingReady").await.len(), 1);
+    }
+
+    /// Only a `failed` recording is retried, and only inside its own workspace; nothing is
+    /// queued otherwise (a double click queues one job).
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn retry_refuses_what_is_not_failed_or_not_in_the_workspace(pool: PgPool) {
+        let seeded = seed(&pool).await;
+        let (media, store) = service_with(&pool);
+        media
+            .enqueue_processing(upload_chunks(&store, &seeded, &[1u8; 10], 10))
+            .await
+            .expect("enqueue");
+
+        // Still `processing`.
+        let retry = RetryService::new(pool.clone(), Arc::new(CatalogService::new()));
+        let not_failed = retry
+            .retry_processing(seeded.workspace, seeded.recording)
+            .await;
+        assert!(
+            matches!(not_failed, Err(RetryError::NotFailed)),
+            "{not_failed:?}"
+        );
+        // Someone else's workspace sees no such recording.
+        let foreign = retry
+            .retry_processing(WorkspaceId::new_v7(), seeded.recording)
+            .await;
+        assert!(matches!(foreign, Err(RetryError::NotFound)), "{foreign:?}");
+
+        assert_eq!(recording_row(&pool, &seeded).await.0, "processing");
+        let jobs =
+            sqlx::query_scalar!(r#"SELECT count(*) AS "n!" FROM jobs WHERE kind = 'ProcessTake'"#)
+                .fetch_one(&pool)
+                .await
+                .expect("jobs");
+        assert_eq!(jobs, 1, "only the original job");
     }
 
     /// A recording trashed while it was processing stays trashed; its renditions are kept for

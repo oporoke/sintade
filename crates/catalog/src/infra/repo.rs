@@ -168,3 +168,49 @@ pub async fn mark_failed(
         title: row.title,
     }))
 }
+
+/// How a retry found the recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reopened {
+    /// `failed` → `processing`.
+    Reopened,
+    /// The recording exists in the workspace but isn't `failed`.
+    NotFailed,
+    /// No such recording in the workspace.
+    NotFound,
+}
+
+/// `failed` → `processing` (manual retry, docs/design.md §4). One statement, so two racing
+/// retries reopen it once; the other sees `NotFailed`.
+pub async fn reopen_failed(
+    conn: &mut PgConnection,
+    id: RecordingId,
+    workspace_id: WorkspaceId,
+) -> Result<Reopened, sqlx::Error> {
+    let reopened = sqlx::query_scalar!(
+        r#"
+        UPDATE recordings SET state = 'processing', updated_at = now()
+        WHERE id = $1 AND workspace_id = $2 AND state = 'failed'
+        RETURNING id
+        "#,
+        id.into_uuid(),
+        workspace_id.into_uuid(),
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    if reopened.is_some() {
+        return Ok(Reopened::Reopened);
+    }
+    let exists = sqlx::query_scalar!(
+        r#"SELECT EXISTS(SELECT 1 FROM recordings WHERE id = $1 AND workspace_id = $2) AS "exists!""#,
+        id.into_uuid(),
+        workspace_id.into_uuid(),
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(if exists {
+        Reopened::NotFailed
+    } else {
+        Reopened::NotFound
+    })
+}

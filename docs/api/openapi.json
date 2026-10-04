@@ -500,6 +500,72 @@
         }
       }
     },
+    "/api/v1/recordings/{recording_id}/retry": {
+      "post": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "Reprocesses a recording whose processing failed (`failed → processing`, docs/design.md §4).\nThe work runs in the background; poll the recording for `ready` or `failed` again.",
+        "operationId": "retry_recording",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "description": "The failed recording",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Processing queued again"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing CSRF token, or the role can't edit recordings",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such recording in the caller's workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The recording isn't failed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/takes/{take_id}/chunks/{idx}/ack": {
       "post": {
         "tags": [

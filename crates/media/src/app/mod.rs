@@ -1,6 +1,8 @@
+mod retry;
 mod service;
 mod transcode;
 
+pub use retry::{RetryError, RetryService};
 pub use service::{
     EnqueueError, MediaService, PROCESS_TAKE, ProcessError, ProcessOutcome, ProcessTake,
     TakeFinalizedData, TakeFinalizedMessage,

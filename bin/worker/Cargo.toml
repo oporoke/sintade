@@ -9,15 +9,19 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
+async-trait = "0.1.92"
 billing = { path = "../../crates/billing" }
 catalog = { path = "../../crates/catalog" }
+identity = { path = "../../crates/identity" }
 ingest = { path = "../../crates/ingest" }
 kernel = { path = "../../crates/kernel" }
 media = { path = "../../crates/media" }
+messaging = { path = "../../crates/messaging" }
 platform = { path = "../../crates/platform" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sqlx = { version = "0.9.0", features = ["postgres", "runtime-tokio", "tls-rustls", "uuid"] }
+tenancy = { path = "../../crates/tenancy" }
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
 tracing = "0.1.44"

@@ -174,3 +174,30 @@ pub async fn mark_done(
     .await?;
     Ok(())
 }
+
+/// Puts the recording's latest take back in the queue for a manual retry: `queued`, attempts
+/// and error cleared. Returns the take, or `None` if the recording has no take to process.
+pub async fn requeue_latest_job(
+    conn: &mut PgConnection,
+    recording_id: RecordingId,
+    workspace_id: WorkspaceId,
+) -> Result<Option<TakeId>, sqlx::Error> {
+    let take = sqlx::query_scalar!(
+        r#"
+        UPDATE media_jobs
+        SET state = 'queued', attempts = 0, last_error = NULL, started_at = NULL,
+            finished_at = NULL
+        WHERE take_id = (
+            SELECT take_id FROM media_jobs
+            WHERE recording_id = $1 AND workspace_id = $2
+            ORDER BY created_at DESC LIMIT 1
+        )
+        RETURNING take_id
+        "#,
+        recording_id.into_uuid(),
+        workspace_id.into_uuid(),
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(take.map(TakeId::from_uuid))
+}

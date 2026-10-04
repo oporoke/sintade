@@ -9,6 +9,7 @@ members = [
     "crates/catalog",
     "crates/ingest",
     "crates/media",
+    "crates/messaging",
     "bin/api",
     "bin/worker",
 ]

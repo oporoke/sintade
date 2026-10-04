@@ -5,5 +5,5 @@ mod domain;
 pub mod events;
 mod infra;
 
-pub use app::{CatalogService, Measured, NewRecording, RecordingOwner};
+pub use app::{CatalogService, Measured, NewRecording, RecordingOwner, Reopened};
 pub use domain::{MAX_TITLE_CHARS, Title, TitleError};

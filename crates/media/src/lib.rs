@@ -9,7 +9,8 @@ mod testing;
 
 pub use app::{
     EnqueueError, MediaService, PROCESS_TAKE, ProcessError, ProcessOutcome, ProcessTake,
-    TakeFinalizedData, TakeFinalizedMessage, TranscodeError, TranscodeReport, transcode_file,
+    RetryError, RetryService, TakeFinalizedData, TakeFinalizedMessage, TranscodeError,
+    TranscodeReport, transcode_file,
 };
 pub use domain::probe::SourceInfo;
 pub use domain::transcode::Mp4Plan;
