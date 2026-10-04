@@ -17,17 +17,18 @@ ingest = { path = "../../crates/ingest" }
 kernel = { path = "../../crates/kernel" }
 media = { path = "../../crates/media" }
 platform = { path = "../../crates/platform" }
+sharing = { path = "../../crates/sharing" }
 tenancy = { path = "../../crates/tenancy" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sqlx = { version = "0.9.0", features = ["postgres", "runtime-tokio", "tls-rustls"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
 tower-http = { version = "0.7.1", features = ["trace", "cors", "request-id", "timeout"] }
+time = { version = "0.3.55", features = ["formatting", "parsing"] }
 tracing = "0.1.44"
 uuid = { version = "1.26.1", features = ["v4", "v7"] }
 utoipa = { version = "6", features = ["uuid"] }
 
 [dev-dependencies]
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
-time = "0.3.55"
 tower = { version = "0.5.3", features = ["util"] }

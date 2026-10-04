@@ -200,6 +200,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/recordings/{recording_id}/links": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Lists a recording's share links, newest first (revoked ones included). */
+        get: operations["list_links"];
+        put?: never;
+        /** Creates a share link for a recording in the caller's workspace. */
+        post: operations["create_link"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/recordings/{recording_id}/links/{link_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revokes a link: it stops working immediately. Idempotent. */
+        delete: operations["revoke_link"];
+        options?: never;
+        head?: never;
+        /** Changes a live link's visibility, download flag or expiry. */
+        patch: operations["update_link"];
+        trace?: never;
+    };
     "/api/v1/recordings/{recording_id}/retry": {
         parameters: {
             query?: never;
@@ -360,6 +396,13 @@ export interface components {
             /** @description Presigned `PUT` for this chunk's bytes. A bearer credential: don't log it. */
             url: string;
         };
+        CreateLinkBody: {
+            /** @description Whether viewers may download the MP4. Defaults to `false`. */
+            allow_download?: boolean | null;
+            /** @description RFC 3339 instant after which the link stops working; in the future. */
+            expires_at?: string | null;
+            visibility?: components["schemas"]["VisibilityDto"] | null;
+        };
         CreateRecordingBody: {
             has_camera: boolean;
             has_mic: boolean;
@@ -488,6 +531,21 @@ export interface components {
             password: string;
             token: string;
         };
+        ShareLinkResponse: {
+            allow_download: boolean;
+            created_at: string;
+            /** @description RFC 3339, or `null` for no expiry. */
+            expires_at?: string | null;
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            recording_id: string;
+            /** @description RFC 3339, or `null` while the link works. */
+            revoked_at?: string | null;
+            /** @description The public identifier: the watch page is `/s/{slug}`. */
+            slug: string;
+            visibility: components["schemas"]["VisibilityDto"];
+        };
         TakeStatusResponse: {
             /** @description The acknowledged chunks with the size and SHA-256 recorded for each. */
             chunks: components["schemas"]["ReceivedChunkBody"][];
@@ -499,12 +557,20 @@ export interface components {
             /** Format: uuid */
             take_id: string;
         };
+        UpdateLinkBody: {
+            allow_download?: boolean | null;
+            /** @description A future RFC 3339 instant sets the expiry; `null` removes it; absent leaves it. */
+            expires_at?: string | null;
+            visibility?: components["schemas"]["VisibilityDto"] | null;
+        };
         UpdateProfileBody: {
             display_name: string;
         };
         VerifyEmailBody: {
             token: string;
         };
+        /** @enum {string} */
+        VisibilityDto: "private" | "workspace" | "link" | "public";
     };
     responses: never;
     parameters: never;
@@ -937,6 +1003,225 @@ export interface operations {
                 };
             };
             /** @description Invalid title or MIME type */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_links: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The recording */
+                recording_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The recording's links */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareLinkResponse"][];
+                };
+            };
+            /** @description No valid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such recording in the caller's workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_link: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The recording to share */
+                recording_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateLinkBody"];
+            };
+        };
+        responses: {
+            /** @description Link created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareLinkResponse"];
+                };
+            };
+            /** @description No valid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Missing CSRF token, or the role can't edit recordings */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such recording in the caller's workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid expiry */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    revoke_link: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The recording */
+                recording_id: string;
+                /** @description The link */
+                link_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Link revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Missing CSRF token, or the role can't edit recordings */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such link in the caller's workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_link: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The recording */
+                recording_id: string;
+                /** @description The link */
+                link_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateLinkBody"];
+            };
+        };
+        responses: {
+            /** @description Link updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareLinkResponse"];
+                };
+            };
+            /** @description No valid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Missing CSRF token, or the role can't edit recordings */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such live link in the caller's workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid expiry */
             422: {
                 headers: {
                     [name: string]: unknown;

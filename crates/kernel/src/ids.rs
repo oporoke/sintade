@@ -14,3 +14,6 @@ pub type RecordingId = Id<Recording>;
 
 pub struct Take;
 pub type TakeId = Id<Take>;
+
+pub struct ShareLink;
+pub type ShareLinkId = Id<ShareLink>;

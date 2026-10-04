@@ -110,6 +110,54 @@ fn tenant_table() -> Vec<(Method, &'static str, Probe)> {
         ),
         (
             Method::POST,
+            "/api/v1/recordings/{recording_id}/links",
+            Probe::Owned(|pool, workspace_id| {
+                Box::pin(async move {
+                    let recording_id = ready_recording_in(&pool, workspace_id).await;
+                    post_json(&format!("/api/v1/recordings/{recording_id}/links"), "{}")
+                })
+            }),
+        ),
+        (
+            Method::GET,
+            "/api/v1/recordings/{recording_id}/links",
+            Probe::Owned(|pool, workspace_id| {
+                Box::pin(async move {
+                    let (recording_id, _) = link_in(&pool, workspace_id).await;
+                    get(&format!("/api/v1/recordings/{recording_id}/links"))
+                })
+            }),
+        ),
+        (
+            Method::PATCH,
+            "/api/v1/recordings/{recording_id}/links/{link_id}",
+            Probe::Owned(|pool, workspace_id| {
+                Box::pin(async move {
+                    let (recording_id, link_id) = link_in(&pool, workspace_id).await;
+                    json_request(
+                        Method::PATCH,
+                        &format!("/api/v1/recordings/{recording_id}/links/{link_id}"),
+                        r#"{"allow_download":true}"#,
+                    )
+                })
+            }),
+        ),
+        (
+            Method::DELETE,
+            "/api/v1/recordings/{recording_id}/links/{link_id}",
+            Probe::Owned(|pool, workspace_id| {
+                Box::pin(async move {
+                    let (recording_id, link_id) = link_in(&pool, workspace_id).await;
+                    json_request(
+                        Method::DELETE,
+                        &format!("/api/v1/recordings/{recording_id}/links/{link_id}"),
+                        "",
+                    )
+                })
+            }),
+        ),
+        (
+            Method::POST,
             "/api/v1/takes/{take_id}/chunks/{idx}/url",
             Probe::Owned(|pool, workspace_id| {
                 Box::pin(async move {
@@ -213,6 +261,47 @@ async fn take_owned_by(pool: &PgPool, workspace_id: WorkspaceId) -> TakeId {
         .take_id
 }
 
+/// A `ready` recording in `workspace_id`, owned by its owner.
+async fn ready_recording_in(pool: &PgPool, workspace_id: WorkspaceId) -> kernel::RecordingId {
+    let owner = workspace_owner(pool, workspace_id).await;
+    let recording_id = kernel::RecordingId::new_v7();
+    sqlx::query!(
+        "INSERT INTO recordings (id, workspace_id, owner_id, title, state)
+         VALUES ($1, $2, $3, 'Ready', 'ready')",
+        recording_id.into_uuid(),
+        workspace_id.into_uuid(),
+        owner.into_uuid(),
+    )
+    .execute(pool)
+    .await
+    .expect("recording");
+    recording_id
+}
+
+/// A recording in `workspace_id` with one live share link.
+async fn link_in(
+    pool: &PgPool,
+    workspace_id: WorkspaceId,
+) -> (kernel::RecordingId, kernel::ShareLinkId) {
+    let recording_id = ready_recording_in(pool, workspace_id).await;
+    let link_id = kernel::ShareLinkId::new_v7();
+    sqlx::query!(
+        "INSERT INTO share_links (id, workspace_id, recording_id, slug)
+         VALUES ($1, $2, $3, $4)",
+        link_id.into_uuid(),
+        workspace_id.into_uuid(),
+        recording_id.into_uuid(),
+        format!(
+            "{:0>12}",
+            link_id.into_uuid().simple().to_string().split_at(12).0
+        ),
+    )
+    .execute(pool)
+    .await
+    .expect("link");
+    (recording_id, link_id)
+}
+
 /// A recording in `workspace_id` that processing gave up on: `failed`, with the take's job.
 async fn failed_recording_in(pool: &PgPool, workspace_id: WorkspaceId) -> kernel::RecordingId {
     let take_id = take_owned_by(pool, workspace_id).await;
@@ -310,6 +399,11 @@ fn app(pool: &PgPool) -> Router {
                 pool.clone(),
                 Arc::new(catalog::CatalogService::new()),
             )),
+            sharing: Arc::new(sharing::SharingService::new(
+                pool.clone(),
+                Arc::new(catalog::CatalogService::new()),
+                test_clock(),
+            )),
             rate_limiter: test_rate_limiter(pool.clone()),
             clock: test_clock(),
         },
@@ -327,8 +421,12 @@ fn get(uri: &str) -> Request<Body> {
 
 /// A JSON POST carrying the CSRF double-submit pair, as the SPA sends it.
 fn post_json(uri: &str, body: &'static str) -> Request<Body> {
+    json_request(Method::POST, uri, body)
+}
+
+fn json_request(method: Method, uri: &str, body: &'static str) -> Request<Body> {
     Request::builder()
-        .method(Method::POST)
+        .method(method)
         .uri(uri)
         .header(axum::http::header::CONTENT_TYPE, "application/json")
         .header(

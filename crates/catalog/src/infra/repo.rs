@@ -214,3 +214,17 @@ pub async fn reopen_failed(
         Reopened::NotFound
     })
 }
+
+pub async fn exists_in_workspace(
+    conn: &mut PgConnection,
+    id: RecordingId,
+    workspace_id: WorkspaceId,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT EXISTS(SELECT 1 FROM recordings WHERE id = $1 AND workspace_id = $2) AS "exists!""#,
+        id.into_uuid(),
+        workspace_id.into_uuid(),
+    )
+    .fetch_one(&mut *conn)
+    .await
+}
