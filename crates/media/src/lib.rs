@@ -13,3 +13,4 @@ pub use app::{
 };
 pub use domain::{ChunkManifest, ManifestChunk, ManifestError};
 pub use infra::scratch::{ScratchDir, ScratchSpace};
+pub use infra::tools::MediaTools;

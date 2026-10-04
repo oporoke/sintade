@@ -1,5 +1,7 @@
 //! Media's pure rules: the chunk manifest a take is processed from. No I/O here.
 
+pub mod probe;
+
 use kernel::{RecordingId, TakeId, WorkspaceId};
 use serde::{Deserialize, Serialize};
 

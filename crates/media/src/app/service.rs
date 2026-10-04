@@ -5,10 +5,12 @@ use platform::{Clock, JobQueue, JobQueueError, ObjectStore, StorageError};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
+use crate::domain::probe::{ProbeRejection, SourceInfo, validate};
 use crate::domain::{ChunkManifest, Container, ManifestChunk, ManifestError, source_key};
 use crate::infra;
 use crate::infra::scratch::{ScratchDir, ScratchSpace};
 use crate::infra::source::{AssembleError, assemble_source};
+use crate::infra::tools::{MediaTools, Probed, ToolError, probe};
 
 /// The job kind that turns a finalized take into renditions (docs/design.md §10 Process).
 pub const PROCESS_TAKE: &str = "ProcessTake";
@@ -86,6 +88,9 @@ pub enum ProcessError {
     #[error(transparent)]
     Storage(#[from] StorageError),
 
+    #[error(transparent)]
+    Tool(#[from] ToolError),
+
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
 }
@@ -110,6 +115,12 @@ impl From<AssembleError> for StepError {
     }
 }
 
+impl From<ProbeRejection> for StepError {
+    fn from(rejection: ProbeRejection) -> Self {
+        Self::Reject(Rejection(rejection.to_string()))
+    }
+}
+
 impl<E: Into<ProcessError>> From<E> for StepError {
     fn from(error: E) -> Self {
         Self::Retry(error.into())
@@ -121,6 +132,7 @@ pub struct MediaService {
     store: Arc<dyn ObjectStore>,
     clock: Arc<dyn Clock>,
     scratch: ScratchSpace,
+    tools: MediaTools,
 }
 
 impl MediaService {
@@ -129,12 +141,14 @@ impl MediaService {
         store: Arc<dyn ObjectStore>,
         clock: Arc<dyn Clock>,
         scratch: ScratchSpace,
+        tools: MediaTools,
     ) -> Self {
         Self {
             pool,
             store,
             clock,
             scratch,
+            tools,
         }
     }
 
@@ -231,8 +245,9 @@ impl MediaService {
         }
     }
 
-    /// docs/design.md §10 Process. Steps 1–2 so far: fetch every chunk, verify it, concatenate
-    /// into the source file and store it. Probing and renditions follow (Days 45–47).
+    /// docs/design.md §10 Process. Steps 1–3 so far: fetch every chunk, verify it, concatenate
+    /// into the source file and store it (kept even if rejected, for support), then validate it
+    /// with ffprobe. Renditions follow (Days 46–47).
     async fn run_pipeline(
         &self,
         job: &infra::MediaJobRow,
@@ -247,7 +262,32 @@ impl MediaService {
             .put_file(&key, &source, container.content_type())
             .await?;
         tracing::info!(bytes, key = %key, "source assembled and stored");
+
+        let info = self.validate_source(&source, container).await?;
+        tracing::info!(
+            video = %info.video_codec,
+            audio = info.audio_codec.as_deref().unwrap_or("none"),
+            width = info.width,
+            height = info.height,
+            remux = info.is_remuxable(),
+            "source validated"
+        );
         Ok(())
+    }
+
+    /// §10 Process step 3: ffprobe, then the acceptance rules (`domain::probe::validate`).
+    async fn validate_source(
+        &self,
+        source: &std::path::Path,
+        container: Container,
+    ) -> Result<SourceInfo, StepError> {
+        match probe(&self.tools, source).await? {
+            Probed::Unreadable { detail } => {
+                tracing::warn!(%detail, "ffprobe can't read the source");
+                Err(ProbeRejection::Unreadable.into())
+            }
+            Probed::Readable(report) => Ok(validate(&report, container)?),
+        }
     }
 }
 
@@ -352,6 +392,7 @@ mod tests {
             store.clone(),
             Arc::new(platform::SystemClock),
             ScratchSpace::new(root),
+            MediaTools::default(),
         );
         (media, store)
     }
@@ -476,10 +517,14 @@ mod tests {
     /// scratch directory is gone afterwards.
     #[sqlx::test(migrations = "../../migrations")]
     async fn process_take_starts_and_cleans_its_scratch_dir(pool: PgPool) {
+        if !crate::testing::ffmpeg_available().await {
+            return;
+        }
         let seeded = seed(&pool).await;
         let (media, store) = service_with(&pool);
+        let webm = crate::testing::fixture("real_chrome_vp9_opus_10s.webm").await;
         media
-            .enqueue_processing(upload_chunks(&store, &seeded, &[9u8; 1_500], 1_000))
+            .enqueue_processing(upload_chunks(&store, &seeded, &webm, 64 * 1024))
             .await
             .expect("enqueue");
 
@@ -534,11 +579,14 @@ mod tests {
     /// Day 44: the chunks, verified, concatenate into the stored source, byte for byte.
     #[sqlx::test(migrations = "../../migrations")]
     async fn chunks_are_verified_and_concatenated_into_the_stored_source(pool: PgPool) {
+        if !crate::testing::ffmpeg_available().await {
+            return;
+        }
         let seeded = seed(&pool).await;
         let (media, store) = service_with(&pool);
-        let original: Vec<u8> = (0..10_000u32).map(|n| (n * 7 % 256) as u8).collect();
+        let original = crate::testing::fixture("real_firefox_vp8_opus_10s.webm").await;
         media
-            .enqueue_processing(upload_chunks(&store, &seeded, &original, 3_000))
+            .enqueue_processing(upload_chunks(&store, &seeded, &original, 100 * 1024))
             .await
             .expect("enqueue");
 
@@ -618,6 +666,56 @@ mod tests {
         assert!(
             crate::testing::decodes_fully(&reassembled).await,
             "the reassembled source plays to the end"
+        );
+        assert!(scratch_is_empty(&media).await);
+    }
+
+    /// Day 45's Check: bytes that only claim to be a WebM are refused with a clear reason,
+    /// and the job ends (no retries).
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn not_a_video_is_rejected_cleanly(pool: PgPool) {
+        if !crate::testing::ffmpeg_available().await {
+            return;
+        }
+        let seeded = seed(&pool).await;
+        let (media, store) = service_with(&pool);
+        let bytes = crate::testing::fixture("not_a_video.webm").await;
+        media
+            .enqueue_processing(upload_chunks(&store, &seeded, &bytes, 1_000))
+            .await
+            .expect("enqueue");
+
+        assert_eq!(run(&media, &seeded).await, ProcessOutcome::Rejected);
+        assert_eq!(
+            job_state(&pool, seeded.take).await,
+            (
+                "failed".to_string(),
+                Some("the recording isn't a readable video file".to_string())
+            )
+        );
+        // Kept for support to look at.
+        assert_eq!(store.bytes(&source_of(&seeded)), Some(bytes));
+        assert!(scratch_is_empty(&media).await);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_take_declared_as_webm_but_holding_mp4_is_rejected(pool: PgPool) {
+        if !crate::testing::ffmpeg_available().await {
+            return;
+        }
+        let seeded = seed(&pool).await;
+        let (media, store) = service_with(&pool);
+        let mp4 = crate::testing::fixture("h264_aac_safari_20s.mp4").await;
+        media
+            .enqueue_processing(upload_chunks(&store, &seeded, &mp4, 256 * 1024))
+            .await
+            .expect("enqueue");
+
+        assert_eq!(run(&media, &seeded).await, ProcessOutcome::Rejected);
+        let reason = job_state(&pool, seeded.take).await.1.expect("reason");
+        assert!(
+            reason.starts_with("the recording is in an unexpected format"),
+            "{reason}"
         );
         assert!(scratch_is_empty(&media).await);
     }

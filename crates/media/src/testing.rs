@@ -156,3 +156,16 @@ pub async fn decodes_fully(path: &Path) -> bool {
         .expect("run ffmpeg");
     output.status.success() && output.stderr.is_empty()
 }
+
+/// A golden fixture from `docs/fixtures/` (docs/design.md §18).
+pub fn fixture_path(name: &str) -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/fixtures")
+        .join(name)
+}
+
+pub async fn fixture(name: &str) -> Vec<u8> {
+    tokio::fs::read(fixture_path(name))
+        .await
+        .unwrap_or_else(|error| panic!("fixture {name}: {error}"))
+}

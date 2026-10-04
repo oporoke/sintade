@@ -17,6 +17,9 @@ pub struct Config {
     /// Local disk for media processing (`WORKER_SCRATCH_DIR`, default: a `sintade-scratch`
     /// directory under the OS temp dir). Worker only.
     pub worker_scratch_dir: std::path::PathBuf,
+    /// `FFMPEG_PATH` / `FFPROBE_PATH` (default: `ffmpeg` / `ffprobe` on `PATH`). Worker only.
+    pub ffmpeg_path: String,
+    pub ffprobe_path: String,
 }
 
 impl Config {
@@ -39,8 +42,17 @@ impl Config {
                 .filter(|value| !value.trim().is_empty())
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| std::env::temp_dir().join("sintade-scratch")),
+            ffmpeg_path: env_or("FFMPEG_PATH", "ffmpeg"),
+            ffprobe_path: env_or("FFPROBE_PATH", "ffprobe"),
         })
     }
+}
+
+fn env_or(key: &str, default: &str) -> String {
+    std::env::var(key)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| default.to_string())
 }
 
 fn env_var(key: &'static str) -> Result<String, PlatformError> {

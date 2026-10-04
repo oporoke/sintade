@@ -11,7 +11,7 @@ use handlers::process_take::ProcessTakeHandler;
 use handlers::send_email::SendEmailHandler;
 use handlers::sweep_stale_uploads::SweepStaleUploadsHandler;
 use ingest::IngestService;
-use media::{MediaService, ScratchSpace, TakeFinalizedMessage};
+use media::{MediaService, MediaTools, ScratchSpace, TakeFinalizedMessage};
 use platform::{JobQueue, Mailer, SmtpMailer};
 use relay::{OutboxRelay, SubscriberError, SubscriberRegistry};
 use sqlx::PgPool;
@@ -57,7 +57,17 @@ async fn main() -> anyhow::Result<()> {
         Ok(removed) => tracing::info!(removed, "swept leftover scratch dirs"),
         Err(error) => tracing::warn!(%error, "could not sweep the scratch dir"),
     }
-    let media = Arc::new(MediaService::new(pool.clone(), store, clock, scratch));
+    let tools = MediaTools {
+        ffmpeg: config.ffmpeg_path.clone(),
+        ffprobe: config.ffprobe_path.clone(),
+    };
+    let media = Arc::new(MediaService::new(
+        pool.clone(),
+        store,
+        clock,
+        scratch,
+        tools,
+    ));
     let worker_id = format!("worker-{}", std::process::id());
     tracing::info!(worker_id, "worker started");
 
