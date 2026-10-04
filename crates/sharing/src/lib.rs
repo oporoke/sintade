@@ -6,4 +6,4 @@ pub mod events;
 mod infra;
 
 pub use app::{LinkPatch, NewLink, SharingError, SharingService};
-pub use domain::{SLUG_LEN, ShareLinkView, Slug, Visibility};
+pub use domain::{Decision, SLUG_LEN, ShareLinkView, Slug, Viewer, Visibility, decide};

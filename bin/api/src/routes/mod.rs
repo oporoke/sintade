@@ -3,7 +3,10 @@ pub mod links;
 pub mod me;
 pub mod recordings;
 pub mod takes;
+#[cfg(test)]
+pub mod testkit;
 pub mod verify_email;
+pub mod watch;
 
 use axum::handler::Handler;
 use axum::http::Method;
@@ -28,6 +31,10 @@ pub enum Access {
     Public,
     /// Needs a session but touches only the caller's own user data (`SessionClaims`).
     Session,
+    /// Reached by a share link's slug, with or without a session. What the viewer may see is
+    /// decided by `sharing::decide`; whatever they may not see is `404`. The tenant-isolation
+    /// harness checks a private link against another tenant and an anonymous visitor.
+    Viewer,
     /// Touches workspace-owned resources (`WorkspaceContext`). Needs a cross-tenant probe in
     /// the tenant-isolation table.
     Workspace,
@@ -67,7 +74,7 @@ impl Route {
 
 /// The single list of API routes. `build_router` mounts exactly these.
 pub fn table() -> Vec<Route> {
-    use Access::{Public, Session, Workspace};
+    use Access::{Public, Session, Viewer, Workspace};
     vec![
         Route::new(Method::GET, "/healthz", Public, healthz),
         Route::new(Method::GET, "/readyz", Public, readyz),
@@ -117,6 +124,13 @@ pub fn table() -> Vec<Route> {
             "/api/v1/recordings/{recording_id}/retry",
             Workspace,
             recordings::retry_recording,
+        ),
+        Route::new(Method::GET, "/api/v1/s/{slug}", Viewer, watch::watch),
+        Route::new(
+            Method::GET,
+            "/api/v1/s/{slug}/playback",
+            Viewer,
+            watch::playback,
         ),
         Route::new(
             Method::POST,

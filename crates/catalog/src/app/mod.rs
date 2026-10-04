@@ -1,3 +1,3 @@
 mod service;
 
-pub use service::{CatalogService, Measured, NewRecording, RecordingOwner, Reopened};
+pub use service::{CatalogService, Measured, NewRecording, RecordingOwner, Reopened, WatchInfo};

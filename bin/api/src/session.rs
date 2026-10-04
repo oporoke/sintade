@@ -55,6 +55,23 @@ impl FromRequestParts<AppState> for SessionClaims {
     }
 }
 
+/// A session if the caller has a valid one, `None` otherwise: for public routes (the watch
+/// page) that treat signed-in viewers differently but never reject anonymous ones.
+pub struct MaybeSession(pub Option<SessionClaims>);
+
+impl FromRequestParts<AppState> for MaybeSession {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(
+            SessionClaims::from_request_parts(parts, state).await.ok(),
+        ))
+    }
+}
+
 /// Builds a `Set-Cookie` header value. `HttpOnly; Secure; SameSite=Lax` per US-02. Not relaxed
 /// for local dev: WebKit drops `Secure` cookies over plain `http://localhost`, so the dev SPA
 /// runs over HTTPS with a same-origin `/api` proxy instead (ADR-0006).

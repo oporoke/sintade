@@ -3,7 +3,7 @@ use sqlx::PgConnection;
 
 use crate::domain::Title;
 use crate::infra;
-pub use crate::infra::{RecordingOwner, Reopened};
+pub use crate::infra::{RecordingOwner, Reopened, WatchInfo};
 
 /// A recording to create, in state `recording`, with its first take already chosen.
 #[derive(Debug, Clone)]
@@ -114,6 +114,18 @@ impl CatalogService {
         workspace_id: WorkspaceId,
     ) -> Result<Option<RecordingOwner>, sqlx::Error> {
         infra::mark_failed(conn, id, workspace_id).await
+    }
+
+    /// The recording as a watch page shows it; `None` if it doesn't exist in the workspace or
+    /// is in the trash.
+    #[tracing::instrument(skip_all, fields(recording_id = %id, workspace_id = %workspace_id))]
+    pub async fn watch_info(
+        &self,
+        conn: &mut PgConnection,
+        id: RecordingId,
+        workspace_id: WorkspaceId,
+    ) -> Result<Option<WatchInfo>, sqlx::Error> {
+        infra::watch_info(conn, id, workspace_id).await
     }
 
     /// Whether the recording exists in the workspace (trashed ones included: the caller decides

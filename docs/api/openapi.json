@@ -860,6 +860,110 @@
         }
       }
     },
+    "/api/v1/s/{slug}": {
+      "get": {
+        "tags": [
+          "watch"
+        ],
+        "summary": "The watch page's data for a share link: title, state, poster and what the viewer must do\nfirst. A link the viewer can't see is `404`, like a link that doesn't exist.",
+        "operationId": "watch",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "description": "The link's slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Watch page data, or a login requirement",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such live link, or not for this viewer",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/s/{slug}/playback": {
+      "get": {
+        "tags": [
+          "watch"
+        ],
+        "summary": "Signed MP4 (and poster) URLs, valid 15 minutes, for a viewer the link admits.",
+        "operationId": "playback",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "description": "The link's slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Signed URLs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybackResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in to watch this link",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such live link, or not for this viewer",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The MP4 isn't ready yet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/takes/{take_id}/chunks/{idx}/ack": {
       "post": {
         "tags": [
@@ -1616,6 +1720,39 @@
           }
         }
       },
+      "PlaybackResponse": {
+        "type": "object",
+        "required": [
+          "mp4_url",
+          "expires_in_s"
+        ],
+        "properties": {
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "expires_in_s": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds the URLs stay valid (900).",
+            "minimum": 0
+          },
+          "mp4_url": {
+            "type": "string",
+            "description": "A signed URL for the fast-start MP4."
+          },
+          "poster_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "PresignChunksResponse": {
         "type": "object",
         "required": [
@@ -1711,6 +1848,13 @@
             "type": "string"
           }
         }
+      },
+      "Requirement": {
+        "type": "string",
+        "enum": [
+          "none",
+          "login"
+        ]
       },
       "ResetPasswordBody": {
         "type": "object",
@@ -1872,6 +2016,86 @@
           "workspace",
           "link",
           "public"
+        ]
+      },
+      "WatchResponse": {
+        "type": "object",
+        "required": [
+          "requirement"
+        ],
+        "properties": {
+          "allow_download": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339."
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "poster_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A signed poster URL (15 minutes) once the poster exists."
+          },
+          "requirement": {
+            "$ref": "#/components/schemas/Requirement"
+          },
+          "state": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WatchState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Absent while a `login` requirement is unmet."
+          },
+          "width": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "WatchState": {
+        "type": "string",
+        "enum": [
+          "processing",
+          "ready",
+          "failed"
         ]
       }
     }
