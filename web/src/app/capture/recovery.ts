@@ -1,5 +1,13 @@
 import { ChunkStore } from './chunk-store';
-import { FinalizedTake, UploadApi, UploadProgress, Uploader, UploaderOptions } from './uploader';
+import {
+  FinalizedTake,
+  UploadApi,
+  UploadError,
+  UploadHttpError,
+  UploadProgress,
+  Uploader,
+  UploaderOptions,
+} from './uploader';
 
 /** What creating a recording needs (`POST /recordings`), for takes recorded offline. */
 export interface NewRecording {
@@ -77,7 +85,22 @@ export async function uploadRecoveredTake(options: RecoverOptions): Promise<Reco
     await uploader.resume(chunkCount);
     const finalized = await uploader.finalize(chunkCount, meta?.durationMs ?? 0);
     return { ...finalized, take_id: serverTakeId, chunkCount };
+  } catch (error) {
+    // The server abandoned the take after a day without uploads (`SweepStaleUploads`), so it
+    // no longer accepts it (409). The chunks are still here: upload them as a new recording.
+    if (meta?.serverTakeId && isRecordingClosed(error)) {
+      const detached = { ...meta };
+      delete detached.serverTakeId;
+      await store.putMeta(detached);
+      return uploadRecoveredTake(options);
+    }
+    throw error;
   } finally {
     subscription?.unsubscribe();
   }
+}
+
+function isRecordingClosed(error: unknown): boolean {
+  const reason = error instanceof UploadError ? error.reason : error;
+  return reason instanceof UploadHttpError && reason.source === 'api' && reason.status === 409;
 }

@@ -174,6 +174,26 @@ describe('uploadRecoveredTake', () => {
     expect(server.finalized?.takeId).toBe('server-take-1');
   });
 
+  it('re-uploads as a new recording when the server abandoned the take', async () => {
+    const store = new MemoryStore();
+    const server = new FakeServer();
+    await orphan(store, [0, 1], { serverTakeId: 'server-take-9' });
+    const finalize = server.finalize;
+    server.finalize = async (takeId, chunkCount, durationMs) => {
+      if (takeId === 'server-take-9') {
+        throw new UploadHttpError('api', 409, 'the recording no longer accepts uploads');
+      }
+      return finalize(takeId, chunkCount, durationMs);
+    };
+
+    const result = await uploadRecoveredTake({ api: server, store, takeId: LOCAL, uploader: { put } });
+
+    expect(server.created).toBe(1);
+    expect(result.take_id).toBe('server-take-1');
+    expect(server.finalized).toEqual({ takeId: 'server-take-1', chunkCount: 2, durationMs: 7_000 });
+    expect(await store.indexes(LOCAL)).toEqual([]);
+  });
+
   it('uploads the contiguous run only, like a recovered file plays', async () => {
     const store = new MemoryStore();
     const server = new FakeServer();
