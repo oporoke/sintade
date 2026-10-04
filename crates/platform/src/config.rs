@@ -20,6 +20,11 @@ pub struct Config {
     /// `FFMPEG_PATH` / `FFPROBE_PATH` (default: `ffmpeg` / `ffprobe` on `PATH`). Worker only.
     pub ffmpeg_path: String,
     pub ffprobe_path: String,
+    /// `WORKER_CONCURRENCY` (default 2): jobs one worker runs in parallel. Worker only.
+    pub worker_concurrency: usize,
+    /// `WORKER_PROCESS_TAKE_CONCURRENCY` (default 1): how many of those may be `ProcessTake`.
+    /// FFmpeg uses every core, so a second transcode just slows both. Worker only.
+    pub worker_process_take_concurrency: usize,
 }
 
 impl Config {
@@ -44,6 +49,8 @@ impl Config {
                 .unwrap_or_else(|| std::env::temp_dir().join("sintade-scratch")),
             ffmpeg_path: env_or("FFMPEG_PATH", "ffmpeg"),
             ffprobe_path: env_or("FFPROBE_PATH", "ffprobe"),
+            worker_concurrency: env_count("WORKER_CONCURRENCY", 2),
+            worker_process_take_concurrency: env_count("WORKER_PROCESS_TAKE_CONCURRENCY", 1),
         })
     }
 }
@@ -53,6 +60,15 @@ fn env_or(key: &str, default: &str) -> String {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| default.to_string())
+}
+
+/// A positive count; unset, empty, zero or unparsable falls back to `default`.
+fn env_count(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .filter(|count| *count > 0)
+        .unwrap_or(default)
 }
 
 fn env_var(key: &'static str) -> Result<String, PlatformError> {

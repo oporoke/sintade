@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::domain::Container;
 use crate::domain::probe::{ProbeRejection, SourceInfo, validate};
-use crate::domain::transcode::{Mp4Plan, ffmpeg_deadline, mp4_args, poster_args};
+use crate::domain::transcode::{Mp4Plan, ffmpeg_deadline, mp4_args, poster_args, x264_preset};
 use crate::infra::tools::{MediaTools, Probed, ToolError, probe, run, run_ffmpeg};
 
 /// What making the MP4 produced.
@@ -35,7 +35,7 @@ pub enum TranscodeError {
 /// §10 Process steps 3–4 on local files: validate `input` with ffprobe, then write the
 /// fast-start MP4 to `output` (a remux for Safari's H.264/AAC, otherwise a transcode capped at
 /// `max_height`), and check the result reads back as H.264 with the right size.
-/// `expected_ms` is the recording's length, for progress and the deadline.
+/// `expected_ms` is the recording's length, for progress and the deadline (0: use the probed one).
 pub async fn transcode_file(
     tools: &MediaTools,
     input: &Path,
@@ -51,6 +51,13 @@ pub async fn transcode_file(
         }
         Probed::Readable(report) => validate(&report, container)?,
     };
+    // A caller that doesn't know the length (the `worker transcode` command) gets the one
+    // the container records, so progress and the deadline still scale with the recording.
+    let expected_ms = if expected_ms == 0 {
+        source.duration_ms.unwrap_or(0)
+    } else {
+        expected_ms
+    };
     let plan = Mp4Plan::choose(&source, max_height);
     tracing::info!(
         video = %source.video_codec,
@@ -62,7 +69,7 @@ pub async fn transcode_file(
     );
     run_ffmpeg(
         tools,
-        mp4_args(input, output, &source, plan),
+        mp4_args(input, output, &source, plan, x264_preset(expected_ms)),
         expected_ms,
         ffmpeg_deadline(expected_ms),
     )

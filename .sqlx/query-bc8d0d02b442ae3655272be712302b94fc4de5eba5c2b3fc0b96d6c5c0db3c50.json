@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE jobs\n            SET locked_by = $1, locked_until = now() + make_interval(secs => $2)\n            WHERE id = (\n                SELECT id FROM jobs\n                WHERE done_at IS NULL\n                  AND dead_at IS NULL\n                  AND run_at <= now()\n                  AND (locked_until IS NULL OR locked_until < now())\n                ORDER BY run_at\n                FOR UPDATE SKIP LOCKED\n                LIMIT 1\n            )\n            RETURNING id, kind, payload, attempts, max_attempts\n            ",
+  "query": "\n            UPDATE jobs\n            SET locked_by = $1, locked_until = now() + make_interval(secs => $2)\n            WHERE id = (\n                SELECT id FROM jobs\n                WHERE done_at IS NULL\n                  AND dead_at IS NULL\n                  AND run_at <= now()\n                  AND (locked_until IS NULL OR locked_until < now())\n                  AND ($3::text[] IS NULL OR kind = ANY($3))\n                ORDER BY run_at\n                FOR UPDATE SKIP LOCKED\n                LIMIT 1\n            )\n            RETURNING id, kind, payload, attempts, max_attempts\n            ",
   "describe": {
     "columns": [
       {
@@ -62,7 +62,8 @@
     "parameters": {
       "Left": [
         "Text",
-        "Float8"
+        "Float8",
+        "TextArray"
       ]
     },
     "nullable": [
@@ -73,5 +74,5 @@
       false
     ]
   },
-  "hash": "120c1d477f1f983e206be81ccd66fce4e63afcb4f18d860957cf224ed45c1a7c"
+  "hash": "bc8d0d02b442ae3655272be712302b94fc4de5eba5c2b3fc0b96d6c5c0db3c50"
 }

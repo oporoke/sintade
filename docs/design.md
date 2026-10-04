@@ -1272,6 +1272,7 @@ Verify: log in as the demo user, record 10 s, stop, and the recording plays with
 | `SMTP_URL` | `smtp://localhost:1025` | Mailpit locally |
 | `FFMPEG_PATH` | `ffmpeg` | Worker only |
 | `WORKER_CONCURRENCY` | `2` | Parallel jobs per worker |
+| `WORKER_PROCESS_TAKE_CONCURRENCY` | `1` | Of those, how many may run `ProcessTake` (FFmpeg uses every core) |
 | `RUST_LOG` | `info,api=debug,worker=debug` |  |
 
 ### Everyday commands

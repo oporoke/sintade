@@ -69,6 +69,11 @@ impl HandlerRegistry {
         );
     }
 
+    /// The kinds this worker can run.
+    pub fn kinds(&self) -> Vec<&'static str> {
+        self.handlers.keys().copied().collect()
+    }
+
     pub async fn dispatch(
         &self,
         kind: &str,
