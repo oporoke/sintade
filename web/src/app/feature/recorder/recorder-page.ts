@@ -254,6 +254,7 @@ const ANY_MIC = 'any';
           <p
             data-testid="recorder-done-summary"
             [attr.data-duration-ms]="take.durationMs"
+            [attr.data-chunk-count]="take.chunkCount"
             [attr.data-take-id]="take.takeId"
             [attr.data-uploaded]="uploaded() ? 'true' : 'false'"
             [attr.data-recording-id]="uploaded()?.recordingId"
