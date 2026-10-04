@@ -25,6 +25,8 @@ import {
   toCaptureError,
 } from '../../capture';
 import { currentBrowser } from '../../core/browser';
+import { SHARE_API, shareUrl } from '../../core/share-api.service';
+import { ShareDialog } from '../share/share-dialog';
 import { CapabilityService } from '../../core/capability.service';
 import { CreateRecordingResponse } from '../../core/ingest-api.service';
 import {
@@ -76,7 +78,7 @@ const ANY_MIC = 'any';
 @Component({
   selector: 'app-recorder-page',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [Countdown],
+  imports: [Countdown, ShareDialog],
   template: `
     <h1 i18n>New recording</h1>
     @if (viewOnly) {
@@ -265,6 +267,37 @@ const ANY_MIC = 'any';
           @if (uploadNotice(); as notice) {
             <p data-testid="recorder-upload-notice">{{ notice }}</p>
           }
+          @if (uploaded(); as done) {
+            @if (shareLink(); as link) {
+              <p
+                data-testid="recorder-share-link"
+                [attr.data-copied]="link.copied ? 'true' : 'false'"
+              >
+                @if (link.copied) {
+                  <span i18n>Link copied:</span>
+                } @else {
+                  <span i18n>Your link:</span>
+                }
+                <a [href]="link.url" target="_blank" rel="noopener">{{ link.url }}</a>
+                @if (!link.copied) {
+                  <button
+                    type="button"
+                    (click)="copyShareLink()"
+                    data-testid="recorder-copy-link"
+                    i18n
+                  >
+                    Copy link
+                  </button>
+                }
+              </p>
+            } @else if (shareError()) {
+              <p data-testid="recorder-share-error">{{ shareError() }}</p>
+            }
+            <button type="button" (click)="shareDialog().open()" data-testid="recorder-share" i18n>
+              Share…
+            </button>
+            <app-share-dialog #shareDialogRef [recordingId]="done.recordingId" />
+          }
           @if (downloadUrl(); as url) {
             <a [href]="url" [download]="downloadName()" data-testid="recorder-download" i18n>
               Save a copy
@@ -301,6 +334,7 @@ export class RecorderPage {
   private readonly chunkStore = inject(CHUNK_STORE);
   private readonly startTake = inject(START_TAKE);
   private readonly recordingsApi = inject(RECORDINGS_API);
+  private readonly shareApi = inject(SHARE_API);
   private uploader: Uploader | null = null;
   /** `performance.now()` when Stop was pressed. */
   private stopPressedAt: number | null = null;
@@ -313,6 +347,7 @@ export class RecorderPage {
   private destroyed = false;
 
   protected readonly countdown = viewChild.required<Countdown>('countdownRef');
+  protected readonly shareDialog = viewChild.required<ShareDialog>('shareDialogRef');
   private readonly pauseButton = viewChild<ElementRef<HTMLButtonElement>>('pauseButton');
   private readonly doneHeading = viewChild<ElementRef<HTMLElement>>('doneHeading');
 
@@ -335,6 +370,9 @@ export class RecorderPage {
   protected readonly downloadUrl = signal<string | null>(null);
   protected readonly upload = signal<UploadProgress | null>(null);
   protected readonly uploaded = signal<UploadedTake | null>(null);
+  /** The link created when the recording was uploaded, and whether it reached the clipboard. */
+  protected readonly shareLink = signal<{ url: string; copied: boolean } | null>(null);
+  protected readonly shareError = signal<string | null>(null);
   protected readonly uploadNotice = signal<string | null>(null);
   /** The plan's limits: recording refused (50 reached) or the take stopped at its length cap. */
   protected readonly limitNotice = signal<string | null>(null);
@@ -562,7 +600,11 @@ export class RecorderPage {
         session.elapsed$(TIMER_INTERVAL_MS).subscribe((ms) => {
           this.elapsedMs.set(ms);
           // Stop just inside the plan's limit, so finalize accepts the take.
-          if (maxDurationMs !== null && ms >= maxDurationMs - LIMIT_MARGIN_MS && !this.limitNotice()) {
+          if (
+            maxDurationMs !== null &&
+            ms >= maxDurationMs - LIMIT_MARGIN_MS &&
+            !this.limitNotice()
+          ) {
             this.limitNotice.set(
               $localize`Your plan allows recordings of up to ${formatDuration(maxDurationMs)}:limit:, so this one stopped there.`,
             );
@@ -607,6 +649,8 @@ export class RecorderPage {
     this.releaseDownload();
     this.result.set(null);
     this.uploaded.set(null);
+    this.shareLink.set(null);
+    this.shareError.set(null);
     this.uploadNotice.set(null);
     this.limitNotice.set(null);
     this.upload.set(null);
@@ -632,6 +676,7 @@ export class RecorderPage {
           recordingId: recording_id,
           stopToFinalizeMs: Math.round(performance.now() - stoppedAt),
         });
+        void this.shareAndCopy(recording_id);
       } catch {
         this.uploadNotice.set(
           $localize`The upload couldn't be completed. The recording is kept on this device and will be offered for upload the next time you open Sintade.`,
@@ -654,6 +699,26 @@ export class RecorderPage {
       this.downloadUrl.set(URL.createObjectURL(blob));
     } catch {
       // The take is safe on the device either way; only the convenience download is missing.
+    }
+  }
+
+  /** The link is ready as soon as the recording is: create it and put it on the clipboard. */
+  private async shareAndCopy(recordingId: string): Promise<void> {
+    try {
+      const link = await this.shareApi.create(recordingId, { visibility: 'link' });
+      const url = shareUrl(link.slug);
+      this.shareLink.set({ url, copied: await writeClipboard(url) });
+    } catch {
+      this.shareError.set(
+        $localize`The recording is uploaded, but we couldn't create its link. Use Share… to try again.`,
+      );
+    }
+  }
+
+  protected async copyShareLink(): Promise<void> {
+    const link = this.shareLink();
+    if (link && (await writeClipboard(link.url))) {
+      this.shareLink.set({ ...link, copied: true });
     }
   }
 
@@ -727,4 +792,14 @@ function describeDisplay(stream: MediaStream): LiveSource {
     label: video?.label || $localize`Screen`,
     detail: `${settings.width ?? '?'}×${settings.height ?? '?'}, ${audio}`,
   };
+}
+
+/** Browsers may refuse the clipboard outside a user gesture (Safari): report, don't throw. */
+async function writeClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
 }

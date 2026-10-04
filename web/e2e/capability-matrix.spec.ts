@@ -2,7 +2,9 @@ import { expect, test } from '@playwright/test';
 
 const CAPABILITIES = ['getDisplayMedia', 'mediaRecorderWebm', 'opfs', 'systemAudio'] as const;
 
-test('debug page renders a capability matrix reflecting this engine', async ({ page }, testInfo) => {
+test('debug page renders a capability matrix reflecting this engine', async ({
+  page,
+}, testInfo) => {
   await page.goto('/debug');
   await expect(page.getByTestId('capability-matrix')).toBeVisible();
 

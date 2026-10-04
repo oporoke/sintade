@@ -23,10 +23,7 @@ test('Esc skips the countdown', async ({ page }) => {
   await expect(page.getByTestId('countdown-number')).toHaveCount(0);
 });
 
-test('the device-check meter moves with the microphone', async ({
-  page,
-  request,
-}) => {
+test('the device-check meter moves with the microphone', async ({ page, request }) => {
   await signUpAndLogIn(page, request);
   await page.goto('/record');
 

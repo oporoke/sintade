@@ -24,6 +24,7 @@ import {
   SOURCE_MANAGER,
   START_TAKE,
 } from '../../core/capture.tokens';
+import { SHARE_API, SharePort } from '../../core/share-api.service';
 import { RecorderPage } from './recorder-page';
 
 function track(kind: 'audio' | 'video', label: string, settings: MediaTrackSettings = {}) {
@@ -295,7 +296,7 @@ describe('RecorderPage control bar', () => {
   });
   afterEach(() => vi.useRealTimers());
 
-  async function recording(api: RecordingsApi = offlineApi()) {
+  async function recording(api: RecordingsApi = offlineApi(), share: SharePort = fakeShare()) {
     const take = fakeSession();
     const startTake = vi.fn().mockResolvedValue(take.session);
     const store = {
@@ -313,6 +314,7 @@ describe('RecorderPage control bar', () => {
         { provide: CHUNK_STORE, useValue: Promise.resolve(store) },
         { provide: START_TAKE, useValue: startTake },
         { provide: RECORDINGS_API, useValue: api },
+        { provide: SHARE_API, useValue: share },
       ],
     });
     const fixture = TestBed.createComponent(RecorderPage);
@@ -435,6 +437,61 @@ describe('RecorderPage control bar', () => {
       );
     });
 
+    describe('the share link', () => {
+      let writeText: ReturnType<typeof vi.fn>;
+      beforeEach(() => {
+        writeText = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(navigator, 'clipboard', {
+          value: { writeText },
+          configurable: true,
+        });
+      });
+
+      async function stopAndUpload(api: ReturnType<typeof onlineApi>, share: SharePort) {
+        const rec = await recording(api, share);
+        [0, 1, 2].forEach((idx) => rec.stored.next(idx));
+        await vi.waitFor(() => expect(api.ack).toHaveBeenCalledTimes(3));
+        rec.q<HTMLButtonElement>('recorder-stop')?.click();
+        await vi.waitFor(() => expect(api.finalize).toHaveBeenCalled());
+        await rec.settle();
+        await rec.settle();
+        return rec;
+      }
+
+      it('is created when the upload completes and copied to the clipboard', async () => {
+        const share = fakeShare();
+        const { q } = await stopAndUpload(onlineApi(), share);
+        expect(share.create).toHaveBeenCalledWith('rec-1', { visibility: 'link' });
+        const expected = `${location.origin}/s/abcdefghijkl`;
+        expect(writeText).toHaveBeenCalledWith(expected);
+        const line = q('recorder-share-link');
+        expect(line?.getAttribute('data-copied')).toBe('true');
+        expect(line?.textContent).toContain('Link copied');
+        expect(line?.querySelector('a')?.getAttribute('href')).toBe(expected);
+        expect(q('recorder-copy-link')).toBeNull();
+        expect(q('recorder-share')).not.toBeNull();
+      });
+
+      it('offers a Copy button when the browser refuses the clipboard', async () => {
+        writeText.mockRejectedValueOnce(new DOMException('denied', 'NotAllowedError'));
+        const { q, settle } = await stopAndUpload(onlineApi(), fakeShare());
+        expect(q('recorder-share-link')?.getAttribute('data-copied')).toBe('false');
+        q<HTMLButtonElement>('recorder-copy-link')?.click();
+        await settle();
+        expect(writeText).toHaveBeenCalledTimes(2);
+        expect(q('recorder-share-link')?.getAttribute('data-copied')).toBe('true');
+      });
+
+      it('says so when the link cannot be created, and still offers Share', async () => {
+        const share = fakeShare();
+        (share.create as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('403'));
+        const { q } = await stopAndUpload(onlineApi(), share);
+        expect(q('recorder-share-link')).toBeNull();
+        expect(q('recorder-share-error')?.textContent).toContain("couldn't create its link");
+        expect(q('recorder-share')).not.toBeNull();
+      });
+    });
+
     it('keeps the take on the device when the server is unreachable at the start', async () => {
       const api = onlineApi();
       api.createRecording.mockRejectedValue(new Error('offline'));
@@ -509,6 +566,24 @@ describe('RecorderPage problems and view-only', () => {
     expect(element.querySelector('[data-testid="recorder-setup"]')).toBeNull();
   });
 });
+
+function fakeShare(): SharePort {
+  return {
+    list: vi.fn().mockResolvedValue([]),
+    create: vi.fn().mockResolvedValue({
+      id: 'link-1',
+      recording_id: 'rec-1',
+      slug: 'abcdefghijkl',
+      visibility: 'link',
+      allow_download: false,
+      expires_at: null,
+      revoked_at: null,
+      created_at: '2026-10-05T08:00:00Z',
+    }),
+    update: vi.fn(),
+    revoke: vi.fn().mockResolvedValue(undefined),
+  };
+}
 
 const SERVER_TAKE = '01a0e7a3-c969-756c-93d0-000000000001';
 
