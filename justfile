@@ -30,6 +30,11 @@ perf-long minutes="30":
     cargo build -q -p worker
     /usr/bin/time -v taskset -c 0-3 target/debug/worker transcode target/fixtures/vp9_opus_{{minutes}}min_1080p.webm target/fixtures/out_{{minutes}}min.mp4
 
+# M5 demo: records 15 s, waits for the worker's MP4 and the "ready" email. Needs `just api`-less
+# setup (Playwright starts the API) but `just worker` running. Films into web/demo-output/m5/
+demo-m5 *args:
+    cd web && DEMO=1 npx playwright test e2e/m5-demo.spec.ts --workers=1 {{args}}
+
 deps-up:
     docker compose up -d --wait postgres minio mailpit
     docker compose run --rm minio-init
