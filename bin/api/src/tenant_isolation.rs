@@ -116,6 +116,34 @@ fn tenant_table() -> Vec<(Method, &'static str, Probe)> {
             }),
         ),
         (
+            Method::PATCH,
+            "/api/v1/recordings/{recording_id}",
+            Probe::Owned(|pool, workspace_id| {
+                Box::pin(async move {
+                    let recording_id = ready_recording_in(&pool, workspace_id).await;
+                    json_request(
+                        Method::PATCH,
+                        &format!("/api/v1/recordings/{recording_id}"),
+                        r#"{"title":"Renamed"}"#,
+                    )
+                })
+            }),
+        ),
+        (
+            Method::DELETE,
+            "/api/v1/recordings/{recording_id}",
+            Probe::Owned(|pool, workspace_id| {
+                Box::pin(async move {
+                    let recording_id = ready_recording_in(&pool, workspace_id).await;
+                    json_request(
+                        Method::DELETE,
+                        &format!("/api/v1/recordings/{recording_id}"),
+                        "",
+                    )
+                })
+            }),
+        ),
+        (
             Method::GET,
             "/api/v1/recordings",
             Probe::Listing {
@@ -462,6 +490,11 @@ fn app(pool: &PgPool) -> Router {
                 Arc::new(catalog::CatalogService::new()),
             )),
             catalog: Arc::new(catalog::CatalogService::new()),
+            recordings: Arc::new(catalog::RecordingManager::new(
+                pool.clone(),
+                test_store(),
+                test_clock(),
+            )),
             delivery: Arc::new(delivery::DeliveryService::new(
                 test_store(),
                 Arc::new(media::RenditionReader::new(pool.clone())),

@@ -201,6 +201,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/recordings/{recording_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Moves a recording to the trash: its links stop working at once, and it is deleted for good
+         *     after 30 days. Idempotent.
+         */
+        delete: operations["trash_recording"];
+        options?: never;
+        head?: never;
+        /** Renames a recording (inline rename in the library). */
+        patch: operations["rename_recording"];
+        trace?: never;
+    };
     "/api/v1/recordings/{recording_id}/download": {
         parameters: {
             query?: never;
@@ -642,6 +663,15 @@ export interface components {
             display_name: string;
             email: string;
             password: string;
+        };
+        RenameBody: {
+            /** @description The new title: at most 200 characters; blank becomes "Untitled recording". */
+            title: string;
+        };
+        RenameResponse: {
+            /** Format: uuid */
+            id: string;
+            title: string;
         };
         /** @enum {string} */
         Requirement: "none" | "login";
@@ -1192,6 +1222,117 @@ export interface operations {
                 };
             };
             /** @description Invalid title or MIME type */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    trash_recording: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The recording */
+                recording_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Moved to the trash */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Missing CSRF token, or not the owner and not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such recording in the caller's workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    rename_recording: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The recording */
+                recording_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenameBody"];
+            };
+        };
+        responses: {
+            /** @description Renamed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenameResponse"];
+                };
+            };
+            /** @description No valid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Missing CSRF token, or not the owner and not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such recording in the caller's workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid title */
             422: {
                 headers: {
                     [name: string]: unknown;

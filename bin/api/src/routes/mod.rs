@@ -145,6 +145,18 @@ pub fn table() -> Vec<Route> {
             recordings::list_recordings,
         ),
         Route::new(
+            Method::PATCH,
+            "/api/v1/recordings/{recording_id}",
+            Workspace,
+            recordings::rename_recording,
+        ),
+        Route::new(
+            Method::DELETE,
+            "/api/v1/recordings/{recording_id}",
+            Workspace,
+            recordings::trash_recording,
+        ),
+        Route::new(
             Method::GET,
             "/api/v1/recordings/{recording_id}/download",
             Workspace,

@@ -231,6 +231,125 @@ pub async fn list_recordings(
     }))
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RenameBody {
+    /// The new title: at most 200 characters; blank becomes "Untitled recording".
+    pub title: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RenameResponse {
+    #[schema(value_type = uuid::Uuid)]
+    pub id: RecordingId,
+    pub title: String,
+}
+
+/// Whether the caller may edit or trash this recording: its owner, or an admin of the workspace.
+async fn require_owner_or_admin(
+    state: &AppState,
+    ctx: &WorkspaceContext,
+    recording_id: RecordingId,
+) -> Result<(), ApiError> {
+    let mut conn = state.pool.acquire().await.map_err(|error| {
+        tracing::error!(%error, "manage recording: database error");
+        ApiError::from(AppError::Internal("database unavailable".to_string()))
+    })?;
+    let info = state
+        .catalog
+        .watch_info(&mut conn, recording_id, ctx.workspace_id)
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "manage recording: database error");
+            ApiError::from(AppError::Internal("database unavailable".to_string()))
+        })?
+        .ok_or(AppError::NotFound)?;
+    if info.owner_id != ctx.user_id {
+        ctx.require(Permission::ManageMembers)?;
+    }
+    Ok(())
+}
+
+fn manage_error(error: catalog::ManageError) -> ApiError {
+    match error {
+        catalog::ManageError::NotFound => AppError::NotFound.into(),
+        other => {
+            tracing::error!(error = %other, "manage recording failed");
+            AppError::Internal("could not update the recording".to_string()).into()
+        }
+    }
+}
+
+/// Renames a recording (inline rename in the library).
+#[utoipa::path(
+    patch,
+    path = "/api/v1/recordings/{recording_id}",
+    tag = "recordings",
+    params(("recording_id" = uuid::Uuid, Path, description = "The recording")),
+    request_body = RenameBody,
+    responses(
+        (status = 200, description = "Renamed", body = RenameResponse),
+        (status = 401, description = "No valid session", body = Problem, content_type = "application/problem+json"),
+        (status = 403, description = "Missing CSRF token, or not the owner and not an admin", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such recording in the caller's workspace", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "Invalid title", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+#[tracing::instrument(skip_all, fields(workspace_id = %ctx.workspace_id))]
+pub async fn rename_recording(
+    State(state): State<AppState>,
+    ctx: WorkspaceContext,
+    headers: HeaderMap,
+    Path(recording_id): Path<RecordingId>,
+    Json(body): Json<RenameBody>,
+) -> Result<Json<RenameResponse>, ApiError> {
+    verify_csrf(&headers)?;
+    ctx.require(Permission::EditRecording)?;
+    let title = catalog::Title::parse(Some(&body.title))
+        .map_err(|error| AppError::Validation(error.to_string()))?;
+    require_owner_or_admin(&state, &ctx, recording_id).await?;
+    state
+        .recordings
+        .rename(ctx.workspace_id, recording_id, &title)
+        .await
+        .map_err(manage_error)?;
+    Ok(Json(RenameResponse {
+        id: recording_id,
+        title: title.as_str().to_string(),
+    }))
+}
+
+/// Moves a recording to the trash: its links stop working at once, and it is deleted for good
+/// after 30 days. Idempotent.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/recordings/{recording_id}",
+    tag = "recordings",
+    params(("recording_id" = uuid::Uuid, Path, description = "The recording")),
+    responses(
+        (status = 204, description = "Moved to the trash"),
+        (status = 401, description = "No valid session", body = Problem, content_type = "application/problem+json"),
+        (status = 403, description = "Missing CSRF token, or not the owner and not an admin", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such recording in the caller's workspace", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+#[tracing::instrument(skip_all, fields(workspace_id = %ctx.workspace_id))]
+pub async fn trash_recording(
+    State(state): State<AppState>,
+    ctx: WorkspaceContext,
+    headers: HeaderMap,
+    Path(recording_id): Path<RecordingId>,
+) -> Result<StatusCode, ApiError> {
+    verify_csrf(&headers)?;
+    ctx.require(Permission::DeleteRecording)?;
+    state
+        .recordings
+        .trash(ctx.workspace_id, ctx.user_id, recording_id)
+        .await
+        .map_err(manage_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Downloads the recording's MP4: a signed URL that saves `<title>.mp4`. The recording's owner,
 /// or a workspace admin, may.
 #[utoipa::path(
@@ -845,5 +964,152 @@ mod tests {
             deepest <= std::time::Duration::from_millis(150),
             "slowest page took {deepest:?}"
         );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn rename_trims_validates_and_persists(pool: PgPool) {
+        use crate::routes::testkit::{call, caller, recording};
+        use axum::http::Method;
+        let alice = caller(&pool).await;
+        let id = recording(&pool, &alice, "ready").await;
+        let uri = format!("/api/v1/recordings/{id}");
+
+        let ok = call(
+            &pool,
+            Some(&alice),
+            Method::PATCH,
+            &uri,
+            Some(json!({"title": "  Q3 demo  "})),
+        )
+        .await;
+        assert_eq!(ok.status, StatusCode::OK, "{}", ok.body);
+        assert_eq!(ok.body["title"], "Q3 demo");
+        let stored =
+            sqlx::query_scalar!("SELECT title FROM recordings WHERE id = $1", id.into_uuid())
+                .fetch_one(&pool)
+                .await
+                .expect("title");
+        assert_eq!(stored, "Q3 demo");
+
+        let blank = call(
+            &pool,
+            Some(&alice),
+            Method::PATCH,
+            &uri,
+            Some(json!({"title": "   "})),
+        )
+        .await;
+        assert_eq!(blank.body["title"], "Untitled recording");
+        for bad in [
+            json!({"title": "x".repeat(201)}),
+            json!({"title": "a\nb"}),
+            json!({}),
+        ] {
+            let reply = call(&pool, Some(&alice), Method::PATCH, &uri, Some(bad)).await;
+            assert_eq!(
+                reply.status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{}",
+                reply.body
+            );
+        }
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn trashing_kills_the_link_at_once_and_hides_the_recording(pool: PgPool) {
+        use crate::routes::testkit::{call, caller, link, recording, renditions};
+        use axum::http::Method;
+        let alice = caller(&pool).await;
+        let id = recording(&pool, &alice, "ready").await;
+        renditions(&pool, &alice, id).await;
+        let (slug, _) = link(&pool, &alice, id, "public").await;
+        let watch = format!("/api/v1/s/{slug}");
+        assert_eq!(
+            call(&pool, None, Method::GET, &watch, None).await.status,
+            StatusCode::OK
+        );
+
+        let uri = format!("/api/v1/recordings/{id}");
+        let trashed = call(&pool, Some(&alice), Method::DELETE, &uri, None).await;
+        assert_eq!(trashed.status, StatusCode::NO_CONTENT);
+
+        // The very next request: the link, its playback and the download are gone…
+        for path in [
+            watch.clone(),
+            format!("{watch}/playback"),
+            format!("{watch}/download"),
+        ] {
+            assert_eq!(
+                call(&pool, None, Method::GET, &path, None).await.status,
+                StatusCode::NOT_FOUND,
+                "{path}"
+            );
+        }
+        // …it leaves the library, and can't be renamed or downloaded by its owner.
+        let listed = list(&pool, &alice, None).await;
+        assert_eq!(listed.body["items"], json!([]));
+        let rename = call(
+            &pool,
+            Some(&alice),
+            Method::PATCH,
+            &uri,
+            Some(json!({"title": "x"})),
+        )
+        .await;
+        assert_eq!(rename.status, StatusCode::NOT_FOUND);
+        let download = call(
+            &pool,
+            Some(&alice),
+            Method::GET,
+            &format!("{uri}/download"),
+            None,
+        )
+        .await;
+        assert_eq!(download.status, StatusCode::NOT_FOUND);
+        // Trashing again is fine.
+        assert_eq!(
+            call(&pool, Some(&alice), Method::DELETE, &uri, None)
+                .await
+                .status,
+            StatusCode::NO_CONTENT
+        );
+        // The row is still there: it is purged after 30 days, not now.
+        let kept = sqlx::query_scalar!(
+            r#"SELECT trashed_at IS NOT NULL AS "trashed!" FROM recordings WHERE id = $1"#,
+            id.into_uuid()
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("row");
+        assert!(kept);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn only_the_owner_or_an_admin_manages_a_recording(pool: PgPool) {
+        use crate::routes::testkit::{call, caller, recording};
+        use axum::http::Method;
+        let owner = caller(&pool).await;
+        let id = recording(&pool, &owner, "ready").await;
+        let uri = format!("/api/v1/recordings/{id}");
+        // A viewer can't rename or trash, not even their own recording.
+        sqlx::query!(
+            "UPDATE memberships SET role = 'viewer' WHERE workspace_id = $1 AND user_id = $2",
+            owner.workspace_id.into_uuid(),
+            owner.user_id.into_uuid(),
+        )
+        .execute(&pool)
+        .await
+        .expect("demote");
+        let rename = call(
+            &pool,
+            Some(&owner),
+            Method::PATCH,
+            &uri,
+            Some(json!({"title": "x"})),
+        )
+        .await;
+        assert_eq!(rename.status, StatusCode::FORBIDDEN);
+        let trash = call(&pool, Some(&owner), Method::DELETE, &uri, None).await;
+        assert_eq!(trash.status, StatusCode::FORBIDDEN);
     }
 }

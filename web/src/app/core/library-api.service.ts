@@ -8,10 +8,13 @@ type Schemas = components['schemas'];
 export type RecordingSummary = Schemas['RecordingSummary'];
 export type RecordingList = Schemas['RecordingList'];
 export type DownloadData = Schemas['DownloadResponse'];
+export type RenameResponse = Schemas['RenameResponse'];
 
 export interface LibraryPort {
   list(cursor: string | null): Promise<RecordingList>;
   download(recordingId: string): Promise<DownloadData>;
+  rename(recordingId: string, title: string): Promise<RenameResponse>;
+  trash(recordingId: string): Promise<void>;
 }
 
 /** The workspace's recordings (docs/design.md §9: `GET /recordings`, 24 per page). */
@@ -28,6 +31,16 @@ export class LibraryApi implements LibraryPort {
     return firstValueFrom(
       this.api.get<DownloadData>(`/recordings/${encodeURIComponent(recordingId)}/download`),
     );
+  }
+
+  rename(recordingId: string, title: string): Promise<RenameResponse> {
+    return firstValueFrom(
+      this.api.patch<RenameResponse>(`/recordings/${encodeURIComponent(recordingId)}`, { title }),
+    );
+  }
+
+  async trash(recordingId: string): Promise<void> {
+    await firstValueFrom(this.api.delete<void>(`/recordings/${encodeURIComponent(recordingId)}`));
   }
 }
 

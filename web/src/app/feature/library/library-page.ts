@@ -1,7 +1,10 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  ElementRef,
+  Injector,
   OnInit,
+  afterNextRender,
   inject,
   signal,
   viewChild,
@@ -62,6 +65,10 @@ import { ShareDialog } from '../share/share-dialog';
       color: var(--color-text-muted);
       margin: 0;
     }
+    .title {
+      all: unset;
+      cursor: text;
+    }
     .actions {
       display: flex;
       gap: var(--space-2);
@@ -98,7 +105,33 @@ import { ShareDialog } from '../share/share-dialog';
             <div class="placeholder" aria-hidden="true">{{ stateLabel(item) }}</div>
           }
           <div class="body">
-            <h2 data-testid="library-title">{{ item.title }}</h2>
+            @if (editing() === item.id) {
+              <form (submit)="saveTitle($event, item, titleInput.value)">
+                <input
+                  #titleInput
+                  data-testid="library-title-input"
+                  [value]="item.title"
+                  maxlength="200"
+                  aria-label="Title"
+                  i18n-aria-label
+                  (keydown.escape)="cancelRename()"
+                  (blur)="cancelRename()"
+                />
+              </form>
+            } @else {
+              <h2 data-testid="library-title">
+                <button
+                  type="button"
+                  class="title"
+                  data-testid="library-rename"
+                  title="Rename"
+                  i18n-title
+                  (click)="startRename(item)"
+                >
+                  {{ item.title }}
+                </button>
+              </h2>
+            }
             <p class="meta">
               @if (item.duration_ms) {
                 <span data-testid="library-duration">{{ duration(item.duration_ms) }}</span> ·
@@ -119,6 +152,31 @@ import { ShareDialog } from '../share/share-dialog';
                   Download
                 </button>
               }
+              @if (confirming() === item.id) {
+                <span role="group" aria-label="Confirm" i18n-aria-label>
+                  <span i18n>Move to trash?</span>
+                  <button type="button" data-testid="library-trash-yes" (click)="trash(item)" i18n>
+                    Yes
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="library-trash-no"
+                    (click)="confirming.set(null)"
+                    i18n
+                  >
+                    No
+                  </button>
+                </span>
+              } @else {
+                <button
+                  type="button"
+                  data-testid="library-trash"
+                  (click)="confirming.set(item.id)"
+                  i18n
+                >
+                  Delete
+                </button>
+              }
             </div>
           </div>
         </li>
@@ -135,18 +193,26 @@ import { ShareDialog } from '../share/share-dialog';
         Load more
       </button>
     }
+    @if (notice(); as message) {
+      <p role="status" data-testid="library-notice">{{ message }}</p>
+    }
     <app-share-dialog />
   `,
 })
 export class LibraryPage implements OnInit {
   private readonly api = inject(LIBRARY_API);
   private readonly shareDialog = viewChild.required(ShareDialog);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly injector = inject(Injector);
 
   protected readonly items = signal<RecordingSummary[]>([]);
   protected readonly nextCursor = signal<string | null>(null);
   protected readonly loaded = signal(false);
   protected readonly loading = signal(false);
   protected readonly error = signal(false);
+  protected readonly editing = signal<string | null>(null);
+  protected readonly confirming = signal<string | null>(null);
+  protected readonly notice = signal<string | null>(null);
 
   ngOnInit(): void {
     void this.loadMore();
@@ -188,6 +254,55 @@ export class LibraryPage implements OnInit {
         return $localize`Processing`;
       default:
         return $localize`Uploading`;
+    }
+  }
+
+  protected startRename(item: RecordingSummary): void {
+    this.notice.set(null);
+    this.editing.set(item.id);
+    afterNextRender(
+      () => {
+        const input = this.host.nativeElement.querySelector<HTMLInputElement>(
+          '[data-testid="library-title-input"]',
+        );
+        input?.focus();
+        input?.select();
+      },
+      { injector: this.injector },
+    );
+  }
+
+  protected cancelRename(): void {
+    this.editing.set(null);
+  }
+
+  protected async saveTitle(event: Event, item: RecordingSummary, value: string): Promise<void> {
+    event.preventDefault();
+    if (value.trim() === item.title) {
+      this.editing.set(null);
+      return;
+    }
+    try {
+      const renamed = await this.api.rename(item.id, value);
+      this.items.update((all) =>
+        all.map((each) => (each.id === item.id ? { ...each, title: renamed.title } : each)),
+      );
+      this.editing.set(null);
+    } catch {
+      this.notice.set($localize`The title couldn't be saved. Try again.`);
+    }
+  }
+
+  protected async trash(item: RecordingSummary): Promise<void> {
+    this.confirming.set(null);
+    try {
+      await this.api.trash(item.id);
+      this.items.update((all) => all.filter((each) => each.id !== item.id));
+      this.notice.set(
+        $localize`Moved to trash. Its links stopped working. It will be deleted for good in 30 days.`,
+      );
+    } catch {
+      this.notice.set($localize`Couldn't move it to the trash. Try again.`);
     }
   }
 
