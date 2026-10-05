@@ -6,13 +6,16 @@ check:
     cargo sqlx prepare --check --workspace
     just openapi-check
     cd web && npm run lint
+    cd extension && npm run lint
 
 test:
     cargo test --workspace
     cd web && npm test -- --watch=false
+    cd extension && npm test
 
 e2e:
     cd web && npx playwright test
+    cd extension && npm run build && npx playwright test
 
 # M3 demo: films a 2-minute recording and a crash/recovery per browser into web/demo-output/
 demo-m3 *args:
@@ -39,6 +42,14 @@ demo-m5 *args:
 # Firefox (~1 min each). Needs `just worker` running. Films into web/demo-output/m6/
 demo-m6 *args:
     cd web && DEMO=1 npx playwright test e2e/m6-demo.spec.ts --workers=1 {{args}}
+
+# The browser extension (Manifest V3, Chrome and Edge): build into extension/dist/, then load it
+# unpacked at chrome://extensions (Developer mode -> Load unpacked).
+ext-build:
+    cd extension && npm run build
+
+ext-watch:
+    cd extension && npm run watch
 
 deps-up:
     docker compose up -d --wait postgres minio mailpit

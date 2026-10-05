@@ -100,6 +100,30 @@ jobs:
       - run: npm test -- --watch=false
       - run: npm run build
 
+  extension:
+    # The Manifest V3 extension (extension/): lint + types, unit tests, build, and load the
+    # built extension unpacked into Chrome and Edge (both preinstalled on the runner).
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: extension
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: |
+            extension/package-lock.json
+            web/package-lock.json
+      - run: npm ci
+      - run: npm ci
+        working-directory: web
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - run: npx playwright test
+
   contract:
     # The OpenAPI contract (docs/api/openapi.json) and the TS DTOs generated from it
     # (web/src/app/api/schema.ts) must match what the API code produces, and the frontend must

@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Sintade",
+  "description": "Record any tab and get a shareable link in seconds.",
+  "version": "0.0.0",
+  "minimum_chrome_version": "116",
+  "action": {
+    "default_title": "Record with Sintade",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "permissions": ["activeTab", "tabCapture", "offscreen", "storage"],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
+}
