@@ -26,7 +26,10 @@ import {
   RecordingsApi,
   SOURCE_MANAGER,
   START_TAKE,
+  STORAGE_CHECK,
+  WAKE_LOCK_GUARD,
 } from '../../core/capture.tokens';
+import { StorageStatus } from '../../capture';
 import { LIBRARY_API } from '../../core/library-api.service';
 import { SHARE_API, SharePort } from '../../core/share-api.service';
 import { RecorderPage } from './recorder-page';
@@ -96,6 +99,7 @@ async function setup(support: SystemAudioSupport, sources = fakeSources(), mixer
 }
 
 let planLimits: PlanLimits = FREE_PLAN_LIMITS;
+let storageResult: StorageStatus = { level: 'unknown' };
 
 const SUPPORTED: SystemAudioSupport = { supported: true, note: null };
 
@@ -396,6 +400,11 @@ describe('RecorderPage control bar', () => {
     const take = fakeSession();
     const mixer = fakeMixer();
     const library = { trash: vi.fn().mockResolvedValue(undefined) };
+    const wake = {
+      acquire: vi.fn().mockResolvedValue(undefined),
+      release: vi.fn().mockResolvedValue(undefined),
+    };
+    const storageCheck = vi.fn(async () => storageResult);
     const startTake = vi.fn().mockResolvedValue(take.session);
     const store = {
       getMeta: vi.fn().mockResolvedValue(null),
@@ -411,6 +420,8 @@ describe('RecorderPage control bar', () => {
         { provide: AUDIO_MIXER, useValue: mixer },
         { provide: PLAN_LIMITS, useValue: signal(planLimits) },
         { provide: LIBRARY_API, useValue: library },
+        { provide: WAKE_LOCK_GUARD, useValue: wake },
+        { provide: STORAGE_CHECK, useValue: storageCheck },
         { provide: CHUNK_STORE, useValue: Promise.resolve(store) },
         { provide: START_TAKE, useValue: startTake },
         { provide: RECORDINGS_API, useValue: api },
@@ -434,7 +445,7 @@ describe('RecorderPage control bar', () => {
     await settle();
     q<HTMLButtonElement>('recorder-start')?.click();
     await settle(3000); // the 3-2-1
-    return { ...take, startTake, store, library, mixer, fixture, q, settle };
+    return { ...take, startTake, store, library, mixer, wake, storageCheck, fixture, q, settle };
   }
 
   it('starts the take after the countdown and moves focus to Pause', async () => {
@@ -509,6 +520,59 @@ describe('RecorderPage control bar', () => {
       elapsed.next(591_500); // 7.5 s left -> 8
       await settle();
       expect(q('recorder-limit-warning')?.textContent).toContain('in 8 s');
+    });
+
+    it('keeps the screen awake while recording and lets go when the take ends', async () => {
+      const { q, wake, settle } = await recording(onlineApi());
+      expect(wake.acquire).toHaveBeenCalledTimes(1);
+      expect(wake.release).not.toHaveBeenCalled();
+      q<HTMLButtonElement>('recorder-stop')?.click();
+      await settle();
+      expect(wake.release).toHaveBeenCalled();
+    });
+
+    it('warns before the browser is out of room: at 80 % of the quota used, and re-checks while recording', async () => {
+      storageResult = {
+        level: 'low',
+        usedFraction: 0.85,
+        projectedFraction: 0.9,
+        freeBytes: 300_000_000,
+      };
+      try {
+        const { q, storageCheck, settle } = await recording(onlineApi());
+        expect(q('recorder-storage-warning')?.textContent).toContain('85% of the browser');
+        expect(q('recorder-storage-warning')?.textContent).toContain('300 MB');
+        const before = storageCheck.mock.calls.length;
+        await settle(15_000);
+        expect(storageCheck.mock.calls.length).toBeGreaterThan(before);
+      } finally {
+        storageResult = { level: 'unknown' };
+      }
+    });
+
+    it('shows no storage warning when there is room', async () => {
+      storageResult = { level: 'ok', usedFraction: 0.1 };
+      try {
+        const { q } = await recording(onlineApi());
+        expect(q('recorder-storage-warning')).toBeNull();
+      } finally {
+        storageResult = { level: 'unknown' };
+      }
+    });
+
+    it('asks the browser to confirm before the tab closes mid-take, not otherwise', async () => {
+      const { fixture, q, settle } = await recording(onlineApi());
+      const during = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(during);
+      expect(during.defaultPrevented).toBe(true);
+      q<HTMLButtonElement>('recorder-discard')?.click();
+      await settle();
+      q<HTMLButtonElement>('recorder-confirm-yes')?.click();
+      await settle();
+      const after = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(after);
+      expect(after.defaultPrevented).toBe(false);
+      void fixture;
     });
 
     it('discarding deletes the take on the device, trashes the server copy and finalizes nothing', async () => {
