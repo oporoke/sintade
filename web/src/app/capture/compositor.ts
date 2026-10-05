@@ -8,9 +8,31 @@ export interface BubbleLayout {
   cy: number;
   /** Bubble diameter (side) as a fraction of the frame height. */
   size: number;
+  /** Camera-only mode: the camera fills the frame and the screen is not drawn. */
+  cameraOnly: boolean;
 }
 
-export const DEFAULT_BUBBLE: BubbleLayout = { shape: 'circle', cx: 0.88, cy: 0.82, size: 0.24 };
+export const MIN_BUBBLE_SIZE = 0.1;
+export const MAX_BUBBLE_SIZE = 0.6;
+
+/** Keeps a layout's numbers in range (centre inside the frame, size within the allowed span). */
+export function clampLayout(layout: BubbleLayout): BubbleLayout {
+  const unit = (n: number) => Math.min(Math.max(Number.isFinite(n) ? n : 0.5, 0), 1);
+  return {
+    ...layout,
+    cx: unit(layout.cx),
+    cy: unit(layout.cy),
+    size: Math.min(Math.max(layout.size, MIN_BUBBLE_SIZE), MAX_BUBBLE_SIZE),
+  };
+}
+
+export const DEFAULT_BUBBLE: BubbleLayout = {
+  shape: 'circle',
+  cx: 0.88,
+  cy: 0.82,
+  size: 0.24,
+  cameraOnly: false,
+};
 
 export interface BubbleRect {
   x: number;
@@ -134,7 +156,7 @@ export class Compositor {
       throw new Error('2d canvas is not available');
     }
     this.ctx = ctx;
-    this.layout = options.layout ?? DEFAULT_BUBBLE;
+    this.layout = clampLayout(options.layout ?? DEFAULT_BUBBLE);
     const createSource = options.createSource ?? browserSource;
     this.screen = createSource(options.screen);
     this.camera = createSource(options.camera);
@@ -152,7 +174,7 @@ export class Compositor {
   }
 
   setBubble(layout: Partial<BubbleLayout>): void {
-    this.layout = { ...this.layout, ...layout };
+    this.layout = clampLayout({ ...this.layout, ...layout });
   }
 
   /** Paints one frame: the screen, then the camera bubble on top. Safe before sources are ready. */
@@ -164,6 +186,17 @@ export class Compositor {
     const { width, height } = canvas;
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, width, height);
+    if (this.layout.cameraOnly) {
+      if (this.camera.ready) {
+        const { w, h } = { w: this.camera.width, h: this.camera.height };
+        // Cover: the largest centred crop with the frame's aspect, so nothing is stretched.
+        const scale = Math.max(width / w, height / h);
+        const sw = width / scale;
+        const sh = height / scale;
+        ctx.drawImage(this.camera.image, (w - sw) / 2, (h - sh) / 2, sw, sh, 0, 0, width, height);
+      }
+      return;
+    }
     if (this.screen.ready) {
       ctx.drawImage(this.screen.image, 0, 0, width, height);
     }

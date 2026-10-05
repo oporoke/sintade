@@ -16,6 +16,8 @@ import { Subscription } from 'rxjs';
 import {
   MicDevice,
   TakeMeta,
+  BubbleLayout,
+  BubbleShape,
   TakeSession,
   UploadHttpError,
   UploadProgress,
@@ -79,6 +81,27 @@ const ANY_MIC = 'any';
   selector: 'app-recorder-page',
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [Countdown, ShareDialog],
+  styles: `
+    .bubble-pad {
+      position: relative;
+      width: 240px;
+      max-width: 100%;
+      border: 1px solid currentColor;
+      touch-action: none;
+      cursor: crosshair;
+    }
+    .bubble-dot {
+      position: absolute;
+      transform: translate(-50%, -50%);
+      border-radius: 50%;
+      background: currentColor;
+      opacity: 0.5;
+      pointer-events: none;
+    }
+    .bubble-dot.rounded {
+      border-radius: 18%;
+    }
+  `,
   template: `
     <h1 i18n>New recording</h1>
     @if (viewOnly) {
@@ -250,6 +273,58 @@ const ANY_MIC = 'any';
           @if (phase() === 'saving') {
             <p role="status" i18n>Saving…</p>
           }
+          @if (bubble(); as layout) {
+            <fieldset data-testid="recorder-bubble-controls">
+              <legend i18n>Camera bubble</legend>
+              <div
+                class="bubble-pad"
+                data-testid="recorder-bubble-pad"
+                [style.aspect-ratio]="padAspect()"
+                (pointerdown)="onPadPointer($event)"
+                (pointermove)="onPadPointer($event)"
+              >
+                <span
+                  class="bubble-dot"
+                  data-testid="recorder-bubble-dot"
+                  [class.rounded]="layout.shape === 'rounded'"
+                  [style.left.%]="layout.cx * 100"
+                  [style.top.%]="layout.cy * 100"
+                  [style.height.%]="layout.size * 100"
+                  [style.aspect-ratio]="padAspectOne()"
+                ></span>
+              </div>
+              <label>
+                <span i18n>Size</span>
+                <input
+                  type="range"
+                  min="0.1"
+                  max="0.6"
+                  step="0.01"
+                  [value]="layout.size"
+                  (input)="onBubbleSize($event)"
+                  data-testid="recorder-bubble-size"
+                />
+              </label>
+              <label>
+                <span i18n>Shape</span>
+                <select (change)="onBubbleShape($event)" data-testid="recorder-bubble-shape">
+                  <option value="circle" [selected]="layout.shape === 'circle'" i18n>Circle</option>
+                  <option value="rounded" [selected]="layout.shape === 'rounded'" i18n>
+                    Rounded square
+                  </option>
+                </select>
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  [checked]="layout.cameraOnly"
+                  (change)="onCameraOnly($event)"
+                  data-testid="recorder-camera-only"
+                />
+                <span i18n>Camera only (hide the screen)</span>
+              </label>
+            </fieldset>
+          }
         </section>
       }
 
@@ -384,6 +459,7 @@ export class RecorderPage {
   protected readonly systemAudioSupport = this.capabilityService.systemAudio;
   protected readonly systemAudio = signal(false);
   protected readonly camera = signal<MediaStream | null>(null);
+  protected readonly bubble = signal<BubbleLayout | null>(null);
   protected readonly display = signal<MediaStream | null>(null);
   protected readonly displayInfo = signal<LiveSource | null>(null);
   protected readonly mics = signal<MicDevice[]>([]);
@@ -511,6 +587,49 @@ export class RecorderPage {
     }
   }
 
+  protected padAspect(): string {
+    const settings = this.display()?.getVideoTracks()[0]?.getSettings();
+    return `${settings?.width ?? 16} / ${settings?.height ?? 9}`;
+  }
+
+  /** The dot's width follows from its height (a bubble is square in output pixels). */
+  protected padAspectOne(): string {
+    return '1 / 1';
+  }
+
+  /** Dragging on the pad places the bubble's centre under the pointer, live. */
+  onPadPointer(event: PointerEvent): void {
+    if (event.type === 'pointermove' && event.buttons !== 1) {
+      return;
+    }
+    const pad = event.currentTarget as HTMLElement;
+    const box = pad.getBoundingClientRect();
+    if (box.width === 0 || box.height === 0) {
+      return;
+    }
+    this.updateBubble({
+      cx: (event.clientX - box.left) / box.width,
+      cy: (event.clientY - box.top) / box.height,
+    });
+  }
+
+  onBubbleSize(event: Event): void {
+    this.updateBubble({ size: Number((event.target as HTMLInputElement).value) });
+  }
+
+  onBubbleShape(event: Event): void {
+    this.updateBubble({ shape: (event.target as HTMLSelectElement).value as BubbleShape });
+  }
+
+  onCameraOnly(event: Event): void {
+    this.updateBubble({ cameraOnly: (event.target as HTMLInputElement).checked });
+  }
+
+  private updateBubble(change: Partial<BubbleLayout>): void {
+    this.session?.setBubble(change);
+    this.bubble.set(this.session?.bubble ?? null);
+  }
+
   async chooseScreen(): Promise<void> {
     this.problem.set(null);
     try {
@@ -627,6 +746,7 @@ export class RecorderPage {
         ...(mimeType ? { mimeType } : {}),
       });
       this.session = session;
+      this.bubble.set(session.bubble);
       this.phase.set('recording');
       this.uploader = recording ? new Uploader({ api: this.recordingsApi, store, takeId }) : null;
       const uploader = this.uploader;
@@ -712,6 +832,7 @@ export class RecorderPage {
     }
     const stoppedAt = this.stopPressedAt ?? performance.now();
     this.session = null;
+    this.bubble.set(null);
     this.elapsedMs.set(take.durationMs);
     this.result.set(take);
     const uploader = this.uploader;
