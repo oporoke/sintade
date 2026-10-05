@@ -285,6 +285,13 @@ jobs:
       - run: npm audit --audit-level=high
         working-directory: extension
 
+  backup-drill:
+    # Postgres PITR + media mirror restore, end to end (deploy/backup/restore-drill.sh).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: deploy/backup/restore-drill.sh
+
   secrets:
     # gitleaks over the whole history (config and the few allowlisted non-secrets: .gitleaks.toml).
     runs-on: ubuntu-latest

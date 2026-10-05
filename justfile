@@ -61,6 +61,11 @@ audit:
     cd web && npm audit --audit-level=high
     cd extension && npm audit --audit-level=high
 
+# The backup/restore drill: restores Postgres to a point in time and the media bucket from an
+# off-site copy, in throwaway Docker containers (deploy/backup/restore-drill.sh).
+restore-drill:
+    deploy/backup/restore-drill.sh
+
 # OWASP ZAP baseline of the web image and an API scan from the OpenAPI contract, against the
 # running local stack (API on :8080). Reports go to target/zap/. See scripts/zap-scan.sh.
 zap:
