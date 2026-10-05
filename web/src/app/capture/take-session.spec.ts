@@ -1,4 +1,5 @@
 import { AudioMixer } from './audio-mixer';
+import { Compositor } from './compositor';
 import { ChunkRecorder, CreateMediaRecorder } from './chunk-recorder';
 import { ChunkStore, TakeMeta } from './chunk-store';
 import { TakeSession } from './take-session';
@@ -67,8 +68,12 @@ function setup(
       tracks,
       getVideoTracks: () => tracks.filter((t) => t.kind === 'video'),
     }) as unknown as MediaStream;
-  const start = () =>
+  const compositorTrack = new FakeVideoTrack() as unknown as MediaStreamTrack;
+  const compositor = { track: compositorTrack, stop: vi.fn() };
+  const start = (withCamera = false) =>
     TakeSession.start({
+      camera: withCamera ? ({} as MediaStream) : null,
+      createCompositor: () => compositor as unknown as Compositor,
       display,
       mic: null,
       mixer: mixer as unknown as AudioMixer,
@@ -87,6 +92,8 @@ function setup(
     });
   return {
     start,
+    compositor,
+    compositorTrack,
     mixer,
     store,
     video,
@@ -103,6 +110,22 @@ describe('TakeSession', () => {
     expect(recorded().tracks.map((track) => track.kind)).toEqual(['video', 'audio']);
     expect(recorded().tracks[0]).toBe(video);
     expect(session.state).toBe('recording');
+  });
+
+  it('records the compositor track instead of the screen when a camera is on', async () => {
+    const { start, recorded, compositorTrack, compositor } = setup();
+    const session = await start(true);
+    expect(recorded().tracks[0]).toBe(compositorTrack);
+    await session.stop();
+    expect(compositor.stop).toHaveBeenCalled();
+  });
+
+  it('ends a composited take when the shared screen ends', async () => {
+    const { start, video, compositor } = setup();
+    const session = await start(true);
+    video.dispatchEvent(new Event('ended'));
+    await session.ended;
+    expect(compositor.stop).toHaveBeenCalled();
   });
 
   it('records video only when there is no audio to mix', async () => {

@@ -1,7 +1,7 @@
 import { CaptureError } from '../../capture';
 import { BrowserInfo } from '../../core/browser';
 
-export type CaptureSource = 'screen' | 'mic';
+export type CaptureSource = 'screen' | 'mic' | 'camera';
 
 export interface CaptureProblem {
   source: CaptureSource;
@@ -21,6 +21,16 @@ export function captureHelp(
 ): CaptureProblem {
   switch (error.kind) {
     case 'permission-denied':
+      if (source === 'camera') {
+        return {
+          source,
+          title: $localize`Camera access is blocked`,
+          steps: [
+            $localize`Allow camera access for this site in your browser's address bar or settings.`,
+            $localize`Then turn the camera on again. You can also record without it.`,
+          ],
+        };
+      }
       return source === 'mic'
         ? {
             source,
@@ -36,13 +46,20 @@ export function captureHelp(
       return {
         source,
         title:
-          source === 'mic' ? $localize`No microphone found` : $localize`Nothing available to share`,
-        steps: [
-          source === 'mic'
-            ? $localize`Connect a microphone (or headset), then choose it again.`
-            : $localize`Open the window or tab you want to record, then choose it again.`,
-          $localize`You can also record without a microphone.`,
-        ],
+          source === 'camera'
+            ? $localize`No camera found`
+            : source === 'mic'
+              ? $localize`No microphone found`
+              : $localize`Nothing available to share`,
+        steps:
+          source === 'camera'
+            ? [$localize`Connect a camera, then turn it on again.`]
+            : [
+                source === 'mic'
+                  ? $localize`Connect a microphone (or headset), then choose it again.`
+                  : $localize`Open the window or tab you want to record, then choose it again.`,
+                $localize`You can also record without a microphone.`,
+              ],
       };
     case 'device-busy':
       return {

@@ -37,6 +37,7 @@ const DEFAULT_FRAME_RATE = 30;
 export class SourceManager {
   private display: MediaStream | null = null;
   private mic: MediaStream | null = null;
+  private camera: MediaStream | null = null;
   private readonly displayEndedSubject = new Subject<void>();
 
   /** Fires when the display stream ends outside our control, e.g. the browser's "Stop sharing". */
@@ -65,6 +66,30 @@ export class SourceManager {
 
   get currentMic(): MediaStream | null {
     return this.mic;
+  }
+
+  get currentCamera(): MediaStream | null {
+    return this.camera;
+  }
+
+  /** Opens the webcam (video only; the mic is separate). Replaces any previous camera. */
+  async openCamera(): Promise<MediaStream> {
+    const devices = this.require('getUserMedia');
+    let stream: MediaStream;
+    try {
+      stream = await devices.getUserMedia({ video: true, audio: false });
+    } catch (error) {
+      throw toCaptureError(error);
+    }
+    this.stopCamera();
+    this.camera = stream;
+    return stream;
+  }
+
+  stopCamera(): void {
+    const stream = this.camera;
+    this.camera = null;
+    stream?.getTracks().forEach((track) => track.stop());
   }
 
   /** Opens the browser's screen/window/tab picker. Replaces (and stops) any previous display. */
@@ -137,6 +162,7 @@ export class SourceManager {
   stopAll(): void {
     this.stopDisplay();
     this.stopMic();
+    this.stopCamera();
   }
 
   private require(method: keyof MediaDevicesPort): MediaDevicesPort {

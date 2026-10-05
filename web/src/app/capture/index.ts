@@ -10,6 +10,14 @@ export type {
   LevelName,
   MixSources,
 } from './audio-mixer';
+export {
+  Compositor,
+  DEFAULT_BUBBLE,
+  DEFAULT_COMPOSITOR_FPS,
+  bubbleRect,
+  coverSquare,
+} from './compositor';
+export type { BubbleLayout, BubbleRect, BubbleShape, CompositorOptions } from './compositor';
 export { CaptureError, toCaptureError } from './capture-error';
 export {
   AUDIO_BITS_PER_SECOND,
