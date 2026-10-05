@@ -1,7 +1,9 @@
 mod app;
+mod client_ip;
 mod csrf;
 mod error;
 mod openapi;
+mod rate_limit;
 mod routes;
 mod security_headers;
 mod session;
@@ -23,6 +25,12 @@ async fn main() -> anyhow::Result<()> {
     let config = platform::Config::load()?;
     platform::init_telemetry(&config.rust_log);
 
+    rate_limit::set_scale(
+        std::env::var("RATE_LIMIT_SCALE")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1),
+    );
     let pool = platform::connect(&config.database_url).await?;
     let queue = platform::JobQueue::new(pool.clone());
     let clock: Arc<dyn platform::Clock> = Arc::new(platform::SystemClock);

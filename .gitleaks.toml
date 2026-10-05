@@ -1,0 +1,19 @@
+# gitleaks configuration (CI: the `secrets` job; locally: `just secrets`).
+title = "Sintade"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Known non-secrets, each listed by its exact value so a real secret next to it is still caught"
+regexes = [
+  # The password every test account is created with.
+  '''correct-horse-battery-staple-42''',
+  # A random CI-only SESSION_SECRET that used to be written in ci.yml. Never used outside CI;
+  # CI now generates one per run. Allowlisted only because it is in history.
+  '''ggY3SFec8ZtPVVs8WQ64Bb5p9Tqjtm5G00QZf''',
+]
+
+[[allowlists]]
+description = "The extension's development key is a *public* key: it only fixes the e2e extension id"
+paths = ['''extension/dev-key\.json''']

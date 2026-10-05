@@ -121,6 +121,11 @@ pub(crate) fn build_router_from(
             router.route(route.path, route.handler)
         })
         .fallback(not_found)
+        // Innermost, so it sees every route and the fallback: every request is counted.
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::rate_limit::rate_limit,
+        ))
         .with_state(state)
         // axum's Router::layer wraps outward on each call (the *last* .layer() ends up
         // outermost, seeing the request first) -- the reverse of tower::ServiceBuilder. This
