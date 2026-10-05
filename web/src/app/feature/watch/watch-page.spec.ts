@@ -2,7 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
 
 import { PlaybackData, WatchApi, WatchData, WatchHttpError } from '../../core/watch-api.service';
-import { STATUS_POLL_MS, WatchPage } from './watch-page';
+import { STATUS_POLL_MAX_MS, STATUS_POLL_MS, WatchPage, pollDelay } from './watch-page';
 
 const READY: WatchData = {
   requirement: 'none',
@@ -254,7 +254,7 @@ describe('WatchPage', () => {
       expect(watch).toHaveBeenCalledTimes(2);
       expect(q(root, 'watch-processing')).not.toBeNull();
 
-      await settle(STATUS_POLL_MS);
+      await settle(pollDelay(1));
       expect(q(root, 'watch-processing')).toBeNull();
       expect((q(root, 'watch-video') as HTMLVideoElement).getAttribute('src')).toBe(PLAYBACK.url);
       expect(q(root, 'watch-preview')).toBeNull();
@@ -315,6 +315,34 @@ describe('WatchPage', () => {
       TestBed.resetTestingModule();
       await settle(STATUS_POLL_MS * 3);
       expect(watch).toHaveBeenCalledTimes(1);
+    });
+
+    it('slows its checks down the longer a recording takes', () => {
+      expect(pollDelay(0)).toBe(STATUS_POLL_MS);
+      const delays = Array.from({ length: 12 }, (_, attempt) => pollDelay(attempt));
+      expect(delays).toEqual([...delays].sort((a, b) => a - b));
+      expect(delays.at(-1)).toBe(STATUS_POLL_MAX_MS);
+      // A tab left open for a long recording stays far below 120 requests a minute (ADR-0022).
+      const perMinuteAtTheSlowest = (60_000 / STATUS_POLL_MAX_MS) * 2;
+      expect(perMinuteAtTheSlowest).toBeLessThan(20);
+    });
+
+    it('keeps what is on screen and waits when the server says to slow down', async () => {
+      const watch = vi
+        .fn()
+        .mockResolvedValueOnce(PROCESSING)
+        .mockRejectedValueOnce(new WatchHttpError(429))
+        .mockResolvedValue(READY);
+      const playback = vi.fn().mockResolvedValueOnce(PREVIEW).mockResolvedValue(PLAYBACK);
+      const { root, settle } = await openFake({ watch, playback });
+      expect(q(root, 'watch-preview')).not.toBeNull();
+
+      await settle(pollDelay(0)); // 429: nothing changes, no error page
+      expect(q(root, 'watch-error')).toBeNull();
+      expect(q(root, 'watch-preview')).not.toBeNull();
+
+      await settle(pollDelay(1)); // asked again: the MP4 is there
+      expect((q(root, 'watch-video') as HTMLVideoElement).getAttribute('src')).toBe(PLAYBACK.url);
     });
   });
 });

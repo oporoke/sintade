@@ -355,4 +355,78 @@ mod tests {
         let meta_after_delete = store.head(key).await.expect("head succeeds");
         assert!(meta_after_delete.is_none());
     }
+
+    /// §12 exit criterion "no public bucket paths": nothing in the bucket is readable, listable
+    /// or writable without a signature, and a signature is what opens exactly one object.
+    #[tokio::test]
+    async fn the_bucket_is_private_and_a_signature_opens_one_object() {
+        let store = test_store();
+        let endpoint = std::env::var("S3_ENDPOINT").expect("S3_ENDPOINT set");
+        let bucket = std::env::var("S3_BUCKET").expect("S3_BUCKET set");
+        let prefix = format!("test/private-{}/", uuid::Uuid::now_v7());
+        let key = format!("{prefix}secret.bin");
+        let path = std::env::temp_dir().join(format!("sintade-private-{}", uuid::Uuid::now_v7()));
+        tokio::fs::write(&path, b"not for everyone")
+            .await
+            .expect("write");
+        store
+            .put_file(&key, &path, "application/octet-stream")
+            .await
+            .expect("put");
+        tokio::fs::remove_file(&path).await.expect("tidy");
+
+        let http = reqwest::Client::new();
+        let object_url = format!("{endpoint}/{bucket}/{key}");
+        // Anonymous read, list, write and delete are all refused.
+        for (what, request) in [
+            ("GET the object", http.get(&object_url)),
+            ("HEAD the object", http.head(&object_url)),
+            (
+                "LIST the bucket",
+                http.get(format!("{endpoint}/{bucket}/?list-type=2")),
+            ),
+            (
+                "LIST the prefix",
+                http.get(format!("{endpoint}/{bucket}/?list-type=2&prefix={prefix}")),
+            ),
+            (
+                "PUT an object",
+                http.put(format!("{endpoint}/{bucket}/{prefix}planted.bin"))
+                    .body("x"),
+            ),
+            ("DELETE the object", http.delete(&object_url)),
+        ] {
+            let status = request.send().await.expect(what).status();
+            assert_eq!(
+                status.as_u16(),
+                403,
+                "anonymous {what} should be refused, got {status}"
+            );
+        }
+        // A signature for one key opens that key and not its neighbour.
+        let signed = store
+            .presign_get(&key, std::time::Duration::from_secs(60))
+            .await
+            .expect("presign");
+        let ok = http.get(signed.as_str()).send().await.expect("signed get");
+        assert_eq!(ok.status().as_u16(), 200);
+        assert_eq!(
+            ok.bytes().await.expect("body").as_ref(),
+            b"not for everyone"
+        );
+        let neighbour = signed.as_str().replace("secret.bin", "other.bin");
+        let denied = http
+            .get(&neighbour)
+            .send()
+            .await
+            .expect("neighbour")
+            .status();
+        assert_eq!(
+            denied.as_u16(),
+            403,
+            "a signature must not open a different key"
+        );
+
+        store.delete_prefix(&prefix).await.expect("tidy storage");
+    }
 }

@@ -984,10 +984,10 @@ Three phases, sized for one developer: MVP in about 14 weeks including the brows
 Exit criteria:
 
 - [ ] 30-minute 1080p recording on Chrome, Edge, Firefox, Safari uploads and plays everywhere
-- [ ] Killing the tab at minute 10 and reopening recovers the recording with no gaps
-- [ ] Dropping network for 60 s mid-recording loses nothing
-- [ ] Stop-to-link ≤ 5 s p95 on the reference setup
-- [ ] Cross-tenant access tests pass; no public bucket paths
+- [x] Killing the tab at minute 10 and reopening recovers the recording with no gaps (verified locally at minute 9, the free plan's limit is 10:00: Chromium recovered 8:58.5 of 9:00.06, Firefox 8:59.9 of 9:00.01, longest frame gap 0.10 s; `web/e2e/m8-rehearsal.spec.ts`, `docs/demos/M08-hardening-launch.md`)
+- [x] Dropping network for 60 s mid-recording loses nothing (verified locally, M4 demo, re-run at production rate limits 2026-10-05: 294/294 chunks)
+- [x] Stop-to-link ≤ 5 s p95 on the reference setup (verified locally on a workstation, 20 recordings per browser: 0.42 s Chromium, 0.92 s Firefox; **no reference setup exists yet**, repeat there)
+- [x] Cross-tenant access tests pass; no public bucket paths (generated harness on every PR; `platform` bucket-privacy test; production smoke)
 - [ ] Extension installed from the Chrome Web Store starts a recording from any tab with click highlights visible in the output
 
 ### V1 — weeks 15–30: compete

@@ -37,7 +37,8 @@ test('stop → finalize in under 2 s on 10 Mbps, then the device copy is gone', 
   await page.getByTestId('recorder-start').click();
   await page.keyboard.press('Escape'); // skip the countdown
   await expect(page.getByTestId('recorder-status')).toHaveText('Recording');
-  await page.waitForTimeout(10_000);
+  // 11 s, not 10: Firefox's recorder can start a moment late and make only four 2 s chunks.
+  await page.waitForTimeout(11_000);
   await page.getByTestId('recorder-stop').click();
 
   const summary = page.getByTestId('recorder-done-summary');

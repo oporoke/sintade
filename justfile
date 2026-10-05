@@ -61,6 +61,12 @@ audit:
     cd web && npm audit --audit-level=high
     cd extension && npm audit --audit-level=high
 
+# The launch rehearsal (Day 70): kill-the-tab recovery late in a recording and stop -> link latency
+# over 20 recordings, against the API at its production rate limits (RATE_LIMIT_SCALE=1). Needs
+# `just worker` running and no API already listening (Playwright starts one with this setting).
+rehearse-launch *args:
+    cd web && RATE_LIMIT_SCALE=1 LAUNCH=1 npx playwright test e2e/m8-rehearsal.spec.ts --workers=1 {{args}}
+
 # The backup/restore drill: restores Postgres to a point in time and the media bucket from an
 # off-site copy, in throwaway Docker containers (deploy/backup/restore-drill.sh).
 restore-drill:

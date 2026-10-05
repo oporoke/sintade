@@ -14,8 +14,19 @@ import { PlaybackData, WatchApi, WatchData, WatchHttpError } from '../../core/wa
 import { formatDuration } from '../recorder/format';
 import { PLAYBACK_SPEEDS, keyAction, seekTarget } from './player-keys';
 
-/** How often a recording that is still processing is checked (docs/design.md §10 Watch). */
+/** How soon a recording that is still processing is checked again (docs/design.md §10 Watch). */
 export const STATUS_POLL_MS = 1000;
+/** …and the longest wait between checks. */
+export const STATUS_POLL_MAX_MS = 8000;
+
+/**
+ * The wait before check number `attempt` (0 = the first re-check): quick at first, because a
+ * recording is usually watchable within seconds, then slower, so one open tab can't spend the
+ * 120-requests-a-minute public watch budget (ADR-0022) while a long recording is processed.
+ */
+export function pollDelay(attempt: number): number {
+  return Math.min(STATUS_POLL_MS * 1.3 ** attempt, STATUS_POLL_MAX_MS);
+}
 
 type View =
   | { kind: 'loading' }
@@ -181,6 +192,7 @@ export class WatchPage implements OnInit {
   private readonly player = viewChild<ElementRef<HTMLElement>>('player');
   private startedAt = 0;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
+  private pollAttempt = 0;
   /** The MP4's grant, once it exists while the preview is still on screen. */
   private upgrade: PlaybackData | null = null;
   /** Where the video was when it was switched to the MP4. */
@@ -204,6 +216,7 @@ export class WatchPage implements OnInit {
 
   protected async load(): Promise<void> {
     this.stopPolling();
+    this.pollAttempt = 0;
     this.upgrade = null;
     this.startedAt = performance.now();
     this.firstFrameMs.set(null);
@@ -231,6 +244,11 @@ export class WatchPage implements OnInit {
       }
     } catch (error) {
       const status = error instanceof WatchHttpError ? error.status : 0;
+      if (status === 429 && this.view().kind !== 'loading') {
+        // Told to slow down: keep what is on screen and ask again later.
+        this.schedulePoll();
+        return;
+      }
       this.view.set({ kind: status === 404 || status === 401 ? 'not-found' : 'error' });
       this.stopPolling();
     }
@@ -276,7 +294,8 @@ export class WatchPage implements OnInit {
 
   private schedulePoll(): void {
     this.stopPolling();
-    this.pollTimer = setTimeout(() => void this.refresh(), STATUS_POLL_MS);
+    this.pollTimer = setTimeout(() => void this.refresh(), pollDelay(this.pollAttempt));
+    this.pollAttempt += 1;
   }
 
   private stopPolling(): void {
