@@ -122,6 +122,15 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+      - name: Package the store zip (dry run against a reserved test origin)
+        run: npm run package
+        env:
+          SINTADE_ORIGIN: https://app.sintade.test
+          SINTADE_ALLOW_TEST_ORIGIN: "1"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension-store-package-dry-run
+          path: extension/artifacts/*.zip
       # The extension's browser tests need the app and API: they run in the `e2e` job.
 
   contract:

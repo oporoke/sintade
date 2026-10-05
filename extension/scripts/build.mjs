@@ -9,7 +9,7 @@ import { build, context } from 'esbuild';
 import { ICON_SIZES, iconPng } from './icons.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const dist = join(root, 'dist');
+const dist = join(root, process.env.SINTADE_DIST ?? 'dist');
 const watch = process.argv.includes('--watch');
 // The Sintade origin the extension talks to. Dev default: the HTTPS dev server (ADR-0006). Store
 // builds set SINTADE_ORIGIN to the production origin (TODO: Verify, not decided yet).
@@ -29,7 +29,8 @@ const options = {
   bundle: true,
   format: 'esm',
   target: 'chrome116',
-  sourcemap: 'linked',
+  sourcemap: process.env.NODE_ENV === 'production' ? false : 'linked',
+  minify: process.env.NODE_ENV === 'production',
   logLevel: 'info',
   legalComments: 'none',
   define: { __SINTADE_ORIGIN__: JSON.stringify(origin) },

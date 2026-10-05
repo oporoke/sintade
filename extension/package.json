@@ -11,7 +11,8 @@
     "lint": "eslint . && tsc --noEmit",
     "test": "vitest run",
     "e2e": "npm run build:e2e && playwright test",
-    "build:e2e": "SINTADE_DEV_KEY=1 node scripts/build.mjs"
+    "build:e2e": "SINTADE_DEV_KEY=1 node scripts/build.mjs",
+    "package": "node scripts/package.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
