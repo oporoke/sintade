@@ -16,6 +16,8 @@ import { Subscription } from 'rxjs';
 import {
   MicDevice,
   TakeMeta,
+  AudioLevels,
+  AudioSourceName,
   BubbleLayout,
   BubbleShape,
   TakeSession,
@@ -217,6 +219,47 @@ const ANY_MIC = 'any';
         @if (phase() === 'setup') {
           <p i18n>Say something: the bar should move.</p>
         }
+      }
+
+      @if (soundRows().length > 0) {
+        <fieldset data-testid="recorder-sound">
+          <legend i18n>Sound</legend>
+          @for (row of soundRows(); track row.name) {
+            <p>
+              <span>{{ row.label }}</span>
+              <label>
+                <input
+                  type="checkbox"
+                  [checked]="row.muted"
+                  (change)="onMute(row.name, $event)"
+                  [attr.data-testid]="'recorder-mute-' + row.name"
+                />
+                <span i18n>Mute</span>
+              </label>
+              <label>
+                <span i18n>Volume</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="2"
+                  step="0.05"
+                  [value]="row.volume"
+                  (input)="onVolume(row.name, $event)"
+                  [attr.data-testid]="'recorder-volume-' + row.name"
+                />
+              </label>
+              <meter
+                min="0"
+                max="1"
+                low="0.02"
+                high="0.6"
+                [value]="row.level"
+                [attr.aria-label]="row.label"
+                [attr.data-testid]="'recorder-level-' + row.name"
+              ></meter>
+            </p>
+          }
+        </fieldset>
       }
 
       @if (phase() === 'setup' || phase() === 'countdown') {
@@ -466,6 +509,39 @@ export class RecorderPage {
   protected readonly selectedMic = signal<string | null>(micPreference.load());
   protected readonly micInfo = signal<LiveSource | null>(null);
   protected readonly micLevel = signal(0);
+  protected readonly displayLevel = signal(0);
+  private readonly soundSettings = signal({
+    mic: { volume: 1, muted: false },
+    display: { volume: 1, muted: false },
+  });
+  /** One row per source that has audio: the mic once open, system audio once shared. */
+  protected readonly soundRows = computed(() => {
+    const settings = this.soundSettings();
+    const rows: {
+      name: AudioSourceName;
+      label: string;
+      volume: number;
+      muted: boolean;
+      level: number;
+    }[] = [];
+    if (this.micInfo() || (this.isRecording() && this.sources.currentMic)) {
+      rows.push({
+        name: 'mic',
+        label: $localize`Microphone`,
+        ...settings.mic,
+        level: this.micLevel(),
+      });
+    }
+    if ((this.display()?.getAudioTracks().length ?? 0) > 0) {
+      rows.push({
+        name: 'display',
+        label: $localize`System audio`,
+        ...settings.display,
+        level: this.displayLevel(),
+      });
+    }
+    return rows;
+  });
   protected readonly problem = signal<CaptureProblem | null>(null);
   private readonly browser = currentBrowser();
   /** Mobile browsers can't record (README §4.1); nor can anything without screen capture. */
@@ -630,6 +706,18 @@ export class RecorderPage {
     this.bubble.set(this.session?.bubble ?? null);
   }
 
+  onVolume(name: AudioSourceName, event: Event): void {
+    const volume = Number((event.target as HTMLInputElement).value);
+    this.mixer.setVolume(name, volume);
+    this.soundSettings.update((all) => ({ ...all, [name]: { ...all[name], volume } }));
+  }
+
+  onMute(name: AudioSourceName, event: Event): void {
+    const muted = (event.target as HTMLInputElement).checked;
+    this.mixer.setMuted(name, muted);
+    this.soundSettings.update((all) => ({ ...all, [name]: { ...all[name], muted } }));
+  }
+
   async chooseScreen(): Promise<void> {
     this.problem.set(null);
     try {
@@ -747,6 +835,7 @@ export class RecorderPage {
       });
       this.session = session;
       this.bubble.set(session.bubble);
+      this.watchLevelsWhileRecording();
       this.phase.set('recording');
       this.uploader = recording ? new Uploader({ api: this.recordingsApi, store, takeId }) : null;
       const uploader = this.uploader;
@@ -914,13 +1003,30 @@ export class RecorderPage {
     this.meterSubscription = this.mixer
       .levels$(METER_INTERVAL_MS)
       .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe((levels) => this.micLevel.update((shown) => meterValue(shown, levels.mic)));
+      .subscribe((levels) => this.showLevels(levels));
+  }
+
+  private showLevels(levels: AudioLevels): void {
+    this.micLevel.update((shown) => meterValue(shown, levels.mic));
+    this.displayLevel.update((shown) => meterValue(shown, levels.display));
+  }
+
+  /** While recording, meters stay live even when no mic was open for the device check. */
+  private watchLevelsWhileRecording(): void {
+    if (this.meterSubscription) {
+      return;
+    }
+    this.meterSubscription = this.mixer
+      .levels$(METER_INTERVAL_MS)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((levels) => this.showLevels(levels));
   }
 
   private stopMeter(): void {
     this.meterSubscription?.unsubscribe();
     this.meterSubscription = null;
     this.micLevel.set(0);
+    this.displayLevel.set(0);
     void this.mixer.close();
   }
 

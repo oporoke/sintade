@@ -17,10 +17,13 @@ export type AudioContextPort = Pick<
   | 'createMediaStreamSource'
   | 'createMediaStreamDestination'
   | 'createAnalyser'
+  | 'createGain'
   | 'resume'
   | 'close'
   | 'state'
 >;
+
+export const MAX_VOLUME = 2;
 
 const ANALYSER_FFT_SIZE = 1024;
 const DEFAULT_LEVEL_INTERVAL_MS = 100;
@@ -36,6 +39,9 @@ export class AudioMixer {
   private context: AudioContextPort | null = null;
   private readonly nodes: AudioNode[] = [];
   private readonly analysers = new Map<LevelName, AnalyserNode>();
+  private readonly gains = new Map<AudioSourceName, GainNode>();
+  private readonly volumes: Record<AudioSourceName, number> = { mic: 1, display: 1 };
+  private readonly mutes: Record<AudioSourceName, boolean> = { mic: false, display: false };
   private output: MediaStreamTrack | null = null;
 
   constructor(private readonly createContext: () => AudioContextPort = () => new AudioContext()) {}
@@ -74,16 +80,53 @@ export class AudioMixer {
     for (const name of inputs) {
       // Non-null: `inputs` only holds names whose stream has audio tracks.
       const source = context.createMediaStreamSource(sources[name] as MediaStream);
-      source.connect(destination);
+      // Meters read the input before the gain, so a muted source still shows it is alive; the
+      // mix meter reads after, so it shows what the recording gets.
+      const gain = context.createGain();
+      gain.gain.value = this.effectiveGain(name);
       source.connect(this.analyser(context, name));
-      source.connect(mixAnalyser);
-      this.nodes.push(source);
+      source.connect(gain);
+      gain.connect(destination);
+      gain.connect(mixAnalyser);
+      this.gains.set(name, gain);
+      this.nodes.push(source, gain);
     }
     this.nodes.push(destination);
 
     const [track] = destination.stream.getAudioTracks();
     this.output = track ?? null;
     return this.output;
+  }
+
+  /** Per-source volume, 0 to `MAX_VOLUME` (1 = unchanged). Works before and during a mix. */
+  setVolume(name: AudioSourceName, volume: number): void {
+    this.volumes[name] = Math.min(Math.max(Number.isFinite(volume) ? volume : 1, 0), MAX_VOLUME);
+    this.applyGain(name);
+  }
+
+  /** Muting silences the source in the recording; its volume setting is kept. */
+  setMuted(name: AudioSourceName, muted: boolean): void {
+    this.mutes[name] = muted;
+    this.applyGain(name);
+  }
+
+  volume(name: AudioSourceName): number {
+    return this.volumes[name];
+  }
+
+  isMuted(name: AudioSourceName): boolean {
+    return this.mutes[name];
+  }
+
+  private effectiveGain(name: AudioSourceName): number {
+    return this.mutes[name] ? 0 : this.volumes[name];
+  }
+
+  private applyGain(name: AudioSourceName): void {
+    const gain = this.gains.get(name);
+    if (gain) {
+      gain.gain.value = this.effectiveGain(name);
+    }
   }
 
   /** RMS level of an input or the mix, 0 (silence) to 1 (full scale). 0 if not being mixed. */
@@ -130,6 +173,7 @@ export class AudioMixer {
   private teardown(): void {
     this.nodes.splice(0).forEach((node) => node.disconnect());
     this.analysers.clear();
+    this.gains.clear();
     this.output?.stop();
     this.output = null;
   }

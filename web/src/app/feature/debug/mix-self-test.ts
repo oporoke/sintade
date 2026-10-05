@@ -1,4 +1,4 @@
-import { AudioLevels, AudioMixer, startAudio } from '../../capture';
+import { AudioLevels, AudioMixer, AudioSourceName, startAudio } from '../../capture';
 
 export interface ToneResult {
   frequencyHz: number;
@@ -45,9 +45,13 @@ const CLIP_MIME_TYPES = [
  * synthetic tones stand in for the mic and display audio, go through the real `AudioMixer`,
  * get recorded by the browser's `MediaRecorder` into a clip, which is decoded and analysed.
  */
-export async function runMixSelfTest(durationMs = 2000): Promise<MixSelfTestResult> {
+export async function runMixSelfTest(
+  durationMs = 2000,
+  mutedSources: AudioSourceName[] = [],
+): Promise<MixSelfTestResult> {
   const sourceContext = new AudioContext();
   const mixer = new AudioMixer();
+  mutedSources.forEach((name) => mixer.setMuted(name, true));
   try {
     await startAudio(sourceContext);
     const [mic, display] = [TONES[0], TONES[1]].map(({ frequencyHz }) => {
