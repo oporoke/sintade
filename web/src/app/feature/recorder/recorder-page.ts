@@ -3,6 +3,7 @@ import {
   Component,
   DestroyRef,
   ElementRef,
+  HostListener,
   Injector,
   afterNextRender,
   computed,
@@ -43,6 +44,7 @@ import { currentBrowser } from '../../core/browser';
 import { SHARE_API, shareUrl } from '../../core/share-api.service';
 import { ShareDialog } from '../share/share-dialog';
 import { CapabilityService } from '../../core/capability.service';
+import { LIBRARY_API } from '../../core/library-api.service';
 import { CreateRecordingResponse } from '../../core/ingest-api.service';
 import {
   AUDIO_MIXER,
@@ -75,6 +77,8 @@ const METER_INTERVAL_MS = 50;
 const TIMER_INTERVAL_MS = 250;
 /** How far inside the plan's take limit the recorder stops (timer ticks every 250 ms). */
 const LIMIT_MARGIN_MS = 1_000;
+/** The "stopping soon" notice starts this long before the automatic stop. */
+const LIMIT_WARNING_MS = 30_000;
 /**
  * Option value for a microphone listed before permission. Firefox then reports devices with an
  * empty `deviceId`, so the only thing we can ask for is "the browser's microphone".
@@ -448,6 +452,62 @@ const ANY_MIC = 'any';
           >
             Stop recording
           </button>
+          @if (phase() !== 'saving') {
+            @if (confirming(); as action) {
+              <p role="alert" data-testid="recorder-confirm">
+                @if (action === 'restart') {
+                  <span i18n>Throw this recording away and start again?</span>
+                } @else {
+                  <span i18n>Throw this recording away?</span>
+                }
+                <button
+                  type="button"
+                  (click)="confirmDiscard()"
+                  data-testid="recorder-confirm-yes"
+                  i18n
+                >
+                  Yes, discard it
+                </button>
+                <button
+                  type="button"
+                  (click)="confirming.set(null)"
+                  data-testid="recorder-confirm-no"
+                  i18n
+                >
+                  Keep recording
+                </button>
+              </p>
+            } @else {
+              <button
+                type="button"
+                (click)="confirming.set('restart')"
+                data-testid="recorder-restart"
+                i18n
+              >
+                Restart
+              </button>
+              <button
+                type="button"
+                (click)="confirming.set('discard')"
+                data-testid="recorder-discard"
+                i18n
+              >
+                Discard
+              </button>
+            }
+          }
+          @if (limitWarning(); as seconds) {
+            <p role="status" data-testid="recorder-limit-warning">
+              <ng-container i18n>
+                Your plan's time limit is near: this recording stops by itself in
+                {{ seconds }} s.
+              </ng-container>
+            </p>
+          }
+          <p data-testid="recorder-shortcuts" i18n>
+            Shortcuts (when this page is focused): P pause or resume, S stop, M mute the microphone,
+            R restart, D discard.
+          </p>
           @if (phase() === 'saving') {
             <p role="status" i18n>Saving…</p>
           }
@@ -615,6 +675,7 @@ export class RecorderPage {
   private readonly sources = inject(SOURCE_MANAGER);
   private readonly mixer = inject(AUDIO_MIXER);
   private readonly planLimits = inject(PLAN_LIMITS);
+  private readonly libraryApi = inject(LIBRARY_API);
   private readonly chunkStore = inject(CHUNK_STORE);
   private readonly startTake = inject(START_TAKE);
   private readonly recordingsApi = inject(RECORDINGS_API);
@@ -713,6 +774,24 @@ export class RecorderPage {
   protected readonly uploadNotice = signal<string | null>(null);
   /** The plan's limits: recording refused (50 reached) or the take stopped at its length cap. */
   protected readonly limitNotice = signal<string | null>(null);
+  protected readonly confirming = signal<'restart' | 'discard' | null>(null);
+  private readonly planLimitMs = signal<number | null>(null);
+  /** Seconds until the automatic stop, once within the warning window (5 s steps above 10 s). */
+  protected readonly limitWarning = computed(() => {
+    const limit = this.planLimitMs();
+    if (limit === null || !['recording', 'paused'].includes(this.phase())) {
+      return null;
+    }
+    const left = limit - LIMIT_MARGIN_MS - this.elapsedMs();
+    if (left > LIMIT_WARNING_MS || left <= 0) {
+      return null;
+    }
+    const seconds = Math.ceil(left / 1000);
+    return seconds > 10 ? Math.ceil(seconds / 5) * 5 : seconds;
+  });
+  private discarding = false;
+  private currentRecordingId: string | null = null;
+  private currentTakeId: string | null = null;
   protected readonly uploadedHeading = $localize`Recording uploaded`;
   protected readonly savedHeading = $localize`Recording saved`;
   protected readonly anyMic = ANY_MIC;
@@ -1054,6 +1133,8 @@ export class RecorderPage {
       }
       this.limitNotice.set(null);
       const maxDurationMs = recording?.max_duration_ms ?? null;
+      this.planLimitMs.set(maxDurationMs);
+      this.currentRecordingId = recording?.recording_id ?? null;
       const store = await this.chunkStore;
       const takeId = recording?.take_id ?? crypto.randomUUID();
       const session = await this.startTake({
@@ -1069,6 +1150,7 @@ export class RecorderPage {
         ...(mimeType ? { mimeType } : {}),
       });
       this.session = session;
+      this.currentTakeId = takeId;
       this.bubble.set(session.bubble);
       this.watchLevelsWhileRecording();
       this.phase.set('recording');
@@ -1137,6 +1219,93 @@ export class RecorderPage {
     await this.session?.stop().catch((error: unknown) => this.showError(error, 'screen'));
   }
 
+  /** Throws the current take away: nothing is kept on the device and the server copy is trashed. */
+  async confirmDiscard(): Promise<void> {
+    const action = this.confirming();
+    this.confirming.set(null);
+    const session = this.session;
+    if (!action || !session || this.discarding) {
+      return;
+    }
+    this.discarding = true;
+    const recordingId = this.currentRecordingId;
+    const takeId = this.currentTakeId;
+    this.uploader?.cancel();
+    this.uploader = null;
+    try {
+      await session.stop().catch(() => undefined);
+      if (takeId) {
+        const store = await this.chunkStore;
+        await store.deleteTake(takeId).catch(() => undefined);
+      }
+      if (recordingId) {
+        await this.libraryApi.trash(recordingId).catch(() => undefined);
+      }
+    } finally {
+      this.sessionSubscriptions.forEach((subscription) => subscription.unsubscribe());
+      this.sessionSubscriptions = [];
+      this.session = null;
+      this.bubble.set(null);
+      this.planLimitMs.set(null);
+      this.currentRecordingId = null;
+      this.currentTakeId = null;
+      this.elapsedMs.set(0);
+      this.discarding = false;
+      this.phase.set('setup');
+    }
+    if (action === 'restart') {
+      await this.start();
+    }
+  }
+
+  /** Recorder shortcuts: plain letters, only while a take is running and nothing is being typed. */
+  @HostListener('document:keydown', ['$event'])
+  onShortcut(event: KeyboardEvent): void {
+    if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) {
+      return;
+    }
+    const target = event.target;
+    if (
+      target instanceof Element &&
+      target.closest('input, select, textarea, [contenteditable=""], [contenteditable="true"]')
+    ) {
+      return;
+    }
+    const phase = this.phase();
+    if (phase !== 'recording' && phase !== 'paused') {
+      return;
+    }
+    switch (event.key.toLowerCase()) {
+      case 'p':
+        this.togglePause();
+        break;
+      case 's':
+        void this.stop();
+        break;
+      case 'm':
+        this.toggleMicMute();
+        break;
+      case 'r':
+        this.confirming.set('restart');
+        break;
+      case 'd':
+        this.confirming.set('discard');
+        break;
+      case 'escape':
+        this.confirming.set(null);
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+  }
+
+  private toggleMicMute(): void {
+    const muted = !this.mixer.isMuted('mic');
+    this.mixer.setMuted('mic', muted);
+    this.soundSettings.update((all) => ({ ...all, mic: { ...all.mic, muted } }));
+  }
+
   newRecording(): void {
     this.releaseDownload();
     this.result.set(null);
@@ -1151,12 +1320,13 @@ export class RecorderPage {
   }
 
   private async finish(take: TakeMeta): Promise<void> {
-    if (this.destroyed) {
-      return; // Left the page mid-take: it's saved; there's no view to update.
+    if (this.destroyed || this.discarding) {
+      return; // Left the page mid-take (it's saved), or the take was discarded: nothing to show.
     }
     const stoppedAt = this.stopPressedAt ?? performance.now();
     this.session = null;
     this.bubble.set(null);
+    this.planLimitMs.set(null);
     this.elapsedMs.set(take.durationMs);
     this.result.set(take);
     const uploader = this.uploader;

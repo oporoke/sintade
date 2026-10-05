@@ -194,6 +194,7 @@ export class Uploader {
   private state: UploaderState = 'idle';
   private running: Promise<void> | null = null;
   private failure: UploadError | null = null;
+  private cancelled = false;
 
   constructor(options: UploaderOptions) {
     this.api = options.api;
@@ -220,7 +221,7 @@ export class Uploader {
 
   /** Queues chunk `idx` (already in the store). Queuing an index twice uploads it once. */
   enqueue(idx: number): void {
-    if (this.done.has(idx) || this.pending.includes(idx)) {
+    if (this.cancelled || this.done.has(idx) || this.pending.includes(idx)) {
       return;
     }
     this.pending.push(idx);
@@ -299,8 +300,17 @@ export class Uploader {
     }
   }
 
+  /**
+   * Abandons the take's upload (the take was discarded): nothing more is queued or sent. A chunk
+   * already in flight finishes or fails on its own; its outcome no longer matters. Does not wait.
+   */
+  cancel(): void {
+    this.cancelled = true;
+    this.pending.length = 0;
+  }
+
   private start(): void {
-    if (this.failure) {
+    if (this.failure || this.cancelled) {
       return;
     }
     this.running ??= this.drain().finally(() => {
@@ -312,11 +322,14 @@ export class Uploader {
   }
 
   private async drain(): Promise<void> {
-    while (this.pending.length > 0 && !this.failure) {
+    while (this.pending.length > 0 && !this.failure && !this.cancelled) {
       const idx = this.pending[0];
       this.setState('uploading');
       try {
         await this.withRetry(() => this.upload(idx));
+        if (this.cancelled) {
+          return;
+        }
         this.pending.shift();
         this.done.add(idx);
         this.urls.delete(idx);

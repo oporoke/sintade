@@ -27,6 +27,7 @@ import {
   SOURCE_MANAGER,
   START_TAKE,
 } from '../../core/capture.tokens';
+import { LIBRARY_API } from '../../core/library-api.service';
 import { SHARE_API, SharePort } from '../../core/share-api.service';
 import { RecorderPage } from './recorder-page';
 
@@ -62,6 +63,9 @@ function fakeMixer(micLevel = 0.4) {
     mix: vi.fn().mockResolvedValue({ kind: 'audio' }),
     levels$: () => of({ mic: micLevel, display: 0, mix: micLevel }),
     close: vi.fn().mockResolvedValue(undefined),
+    isMuted: vi.fn().mockReturnValue(false),
+    setMuted: vi.fn(),
+    setVolume: vi.fn(),
   };
   return mixer as unknown as AudioMixer & typeof mixer;
 }
@@ -390,6 +394,8 @@ describe('RecorderPage control bar', () => {
 
   async function recording(api: RecordingsApi = offlineApi(), share: SharePort = fakeShare()) {
     const take = fakeSession();
+    const mixer = fakeMixer();
+    const library = { trash: vi.fn().mockResolvedValue(undefined) };
     const startTake = vi.fn().mockResolvedValue(take.session);
     const store = {
       getMeta: vi.fn().mockResolvedValue(null),
@@ -402,8 +408,9 @@ describe('RecorderPage control bar', () => {
       providers: [
         { provide: CapabilityService, useValue: capabilities(SUPPORTED) },
         { provide: SOURCE_MANAGER, useValue: fakeSources() },
-        { provide: AUDIO_MIXER, useValue: fakeMixer() },
+        { provide: AUDIO_MIXER, useValue: mixer },
         { provide: PLAN_LIMITS, useValue: signal(planLimits) },
+        { provide: LIBRARY_API, useValue: library },
         { provide: CHUNK_STORE, useValue: Promise.resolve(store) },
         { provide: START_TAKE, useValue: startTake },
         { provide: RECORDINGS_API, useValue: api },
@@ -427,7 +434,7 @@ describe('RecorderPage control bar', () => {
     await settle();
     q<HTMLButtonElement>('recorder-start')?.click();
     await settle(3000); // the 3-2-1
-    return { ...take, startTake, store, fixture, q, settle };
+    return { ...take, startTake, store, library, mixer, fixture, q, settle };
   }
 
   it('starts the take after the countdown and moves focus to Pause', async () => {
@@ -489,6 +496,91 @@ describe('RecorderPage control bar', () => {
       await settle();
       expect(session.stop).toHaveBeenCalledTimes(1);
       expect(q('recorder-limit-notice')?.textContent).toContain('up to 10 min');
+    });
+
+    it('warns 30 seconds before the automatic stop, in steps', async () => {
+      const { q, elapsed, settle } = await recording(onlineApi());
+      elapsed.next(560_000);
+      await settle();
+      expect(q('recorder-limit-warning')).toBeNull();
+      elapsed.next(575_000); // 24 s left before the 1 s margin -> 25
+      await settle();
+      expect(q('recorder-limit-warning')?.textContent).toContain('in 25 s');
+      elapsed.next(591_500); // 7.5 s left -> 8
+      await settle();
+      expect(q('recorder-limit-warning')?.textContent).toContain('in 8 s');
+    });
+
+    it('discarding deletes the take on the device, trashes the server copy and finalizes nothing', async () => {
+      const api = onlineApi();
+      const { q, session, store, library, settle } = await recording(api);
+      q<HTMLButtonElement>('recorder-discard')?.click();
+      await settle();
+      expect(q('recorder-confirm')).not.toBeNull();
+      q<HTMLButtonElement>('recorder-confirm-yes')?.click();
+      await settle();
+      expect(session.stop).toHaveBeenCalled();
+      expect(store.deleteTake).toHaveBeenCalledWith(SERVER_TAKE);
+      expect(library.trash).toHaveBeenCalledWith('rec-1');
+      expect(api.finalize).not.toHaveBeenCalled();
+      expect(q('recorder-controls')).toBeNull();
+      expect(q('recorder-start')).not.toBeNull();
+    });
+
+    it('keeps recording when the discard is not confirmed', async () => {
+      const { q, session, settle } = await recording(onlineApi());
+      q<HTMLButtonElement>('recorder-discard')?.click();
+      await settle();
+      q<HTMLButtonElement>('recorder-confirm-no')?.click();
+      await settle();
+      expect(session.stop).not.toHaveBeenCalled();
+      expect(q('recorder-status')?.textContent?.trim()).toBe('Recording');
+    });
+
+    it('restart discards the take and starts a new one after the countdown', async () => {
+      const api = onlineApi();
+      const { q, startTake, store, settle } = await recording(api);
+      q<HTMLButtonElement>('recorder-restart')?.click();
+      await settle();
+      q<HTMLButtonElement>('recorder-confirm-yes')?.click();
+      await settle(3000);
+      expect(store.deleteTake).toHaveBeenCalledWith(SERVER_TAKE);
+      expect(api.createRecording).toHaveBeenCalledTimes(2);
+      expect(startTake).toHaveBeenCalledTimes(2);
+    });
+
+    it('keyboard shortcuts pause, mute the mic and stop', async () => {
+      const { q, session, mixer, settle } = await recording(onlineApi());
+      const press = (key: string) =>
+        document.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+      press('p');
+      await settle();
+      expect(session.pause).toHaveBeenCalled();
+      press('p');
+      await settle();
+      expect(session.resume).toHaveBeenCalled();
+      press('m');
+      expect(mixer.setMuted).toHaveBeenCalledWith('mic', true);
+      press('r');
+      await settle();
+      expect(q('recorder-confirm')).not.toBeNull();
+      press('Escape');
+      await settle();
+      expect(q('recorder-confirm')).toBeNull();
+      press('s');
+      await settle();
+      expect(session.stop).toHaveBeenCalled();
+    });
+
+    it('ignores shortcuts typed into a form field or with a modifier', async () => {
+      const { session, settle } = await recording(onlineApi());
+      const input = document.createElement('input');
+      document.body.appendChild(input);
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 's', bubbles: true }));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true }));
+      await settle();
+      expect(session.stop).not.toHaveBeenCalled();
+      input.remove();
     });
 
     it("doesn't record when the plan's recording limit is reached", async () => {
