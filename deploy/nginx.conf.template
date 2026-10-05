@@ -31,6 +31,12 @@ server {
         # No add_header here on purpose: the API's stricter headers pass through unchanged.
     }
 
+    # The probes, for the load balancer and the deploy's smoke test (no cache, no headers added).
+    location ~ ^/(healthz|readyz)$ {
+        proxy_pass http://${API_UPSTREAM};
+        proxy_set_header Host $host;
+    }
+
     # Hashed assets never change.
     location ~* \.(?:js|css|woff2?|png|ico|svg)$ {
         add_header Cache-Control "public, max-age=31536000, immutable" always;

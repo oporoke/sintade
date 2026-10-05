@@ -1,18 +1,135 @@
-services:
-  api:
-    image: ghcr.io/oporoke/sintade/api:${IMAGE_TAG:?}
-    env_file: /etc/sintade/env
-    ports:
-      - "8080:8080"
-    restart: unless-stopped
+# Production (and staging) stack: docker compose -f compose.prod.yml --env-file .env up -d
+# One host runs everything; to split (docs/design.md §19: API host, worker host, database), start
+# only some profiles on each: `edge` (caddy, web, api), `worker`, `data` (postgres, minio).
+#
+# Compose reads `.env` next to this file (IMAGE_TAG, DOMAIN, ACME_EMAIL, POSTGRES_PASSWORD, …:
+# see env.example); the API and worker read /etc/sintade/env (see env.example). Neither is in git.
+name: sintade
 
-  worker:
-    image: ghcr.io/oporoke/sintade/worker:${IMAGE_TAG:?}
-    env_file: /etc/sintade/env
+x-app-env: &app-env
+  env_file: ${APP_ENV_FILE:-/etc/sintade/env}
+
+services:
+  caddy:
+    profiles: [edge]
+    image: caddy:2
     restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      DOMAIN: ${DOMAIN:?}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+      CADDY_TLS: ${CADDY_TLS:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [web, minio]
 
   web:
+    profiles: [edge]
     image: ghcr.io/oporoke/sintade/web:${IMAGE_TAG:?}
-    ports:
-      - "80:80"
     restart: unless-stopped
+    environment:
+      API_UPSTREAM: api:8080
+      # Where browsers fetch posters and videos from (the CSP allows only this and the app).
+      STORAGE_ORIGIN: https://storage.${DOMAIN:?}
+    depends_on: [api]
+
+  api:
+    profiles: [edge]
+    image: ghcr.io/oporoke/sintade/api:${IMAGE_TAG:?}
+    <<: *app-env
+    restart: unless-stopped
+    environment:
+      RELEASE: ${IMAGE_TAG:?}
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf \"GET /readyz HTTP/1.0\\r\\n\\r\\n\" >&3 && head -1 <&3 | grep -q 200'"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    stop_grace_period: 30s
+
+  worker:
+    profiles: [worker]
+    image: ghcr.io/oporoke/sintade/worker:${IMAGE_TAG:?}
+    <<: *app-env
+    restart: unless-stopped
+    environment:
+      RELEASE: ${IMAGE_TAG:?}
+    volumes:
+      - worker-scratch:/var/lib/sintade/scratch
+    # SIGTERM lets the job in flight finish or be re-queued (a lock that expires is reclaimed).
+    stop_grace_period: 120s
+
+  postgres:
+    profiles: [data]
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: sintade
+    # WAL archiving for point-in-time recovery (deploy/backup/README.md).
+    command: >
+      postgres -c wal_level=replica -c archive_mode=on
+      -c archive_command='/backup/bin/archive-wal.sh %p %f' -c archive_timeout=60
+      -c max_connections=100
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ${BACKUP_DIR:-/var/backups/sintade}:/backup
+      - ./backup:/backup/bin:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d sintade"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  minio:
+    profiles: [data, edge]
+    image: ghcr.io/oporoke/sintade/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: unless-stopped
+    command: server /data --address :9000 --console-address 127.0.0.1:9001
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+      # Browsers upload with presigned PUTs from the app's origin.
+      MINIO_API_CORS_ALLOW_ORIGIN: https://${DOMAIN:?}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # One-shot: the media bucket and the service account the app uses (not the root user).
+  minio-init:
+    profiles: [data, edge]
+    image: ghcr.io/oporoke/sintade/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    environment:
+      MC_HOST_local: http://${MINIO_ROOT_USER:?}:${MINIO_ROOT_PASSWORD:?}@minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      S3_BUCKET: ${S3_BUCKET:?}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?}
+    command:
+      - |
+        set -eu
+        mc mb --ignore-existing "local/$$S3_BUCKET"
+        mc admin user svcacct info local "$$S3_ACCESS_KEY" >/dev/null 2>&1 \
+          || mc admin user svcacct add --access-key "$$S3_ACCESS_KEY" --secret-key "$$S3_SECRET_KEY" local "$$MINIO_ROOT_USER"
+        echo "bucket $$S3_BUCKET ready"
+
+volumes:
+  caddy-data:
+  caddy-config:
+  pgdata:
+  minio-data:
+  worker-scratch:

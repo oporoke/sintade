@@ -28,6 +28,7 @@ pub enum FailOutcome {
     DeadLettered,
 }
 
+#[derive(Clone)]
 pub struct JobQueue {
     pool: PgPool,
 }

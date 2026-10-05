@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT coalesce(last_failed_time > coalesce(last_archived_time, '-infinity'), false)\n                       AS \"failing!\"\n                FROM pg_stat_archiver\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "failing!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "a0b2dcf102ff4c05936563d975fdf2871b98a5cc2ad06ac668638e58bcabaa7e"
+}

@@ -66,6 +66,12 @@ audit:
 restore-drill:
     deploy/backup/restore-drill.sh
 
+# The production stack on this machine from locally built images, through Caddy's own TLS, with a
+# first user's sign-up and chunk upload (deploy/smoke-local.sh). Build the images first (see the
+# script's header). Never touches the dev stack: it runs as its own compose project.
+prod-smoke:
+    deploy/smoke-local.sh
+
 # OWASP ZAP baseline of the web image and an API scan from the OpenAPI contract, against the
 # running local stack (API on :8080). Reports go to target/zap/. See scripts/zap-scan.sh.
 zap:

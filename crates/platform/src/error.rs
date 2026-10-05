@@ -5,4 +5,7 @@ pub enum PlatformError {
 
     #[error("database connection failed: {0}")]
     Database(#[from] sqlx::Error),
+
+    #[error("migrations failed: {0}")]
+    Migrate(String),
 }

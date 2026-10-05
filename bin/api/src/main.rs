@@ -22,8 +22,15 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // `api migrate` applies the migrations and exits (the deploy runs it before the new API
+    // starts, docs/design.md §19). It needs only the database.
+    if std::env::args().nth(1).as_deref() == Some("migrate") {
+        return migrate_command().await;
+    }
+
     let config = platform::Config::load()?;
-    platform::init_telemetry(&config.rust_log);
+    // Held for the life of the process: dropping it stops error reporting.
+    let _telemetry = platform::init_telemetry(&config.rust_log, &config.error_reporting());
 
     rate_limit::set_scale(
         std::env::var("RATE_LIMIT_SCALE")
@@ -81,5 +88,14 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("api listening on 0.0.0.0:8080");
     axum::serve(listener, router).await?;
 
+    Ok(())
+}
+
+async fn migrate_command() -> anyhow::Result<()> {
+    let url =
+        std::env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("migrate needs DATABASE_URL"))?;
+    let pool = platform::connect(&url).await?;
+    platform::migrate(&pool).await?;
+    println!("migrations are up to date");
     Ok(())
 }
