@@ -24,6 +24,11 @@ export interface StopRecordingMessage {
   type: 'stop-recording';
 }
 
+/** Popup → service worker: forget a finished recording (back to idle). */
+export interface DismissRecordingMessage {
+  type: 'dismiss-recording';
+}
+
 export interface RecordingStatusMessage {
   type: 'recording-status';
 }
@@ -34,7 +39,8 @@ export type Message =
   | OpenSignInMessage
   | StartRecordingMessage
   | StopRecordingMessage
-  | RecordingStatusMessage;
+  | RecordingStatusMessage
+  | DismissRecordingMessage;
 
 /** Service worker → offscreen document. `target` keeps other listeners from answering. */
 export interface OffscreenStart {
@@ -43,6 +49,8 @@ export interface OffscreenStart {
   streamId: string;
   origin: string;
   version: string;
+  tabAudio: boolean;
+  microphone: boolean;
 }
 
 export interface OffscreenStop {
@@ -95,6 +103,7 @@ const POPUP_TYPES = new Set([
   'start-recording',
   'stop-recording',
   'recording-status',
+  'dismiss-recording',
 ]);
 
 export function isMessage(value: unknown): value is Message {

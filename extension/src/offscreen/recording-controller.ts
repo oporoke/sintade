@@ -15,8 +15,10 @@ export interface ControllerApi {
 
 export interface ControllerDeps {
   api: ControllerApi;
-  /** The captured tab: video, and its audio if the tab makes sound. */
+  /** The captured tab: video, and its audio if the tab makes sound and it is wanted. */
   stream: MediaStream;
+  /** The microphone, if it is on. */
+  mic?: MediaStream | null;
   store: ChunkStore;
   mixer: TakeSessionOptions['mixer'];
   startTake: (options: TakeSessionOptions) => Promise<TakeSession>;
@@ -50,7 +52,9 @@ export class RecordingController {
   async start(): Promise<void> {
     const { deps } = this;
     this.set({ phase: 'starting' });
-    const hasAudio = deps.stream.getAudioTracks().length > 0;
+    const hasSystemAudio = deps.stream.getAudioTracks().length > 0;
+    const hasMic = (deps.mic?.getAudioTracks().length ?? 0) > 0;
+    const hasAudio = hasSystemAudio || hasMic;
     const mimeType = (deps.mimeType ?? ((audio) => selectMimeType(undefined, { audio })))(hasAudio);
     if (!mimeType) {
       return this.fail('capture-failed', 'This browser cannot record in a supported format.');
@@ -60,8 +64,8 @@ export class RecordingController {
     try {
       recording = await deps.api.createRecording({
         mime_type: mimeType,
-        has_system_audio: hasAudio,
-        has_mic: false,
+        has_system_audio: hasSystemAudio,
+        has_mic: hasMic,
         has_camera: false,
       });
     } catch (error) {
@@ -71,7 +75,7 @@ export class RecordingController {
     try {
       this.session = await deps.startTake({
         display: deps.stream,
-        mic: null,
+        mic: deps.mic ?? null,
         mixer: deps.mixer,
         store: deps.store,
         takeId: recording.take_id,
@@ -116,7 +120,7 @@ export class RecordingController {
     uploader: Pick<Uploader, 'finalize'>,
   ): Promise<void> {
     this.unsubscribe();
-    this.deps.stream.getTracks().forEach((track) => track.stop());
+    this.releaseMedia();
     this.set({ phase: 'uploading' });
     try {
       if (take.chunkCount === 0) {
@@ -165,8 +169,13 @@ export class RecordingController {
 
   private fail(code: RecordingErrorCode, message: string): void {
     this.unsubscribe();
-    this.deps.stream.getTracks().forEach((track) => track.stop());
+    this.releaseMedia();
     this.set({ phase: 'error', code, message });
+  }
+
+  private releaseMedia(): void {
+    this.deps.stream.getTracks().forEach((track) => track.stop());
+    this.deps.mic?.getTracks().forEach((track) => track.stop());
   }
 
   private unsubscribe(): void {

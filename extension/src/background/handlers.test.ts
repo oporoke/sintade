@@ -11,6 +11,7 @@ function env(whoAmI: WhoAmIReply = { state: 'signed-out' }) {
       start: vi.fn().mockResolvedValue({ phase: 'starting' }),
       stop: vi.fn().mockResolvedValue({ phase: 'uploading' }),
       status: vi.fn().mockResolvedValue({ phase: 'idle' }),
+      dismiss: vi.fn().mockResolvedValue(undefined),
     },
     openTab: vi.fn().mockResolvedValue(undefined),
   };
@@ -49,6 +50,14 @@ describe('handleMessage', () => {
     expect(await handleMessage({ type: 'recording-status' }, e)).toEqual({
       state: { phase: 'idle' },
     });
+  });
+
+  it('dismisses a finished recording and reports the state after', async () => {
+    const e = env();
+    expect(await handleMessage({ type: 'dismiss-recording' }, e)).toEqual({
+      state: { phase: 'idle' },
+    });
+    expect(e.recorder.dismiss).toHaveBeenCalled();
   });
 
   it('refuses a start without a tab id', async () => {

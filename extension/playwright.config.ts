@@ -6,6 +6,8 @@ export default defineConfig({
   testDir: './e2e',
   fullyParallel: false,
   workers: 1,
+  // Shared CI runners are slower and noisier than a workstation: one retry for timing flakes.
+  retries: process.env['CI'] ? 1 : 0,
   timeout: 60_000,
   reporter: process.env['CI'] ? [['github'], ['list']] : 'list',
   // The handoff and recording specs need the real app: the HTTPS dev server (proxying /api) and

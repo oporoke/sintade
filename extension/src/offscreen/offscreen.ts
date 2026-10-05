@@ -47,9 +47,9 @@ async function start(message: Extract<OffscreenMessage, { type: 'offscreen-start
   }
   const api = new SintadeApi(message.origin, message.version);
   const uploadApi = new ExtensionUploadApi(api);
-  let stream: MediaStream;
+  let tab: MediaStream;
   try {
-    stream = await tabStream(message.streamId);
+    tab = await tabStream(message.streamId);
   } catch (error) {
     publish({
       phase: 'error',
@@ -58,14 +58,31 @@ async function start(message: Extract<OffscreenMessage, { type: 'offscreen-start
     });
     return;
   }
-  if (stream.getAudioTracks().length > 0) {
+  // Capturing a tab mutes it for the user: play its sound back whether or not it is recorded.
+  if (tab.getAudioTracks().length > 0) {
     playback = new AudioContext();
-    playback.createMediaStreamSource(stream).connect(playback.destination);
+    playback.createMediaStreamSource(tab).connect(playback.destination);
+  }
+  const stream = message.tabAudio ? tab : new MediaStream(tab.getVideoTracks());
+  let mic: MediaStream | null = null;
+  if (message.microphone) {
+    try {
+      mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true } });
+    } catch {
+      tab.getTracks().forEach((track) => track.stop());
+      publish({
+        phase: 'error',
+        code: 'microphone',
+        message: "The microphone isn't available. Allow it in the extension, or turn it off.",
+      });
+      return;
+    }
   }
   const store = await openChunkStore();
   controller = new RecordingController({
     api: uploadApi,
     stream,
+    mic,
     store,
     mixer: new AudioMixer(),
     startTake: (options) => TakeSession.start(options),

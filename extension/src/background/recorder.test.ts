@@ -8,7 +8,7 @@ function fake(initial: RecordingState = { phase: 'idle' }) {
   let stored = initial;
   let offscreen = false;
   let tab: number | null = null;
-  let settings = { highlights: true, keystrokes: false };
+  let settings = { tabAudio: true, microphone: false, highlights: true, keystrokes: false };
   const sent: OffscreenMessage[] = [];
   let reply: StateReply | undefined;
   const platform: RecorderPlatform = {
@@ -62,6 +62,8 @@ describe('Recorder.start', () => {
         streamId: 'stream-1',
         origin: 'https://app.test',
         version: '0.3.0',
+        tabAudio: true,
+        microphone: false,
       },
     ]);
     expect(state.phase).toBe('recording');
@@ -128,7 +130,7 @@ describe('Recorder state', () => {
 describe('Recorder overlay', () => {
   it('puts the click and key overlay into the recorded tab once recording starts', async () => {
     const f = fake();
-    f.setSettings({ highlights: true, keystrokes: true });
+    f.setSettings({ tabAudio: true, microphone: false, highlights: true, keystrokes: true });
     f.setReply({ state: { phase: 'starting' } });
     await f.recorder.start(9);
     expect(f.tab()).toBe(9);
@@ -136,6 +138,8 @@ describe('Recorder overlay', () => {
 
     await f.recorder.onState({ phase: 'recording', startedAt: 1, maxDurationMs: null });
     expect(f.platform.startOverlay).toHaveBeenCalledWith(9, {
+      tabAudio: true,
+      microphone: false,
       highlights: true,
       keystrokes: true,
     });

@@ -11,6 +11,14 @@ const loadedIds = new WeakMap<BrowserContext, string>();
 
 export const DIST = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist');
 
+interface Options {
+  /**
+   * Answer media prompts automatically. Breaks tab capture (it makes Chrome look for a fake
+   * capture device), so only the microphone-permission test turns it on.
+   */
+  fakeUi: boolean;
+}
+
 interface Fixtures {
   /** A browser with the built extension loaded unpacked. */
   context: BrowserContext;
@@ -18,9 +26,9 @@ interface Fixtures {
   extensionId: string;
 }
 
-export const test = base.extend<Fixtures>({
-  // eslint-disable-next-line no-empty-pattern
-  context: async ({}, use, testInfo) => {
+export const test = base.extend<Fixtures & Options>({
+  fakeUi: [false, { option: true }],
+  context: async ({ fakeUi }, use, testInfo) => {
     const profile = await mkdtemp(join(tmpdir(), 'sintade-ext-'));
     const channel = testInfo.project.use.channel;
     // Edge honours --load-extension. Branded Chrome 137+ ignores it, so Chrome gets the
@@ -41,6 +49,10 @@ export const test = base.extend<Fixtures>({
         `--allowlisted-extension-id=${DEV_EXTENSION_ID}`,
         '--auto-accept-this-tab-capture',
         '--autoplay-policy=no-user-gesture-required',
+        // A fake microphone. (--use-fake-ui-for-media-stream would answer the prompt but breaks tab
+        // capture, so the permission is granted over the protocol instead.)
+        '--use-fake-device-for-media-stream',
+        ...(fakeUi ? ['--use-fake-ui-for-media-stream'] : []),
         ...(viaFlag ? [`--disable-extensions-except=${DIST}`, `--load-extension=${DIST}`] : []),
       ],
     });

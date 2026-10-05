@@ -6,7 +6,7 @@ import type { Recorder } from './recorder';
 export interface Env {
   version: string;
   api: Pick<SintadeApi, 'whoAmI' | 'signInUrl'>;
-  recorder: Pick<Recorder, 'start' | 'stop' | 'status'>;
+  recorder: Pick<Recorder, 'start' | 'stop' | 'status' | 'dismiss'>;
   openTab: (url: string) => Promise<unknown>;
 }
 
@@ -30,6 +30,9 @@ export async function handleMessage(message: unknown, env: Env): Promise<Reply |
     case 'stop-recording':
       return { state: await env.recorder.stop() };
     case 'recording-status':
+      return { state: await env.recorder.status() };
+    case 'dismiss-recording':
+      await env.recorder.dismiss();
       return { state: await env.recorder.status() };
   }
 }

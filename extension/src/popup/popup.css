@@ -52,3 +52,43 @@ button:disabled {
   color: var(--muted);
   font-size: 12px;
 }
+fieldset {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--muted) 40%, transparent);
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+}
+legend {
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+button.secondary {
+  background: transparent;
+  color: var(--primary);
+  border: 1px solid var(--primary);
+}
+.ok {
+  margin: 0;
+  color: #1a8a4a;
+  font-weight: 600;
+}
+[hidden] {
+  display: none !important;
+}
+a {
+  color: var(--primary);
+  word-break: break-all;
+}
+[data-testid='popup-blocked'],
+[data-testid='popup-recording'][data-phase='error'] {
+  margin: 0;
+  color: #c0392b;
+}
