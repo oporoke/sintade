@@ -207,13 +207,11 @@ test.describe('the microphone', () => {
       const popup = await context.newPage();
       await popup.goto(`chrome-extension://${extensionId}/popup.html`);
       await expect(popup.getByTestId('popup-opt-microphone')).toBeChecked();
-      // Once allowed, the popup toggles it as a plain setting (no more detour).
+      // Turning it off is just a setting. (Turning it on again goes via the permission page
+      // unless the browser remembers the grant, which differs between browsers and runners.)
       await popup.getByTestId('popup-opt-microphone').uncheck();
       await popup.reload();
       await expect(popup.getByTestId('popup-opt-microphone')).not.toBeChecked();
-      await popup.getByTestId('popup-opt-microphone').check();
-      await popup.reload();
-      await expect(popup.getByTestId('popup-opt-microphone')).toBeChecked();
     });
   });
 });

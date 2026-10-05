@@ -8,5 +8,5 @@ export default defineConfig({
       '@capture': fileURLToPath(new URL('../web/src/app/capture/index.ts', import.meta.url)),
     },
   },
-  test: { include: ['src/**/*.test.ts'] },
+  test: { include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'] },
 });

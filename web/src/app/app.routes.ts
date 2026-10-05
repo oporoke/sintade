@@ -31,6 +31,10 @@ export const routes: Routes = [
       import('./feature/auth/reset-password-page').then((m) => m.ResetPasswordPage),
   },
   {
+    path: 'privacy',
+    loadComponent: () => import('./feature/legal/privacy-page').then((m) => m.PrivacyPage),
+  },
+  {
     path: 's/:slug',
     loadComponent: () => import('./feature/watch/watch-page').then((m) => m.WatchPage),
   },
