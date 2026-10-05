@@ -33,6 +33,8 @@ export const test = base.extend<Fixtures>({
       ignoreDefaultArgs: ['--disable-extensions'],
       args: [
         '--enable-unsafe-extension-debugging',
+        // The dev server's certificate is self-signed.
+        '--ignore-certificate-errors',
         ...(viaFlag ? [`--disable-extensions-except=${DIST}`, `--load-extension=${DIST}`] : []),
       ],
     });

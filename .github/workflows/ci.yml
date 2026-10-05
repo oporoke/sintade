@@ -122,7 +122,7 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
-      - run: npx playwright test
+      # The extension's browser tests need the app and API: they run in the `e2e` job.
 
   contract:
     # The OpenAPI contract (docs/api/openapi.json) and the TS DTOs generated from it
@@ -233,6 +233,12 @@ jobs:
           pactl set-default-sink ci_null
       - run: npx playwright test
         working-directory: web
+      - name: Extension e2e (Chrome and Edge, preinstalled on the runner)
+        run: |
+          npm ci
+          npm run build
+          npx playwright test
+        working-directory: extension
       - name: Show page state of failed e2e tests
         if: failure()
         working-directory: web

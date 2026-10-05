@@ -8,6 +8,25 @@ export default defineConfig({
   workers: 1,
   timeout: 60_000,
   reporter: process.env['CI'] ? [['github'], ['list']] : 'list',
+  // The handoff and recording specs need the real app: the HTTPS dev server (proxying /api) and
+  // the API, as in web/playwright.config.ts. Requires `just deps-up` + `just db-migrate`.
+  webServer: [
+    {
+      command: 'npm run start -- --port 4200',
+      cwd: '../web',
+      url: 'https://localhost:4200',
+      ignoreHTTPSErrors: true,
+      reuseExistingServer: true,
+      timeout: 60_000,
+    },
+    {
+      command: 'cargo run -p api',
+      cwd: '..',
+      url: 'http://localhost:8080/healthz',
+      reuseExistingServer: true,
+      timeout: 120_000,
+    },
+  ],
   projects: [
     { name: 'chrome', use: { channel: 'chrome' } },
     { name: 'edge', use: { channel: 'msedge' } },

@@ -28,6 +28,10 @@ test('loads unpacked, starts its service worker and opens the popup', async ({
   ]);
 
   await expect(popup.getByTestId('popup-title')).toHaveText('Sintade');
-  await expect(popup.getByTestId('popup-status')).toHaveText('Ready');
+  // It reached the service worker and the server answered (nobody is signed in here).
+  await expect(popup.getByTestId('popup-status')).toHaveAttribute(
+    'data-state',
+    /^(signed-out|unreachable)$/,
+  );
   await expect(popup.getByTestId('popup-version')).toHaveText(`Version ${manifest.version}`);
 });
