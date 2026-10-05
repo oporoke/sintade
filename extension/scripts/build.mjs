@@ -18,6 +18,7 @@ const origin = (process.env.SINTADE_ORIGIN ?? 'https://localhost:4200').replace(
 const entries = {
   'service-worker': 'src/background/service-worker.ts',
   popup: 'src/popup/popup.ts',
+  offscreen: 'src/offscreen/offscreen.ts',
 };
 
 const options = {
@@ -38,9 +39,15 @@ async function copyStatic() {
   const manifest = JSON.parse(await readFile(join(root, 'manifest.json'), 'utf8'));
   manifest.version = pkg.version;
   manifest.host_permissions = [`${origin}/*`];
+  if (process.env.SINTADE_DEV_KEY) {
+    // A fixed public key gives the unpacked extension a fixed id, which the e2e run needs for
+    // Chrome's --allowlisted-extension-id (tab capture without a toolbar click). Never in a store build.
+    manifest.key = JSON.parse(await readFile(join(root, 'dev-key.json'), 'utf8')).key;
+  }
   await writeFile(join(dist, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   await cp(join(root, 'src/popup/popup.html'), join(dist, 'popup.html'));
   await cp(join(root, 'src/popup/popup.css'), join(dist, 'popup.css'));
+  await cp(join(root, 'src/offscreen/offscreen.html'), join(dist, 'offscreen.html'));
   await mkdir(join(dist, 'icons'), { recursive: true });
   for (const size of ICON_SIZES) {
     await writeFile(join(dist, 'icons', `icon-${size}.png`), iconPng(size));

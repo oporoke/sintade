@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 import { BrowserContext, test as base, chromium } from '@playwright/test';
 
+import { DEV_EXTENSION_ID } from './ids';
+
 const loadedIds = new WeakMap<BrowserContext, string>();
 
 export const DIST = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist');
@@ -35,6 +37,10 @@ export const test = base.extend<Fixtures>({
         '--enable-unsafe-extension-debugging',
         // The dev server's certificate is self-signed.
         '--ignore-certificate-errors',
+        // Tab capture normally needs a click on the toolbar button; these let a test start it.
+        `--allowlisted-extension-id=${DEV_EXTENSION_ID}`,
+        '--auto-accept-this-tab-capture',
+        '--autoplay-policy=no-user-gesture-required',
         ...(viaFlag ? [`--disable-extensions-except=${DIST}`, `--load-extension=${DIST}`] : []),
       ],
     });

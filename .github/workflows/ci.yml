@@ -236,8 +236,7 @@ jobs:
       - name: Extension e2e (Chrome and Edge, preinstalled on the runner)
         run: |
           npm ci
-          npm run build
-          npx playwright test
+          npm run e2e
         working-directory: extension
       - name: Show page state of failed e2e tests
         if: failure()

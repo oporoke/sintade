@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint . && tsc --noEmit",
     "test": "vitest run",
-    "e2e": "playwright test"
+    "e2e": "npm run build:e2e && playwright test",
+    "build:e2e": "SINTADE_DEV_KEY=1 node scripts/build.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -22,5 +23,8 @@
     "typescript": "~6.0.2",
     "typescript-eslint": "8.69.0",
     "vitest": "^4.0.8"
+  },
+  "dependencies": {
+    "rxjs": "~7.8.0"
   }
 }
