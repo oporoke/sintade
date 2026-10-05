@@ -7,6 +7,8 @@ import { Recorder, RecorderPlatform } from './recorder';
 function fake(initial: RecordingState = { phase: 'idle' }) {
   let stored = initial;
   let offscreen = false;
+  let tab: number | null = null;
+  let settings = { highlights: true, keystrokes: false };
   const sent: OffscreenMessage[] = [];
   let reply: StateReply | undefined;
   const platform: RecorderPlatform = {
@@ -22,6 +24,13 @@ function fake(initial: RecordingState = { phase: 'idle' }) {
       sent.push(message);
       return reply;
     }),
+    startOverlay: vi.fn().mockResolvedValue(undefined),
+    stopOverlay: vi.fn().mockResolvedValue(undefined),
+    loadSettings: vi.fn(async () => settings),
+    loadTab: vi.fn(async () => tab),
+    saveTab: vi.fn(async (value) => {
+      tab = value;
+    }),
     loadState: vi.fn(async () => stored),
     saveState: vi.fn(async (state) => {
       stored = state;
@@ -32,6 +41,8 @@ function fake(initial: RecordingState = { phase: 'idle' }) {
     sent,
     setReply: (value: StateReply | undefined) => (reply = value),
     stored: () => stored,
+    tab: () => tab,
+    setSettings: (value: typeof settings) => (settings = value),
     recorder: new Recorder(platform, { origin: 'https://app.test', version: '0.3.0' }),
   };
 }
@@ -111,5 +122,49 @@ describe('Recorder state', () => {
     const running = fake({ phase: 'recording', startedAt: 1, maxDurationMs: null });
     await running.recorder.dismiss();
     expect(running.stored().phase).toBe('recording');
+  });
+});
+
+describe('Recorder overlay', () => {
+  it('puts the click and key overlay into the recorded tab once recording starts', async () => {
+    const f = fake();
+    f.setSettings({ highlights: true, keystrokes: true });
+    f.setReply({ state: { phase: 'starting' } });
+    await f.recorder.start(9);
+    expect(f.tab()).toBe(9);
+    expect(f.platform.startOverlay).not.toHaveBeenCalled(); // not before the stream is recording
+
+    await f.recorder.onState({ phase: 'recording', startedAt: 1, maxDurationMs: null });
+    expect(f.platform.startOverlay).toHaveBeenCalledWith(9, {
+      highlights: true,
+      keystrokes: true,
+    });
+  });
+
+  it('takes the overlay out when the recording ends, and forgets the tab', async () => {
+    const f = fake();
+    await f.platform.saveTab(9);
+    await f.recorder.onState({ phase: 'uploading' });
+    expect(f.platform.stopOverlay).toHaveBeenCalledWith(9);
+    expect(f.tab()).toBe(9); // still needed until the end
+    await f.recorder.onState({ phase: 'done', recordingId: 'r', url: 'u' });
+    expect(f.tab()).toBeNull();
+  });
+
+  it('records a tab that cannot take the script (a browser page) without the overlay', async () => {
+    const f = fake();
+    await f.platform.saveTab(3);
+    (f.platform.startOverlay as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('Cannot access a chrome:// URL'),
+    );
+    await f.recorder.onState({ phase: 'recording', startedAt: 1, maxDurationMs: null });
+    expect(f.stored().phase).toBe('recording');
+  });
+
+  it('forgets the tab when the capture could not start', async () => {
+    const f = fake();
+    (f.platform.getStreamId as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('no'));
+    await f.recorder.start(4);
+    expect(f.tab()).toBeNull();
   });
 });

@@ -1,6 +1,7 @@
 import type { OffscreenMessage, StateReply } from '../shared/messages';
 import type { RecordingState } from '../shared/recording';
 import { IDLE, isBusy } from '../shared/recording';
+import type { Settings } from '../shared/settings';
 
 /** The browser APIs the recorder needs, so the logic is tested without a browser. */
 export interface RecorderPlatform {
@@ -10,6 +11,12 @@ export interface RecorderPlatform {
   closeOffscreen(): Promise<void>;
   hasOffscreen(): Promise<boolean>;
   sendToOffscreen(message: OffscreenMessage): Promise<StateReply | undefined>;
+  /** Puts the overlay script into the tab (activeTab + scripting) and starts it. */
+  startOverlay(tabId: number, settings: Settings): Promise<void>;
+  stopOverlay(tabId: number): Promise<void>;
+  loadSettings(): Promise<Settings>;
+  loadTab(): Promise<number | null>;
+  saveTab(tabId: number | null): Promise<void>;
   loadState(): Promise<RecordingState>;
   saveState(state: RecordingState): Promise<void>;
 }
@@ -49,6 +56,7 @@ export class Recorder {
       return current;
     }
     await this.record({ phase: 'starting' });
+    await this.platform.saveTab(tabId);
     try {
       const streamId = await this.platform.getStreamId(tabId);
       await this.platform.ensureOffscreen();
@@ -70,6 +78,7 @@ export class Recorder {
             : "This tab can't be recorded.",
       };
       await this.record(state);
+      await this.platform.saveTab(null);
       await this.platform.closeOffscreen().catch(() => undefined);
       return state;
     }
@@ -86,6 +95,19 @@ export class Recorder {
   /** The offscreen document reports every change; the last one is kept, and a finished one frees it. */
   async onState(state: RecordingState): Promise<void> {
     await this.record(state);
+    const tabId = await this.platform.loadTab();
+    if (state.phase === 'recording' && tabId !== null) {
+      // Click highlights and keys appear in the recording because the tab's own picture is what
+      // is captured. A tab that can't take the script (a browser page) is recorded without.
+      await this.platform
+        .startOverlay(tabId, await this.platform.loadSettings())
+        .catch(() => undefined);
+    } else if (state.phase !== 'starting' && state.phase !== 'recording' && tabId !== null) {
+      await this.platform.stopOverlay(tabId).catch(() => undefined);
+      if (state.phase !== 'uploading') {
+        await this.platform.saveTab(null);
+      }
+    }
     if (state.phase === 'done' || state.phase === 'error') {
       await this.platform.closeOffscreen().catch(() => undefined);
     }

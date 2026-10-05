@@ -34,6 +34,13 @@ const options = {
   define: { __SINTADE_ORIGIN__: JSON.stringify(origin) },
 };
 
+// Injected with chrome.scripting.executeScript({ files }): a classic script, not a module.
+const contentOptions = {
+  ...options,
+  entryPoints: { content: 'src/content/content.ts' },
+  format: 'iife',
+};
+
 async function copyStatic() {
   const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
   const manifest = JSON.parse(await readFile(join(root, 'manifest.json'), 'utf8'));
@@ -42,6 +49,9 @@ async function copyStatic() {
   if (process.env.SINTADE_DEV_KEY) {
     // A fixed public key gives the unpacked extension a fixed id, which the e2e run needs for
     // Chrome's --allowlisted-extension-id (tab capture without a toolbar click). Never in a store build.
+    // activeTab is only granted by a real toolbar click, which automation can't make: the test
+    // pages (*.example) get a host permission so the overlay script can be injected into them.
+    manifest.host_permissions.push('https://*.example/*');
     manifest.key = JSON.parse(await readFile(join(root, 'dev-key.json'), 'utf8')).key;
   }
   await writeFile(join(dist, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -60,7 +70,9 @@ await copyStatic();
 if (watch) {
   const ctx = await context(options);
   await ctx.watch();
+  await (await context(contentOptions)).watch();
   console.log('watching…');
 } else {
   await build(options);
+  await build(contentOptions);
 }
