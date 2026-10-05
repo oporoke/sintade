@@ -19,6 +19,7 @@ const entries = {
   'service-worker': 'src/background/service-worker.ts',
   popup: 'src/popup/popup.ts',
   offscreen: 'src/offscreen/offscreen.ts',
+  mic: 'src/permission/mic.ts',
 };
 
 const options = {
@@ -58,6 +59,7 @@ async function copyStatic() {
   await cp(join(root, 'src/popup/popup.html'), join(dist, 'popup.html'));
   await cp(join(root, 'src/popup/popup.css'), join(dist, 'popup.css'));
   await cp(join(root, 'src/offscreen/offscreen.html'), join(dist, 'offscreen.html'));
+  await cp(join(root, 'src/permission/mic.html'), join(dist, 'mic.html'));
   await mkdir(join(dist, 'icons'), { recursive: true });
   for (const size of ICON_SIZES) {
     await writeFile(join(dist, 'icons', `icon-${size}.png`), iconPng(size));

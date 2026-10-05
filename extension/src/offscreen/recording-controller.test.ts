@@ -121,6 +121,52 @@ describe('RecordingController', () => {
     expect(t.trackStop).toHaveBeenCalled(); // the tab's capture is released
   });
 
+  it('mixes the microphone in when it is on, and releases it at the end', async () => {
+    const micStop = vi.fn();
+    const mic = {
+      getAudioTracks: () => [{}],
+      getTracks: () => [{ stop: micStop }],
+    } as unknown as MediaStream;
+    const t = setup({ mic });
+    await t.controller.start();
+    expect(t.api.createRecording).toHaveBeenCalledWith(
+      expect.objectContaining({ has_system_audio: true, has_mic: true }),
+    );
+    expect(t.startTake.mock.calls[0]?.[0]).toMatchObject({ mic });
+    await t.controller.stop();
+    await vi.waitFor(() => expect(t.controller.current.phase).toBe('done'));
+    expect(micStop).toHaveBeenCalled();
+  });
+
+  it('records a tab without sound as video only, or the microphone alone as audio', async () => {
+    const silent = {
+      getAudioTracks: () => [],
+      getTracks: () => [{ stop: vi.fn() }],
+    } as unknown as MediaStream;
+    const mimeTypes: boolean[] = [];
+    const t = setup({
+      stream: silent,
+      mimeType: (hasAudio) => {
+        mimeTypes.push(hasAudio);
+        return 'video/webm;codecs=vp9';
+      },
+    });
+    await t.controller.start();
+    expect(mimeTypes).toEqual([false]);
+    expect(t.api.createRecording).toHaveBeenCalledWith(
+      expect.objectContaining({ has_system_audio: false, has_mic: false }),
+    );
+
+    const mic = { getAudioTracks: () => [{}], getTracks: () => [] } as unknown as MediaStream;
+    const micOnly = setup({
+      stream: silent,
+      mic,
+      mimeType: (a) => (mimeTypes.push(a), 'video/webm'),
+    });
+    await micOnly.controller.start();
+    expect(mimeTypes.at(-1)).toBe(true);
+  });
+
   it('stops by itself just inside the plan limit', async () => {
     const t = setup();
     await t.controller.start();

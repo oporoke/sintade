@@ -11,12 +11,50 @@
       <h1 data-testid="popup-title">Sintade</h1>
       <p data-testid="popup-status" role="status">Starting…</p>
       <button type="button" data-testid="popup-sign-in" hidden>Sign in</button>
+
+      <p class="muted" data-testid="popup-tab"></p>
+      <p data-testid="popup-blocked" role="alert" hidden></p>
+
+      <fieldset data-testid="popup-options">
+        <legend>Include</legend>
+        <label
+          ><input type="checkbox" data-setting="tabAudio" data-testid="popup-opt-tabAudio" /> Tab
+          audio</label
+        >
+        <label
+          ><input type="checkbox" data-setting="microphone" data-testid="popup-opt-microphone" />
+          Microphone</label
+        >
+        <label
+          ><input type="checkbox" data-setting="highlights" data-testid="popup-opt-highlights" />
+          Click highlights</label
+        >
+        <label
+          ><input type="checkbox" data-setting="keystrokes" data-testid="popup-opt-keystrokes" />
+          Keystrokes <span class="muted">(never passwords)</span></label
+        >
+      </fieldset>
+      <p class="muted" data-testid="popup-mic-hint" hidden>
+        Allow the microphone in the tab that just opened.
+      </p>
+
       <button type="button" data-testid="popup-record" disabled>Record this tab</button>
       <button type="button" data-testid="popup-stop" hidden>Stop</button>
       <p data-testid="popup-recording" role="status" hidden></p>
-      <p data-testid="popup-result" hidden>
-        <a data-testid="popup-link" target="_blank" rel="noopener"></a>
-      </p>
+
+      <section data-testid="popup-error" hidden>
+        <button type="button" data-testid="popup-error-sign-in" hidden>Sign in</button>
+        <button type="button" data-testid="popup-error-library" hidden>Open my library</button>
+        <button type="button" data-testid="popup-error-retry" hidden>Try again</button>
+      </section>
+
+      <section data-testid="popup-result" hidden>
+        <p class="ok" data-testid="popup-copied" role="status" hidden>Link copied</p>
+        <p><a data-testid="popup-link" target="_blank" rel="noopener"></a></p>
+        <button type="button" data-testid="popup-copy" hidden>Copy link</button>
+        <button type="button" data-testid="popup-another" class="secondary">Record another</button>
+      </section>
+
       <p class="muted" data-testid="popup-version"></p>
     </main>
     <script type="module" src="popup.js"></script>

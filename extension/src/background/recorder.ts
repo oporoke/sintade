@@ -58,6 +58,7 @@ export class Recorder {
     await this.record({ phase: 'starting' });
     await this.platform.saveTab(tabId);
     try {
+      const settings = await this.platform.loadSettings();
       const streamId = await this.platform.getStreamId(tabId);
       await this.platform.ensureOffscreen();
       const reply = await this.platform.sendToOffscreen({
@@ -66,6 +67,8 @@ export class Recorder {
         streamId,
         origin: this.env.origin,
         version: this.env.version,
+        tabAudio: settings.tabAudio,
+        microphone: settings.microphone,
       });
       return reply?.state ?? (await this.platform.loadState());
     } catch (error) {

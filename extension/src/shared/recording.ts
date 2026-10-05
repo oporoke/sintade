@@ -8,7 +8,12 @@ export type RecordingState =
   | { phase: 'error'; code: RecordingErrorCode; message: string };
 
 export type RecordingErrorCode =
-  'not-signed-in' | 'limit-reached' | 'unreachable' | 'capture-failed' | 'upload-failed';
+  | 'not-signed-in'
+  | 'limit-reached'
+  | 'unreachable'
+  | 'capture-failed'
+  | 'microphone'
+  | 'upload-failed';
 
 export const IDLE: RecordingState = { phase: 'idle' };
 
