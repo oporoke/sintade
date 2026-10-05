@@ -1,0 +1,35 @@
+# TLS and routing for one Sintade host (docs/design.md §2, §19). Caddy gets and renews
+# certificates by itself (Let's Encrypt) for DOMAIN and storage.DOMAIN: both names must resolve
+# to this host before the first start.
+#   DOMAIN         e.g. app.example.tz
+#   ACME_EMAIL     where Let's Encrypt writes about expiry
+#   CADDY_TLS      empty in production; "tls internal" to use Caddy's own CA (local testing)
+{
+	email {$ACME_EMAIL:admin@localhost}
+}
+
+(common) {
+	encode zstd gzip
+	header -Server
+}
+
+# The app: the Angular files, /api and the probes, all through the web container's nginx.
+{$DOMAIN} {
+	import common
+	{$CADDY_TLS}
+	reverse_proxy web:80
+}
+
+# Object storage, reached by browsers through signed URLs (S3_PUBLIC_ENDPOINT=https://storage.DOMAIN).
+# Large chunk uploads stream straight through; the Host header reaches MinIO unchanged because
+# the signature covers it.
+storage.{$DOMAIN} {
+	import common
+	{$CADDY_TLS}
+	request_body {
+		max_size 20MB
+	}
+	reverse_proxy minio:9000 {
+		flush_interval -1
+	}
+}

@@ -1,0 +1,41 @@
+name: Ship the deploy files and secrets
+description: >
+  Copies deploy/ (compose, Caddyfile, deploy.sh, backup scripts) to /opt/sintade on the host, and
+  writes the two env files from secrets (mode 0600). The files are the ones in the tagged commit,
+  so config and images always match.
+inputs:
+  host: { required: true, description: SSH host }
+  user: { required: true, description: SSH user }
+  key: { required: true, description: SSH private key }
+  app-env: { required: true, description: Contents of /etc/sintade/env (api and worker) }
+  compose-env: { required: true, description: Contents of /opt/sintade/.env (docker compose) }
+runs:
+  using: composite
+  steps:
+    - name: Copy deploy files
+      uses: appleboy/scp-action@v0.1.7
+      with:
+        host: ${{ inputs.host }}
+        username: ${{ inputs.user }}
+        key: ${{ inputs.key }}
+        source: deploy/compose.prod.yml,deploy/Caddyfile,deploy/deploy.sh,deploy/backup
+        target: /opt/sintade
+        strip_components: 1
+        overwrite: true
+    - name: Write the env files
+      uses: appleboy/ssh-action@v1
+      env:
+        APP_ENV_CONTENT: ${{ inputs.app-env }}
+        COMPOSE_ENV_CONTENT: ${{ inputs.compose-env }}
+      with:
+        host: ${{ inputs.host }}
+        username: ${{ inputs.user }}
+        key: ${{ inputs.key }}
+        envs: APP_ENV_CONTENT,COMPOSE_ENV_CONTENT
+        script: |
+          set -euo pipefail
+          umask 077
+          sudo mkdir -p /etc/sintade
+          printf '%s\n' "$APP_ENV_CONTENT" | sudo tee /etc/sintade/env >/dev/null
+          printf '%s\n' "$COMPOSE_ENV_CONTENT" > /opt/sintade/.env
+          chmod +x /opt/sintade/deploy.sh /opt/sintade/backup/*.sh

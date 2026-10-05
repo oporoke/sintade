@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use handler::{HandlerRegistry, JobCtx, JobHandler};
 use handlers::noop::NoopHandler;
+use handlers::ops_watchdog::OpsWatchdogHandler;
 use handlers::process_take::ProcessTakeHandler;
 use handlers::purge_trashed::PurgeRecordingHandler;
 use handlers::send_email::SendEmailHandler;
@@ -33,6 +34,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const RELAY_FALLBACK_INTERVAL: Duration = Duration::from_secs(5);
 /// How often `SweepStaleUploads` is scheduled (its thresholds are 24 h and 7 days).
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
+/// How often the system is looked at for trouble (`OpsWatchdog`).
+const WATCHDOG_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -44,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
         return transcode_command(&args[2..]).await;
     }
     let config = platform::Config::load()?;
-    platform::init_telemetry(&config.rust_log);
+    let _telemetry = platform::init_telemetry(&config.rust_log, &config.error_reporting());
 
     let pool = platform::connect(&config.database_url).await?;
     let mailer: Arc<dyn Mailer> = Arc::new(SmtpMailer::new(&config.smtp_url, FROM_ADDRESS)?);
@@ -112,6 +115,13 @@ async fn main() -> anyhow::Result<()> {
             ingest,
             media.clone(),
             recordings,
+            OpsWatchdogHandler::new(
+                pool.clone(),
+                JobQueue::new(pool.clone()),
+                Arc::new(platform::RateLimiter::new(pool.clone())),
+                Arc::new(platform::SystemClock),
+                config.alert_email.clone(),
+            ),
             config.worker_concurrency,
             config.worker_process_take_concurrency,
         ),
@@ -162,20 +172,26 @@ async fn transcode_command(args: &[String]) -> anyhow::Result<()> {
 /// one copy of each in the queue.
 async fn run_scheduler_loop(pool: PgPool) -> anyhow::Result<()> {
     let queue = JobQueue::new(pool);
+    let mut last_hourly: Option<std::time::Instant> = None;
     loop {
-        if let Some(job_id) = queue
-            .enqueue_unless_pending(SweepStaleUploadsHandler::KIND, serde_json::json!({}))
-            .await?
-        {
-            tracing::debug!(%job_id, "scheduled SweepStaleUploads");
+        if last_hourly.is_none_or(|at| at.elapsed() >= SWEEP_INTERVAL) {
+            last_hourly = Some(std::time::Instant::now());
+            for kind in [SweepStaleUploadsHandler::KIND, PurgeRecordingHandler::KIND] {
+                if let Some(job_id) = queue
+                    .enqueue_unless_pending(kind, serde_json::json!({}))
+                    .await?
+                {
+                    tracing::debug!(%job_id, kind, "scheduled");
+                }
+            }
         }
         if let Some(job_id) = queue
-            .enqueue_unless_pending(PurgeRecordingHandler::KIND, serde_json::json!({}))
+            .enqueue_unless_pending(OpsWatchdogHandler::KIND, serde_json::json!({}))
             .await?
         {
-            tracing::debug!(%job_id, "scheduled PurgeRecording");
+            tracing::debug!(%job_id, "scheduled OpsWatchdog");
         }
-        tokio::time::sleep(SWEEP_INTERVAL).await;
+        tokio::time::sleep(WATCHDOG_INTERVAL).await;
     }
 }
 
@@ -188,6 +204,7 @@ async fn run_job_loop(
     ingest: Arc<IngestService>,
     media: Arc<MediaService>,
     recordings: Arc<catalog::RecordingManager>,
+    watchdog: OpsWatchdogHandler,
     concurrency: usize,
     process_take_concurrency: usize,
 ) -> anyhow::Result<()> {
@@ -197,6 +214,7 @@ async fn run_job_loop(
     registry.register(SweepStaleUploadsHandler::new(ingest));
     registry.register(ProcessTakeHandler::new(media));
     registry.register(PurgeRecordingHandler::new(recordings));
+    registry.register(watchdog);
     let registry = Arc::new(registry);
     let limits = KindLimits::new().limit(
         ProcessTakeHandler::KIND,

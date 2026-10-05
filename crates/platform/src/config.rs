@@ -25,6 +25,15 @@ pub struct Config {
     /// `WORKER_PROCESS_TAKE_CONCURRENCY` (default 1): how many of those may be `ProcessTake`.
     /// FFmpeg uses every core, so a second transcode just slows both. Worker only.
     pub worker_process_take_concurrency: usize,
+    /// `SENTRY_DSN`: where errors are reported; unset in development.
+    pub sentry_dsn: Option<String>,
+    /// `APP_ENV` (`development`, `staging`, `production`), for error reports.
+    pub app_env: String,
+    /// `RELEASE`: the git SHA of the running image, for error reports.
+    pub release: Option<String>,
+    /// `ALERT_EMAIL`: who the operational alerts (stuck queue, dead jobs, failing backups) are
+    /// mailed to, besides Sentry. Worker only.
+    pub alert_email: Option<String>,
 }
 
 impl Config {
@@ -51,8 +60,19 @@ impl Config {
             ffprobe_path: env_or("FFPROBE_PATH", "ffprobe"),
             worker_concurrency: env_count("WORKER_CONCURRENCY", 2),
             worker_process_take_concurrency: env_count("WORKER_PROCESS_TAKE_CONCURRENCY", 1),
+            sentry_dsn: env_opt("SENTRY_DSN"),
+            app_env: env_or("APP_ENV", "development"),
+            release: env_opt("RELEASE"),
+            alert_email: env_opt("ALERT_EMAIL"),
         })
     }
+}
+
+fn env_opt(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -73,4 +93,15 @@ fn env_count(key: &str, default: usize) -> usize {
 
 fn env_var(key: &'static str) -> Result<String, PlatformError> {
     std::env::var(key).map_err(|_| PlatformError::MissingEnvVar(key))
+}
+
+impl Config {
+    /// Where this process reports errors.
+    pub fn error_reporting(&self) -> crate::ErrorReporting {
+        crate::ErrorReporting {
+            dsn: self.sentry_dsn.clone(),
+            environment: self.app_env.clone(),
+            release: self.release.clone(),
+        }
+    }
 }
