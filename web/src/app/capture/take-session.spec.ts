@@ -69,7 +69,12 @@ function setup(
       getVideoTracks: () => tracks.filter((t) => t.kind === 'video'),
     }) as unknown as MediaStream;
   const compositorTrack = new FakeVideoTrack() as unknown as MediaStreamTrack;
-  const compositor = { track: compositorTrack, stop: vi.fn() };
+  const compositor = {
+    track: compositorTrack,
+    stop: vi.fn(),
+    bubble: { cx: 0.5 },
+    setBubble: vi.fn(),
+  };
   const start = (withCamera = false) =>
     TakeSession.start({
       camera: withCamera ? ({} as MediaStream) : null,
@@ -118,6 +123,17 @@ describe('TakeSession', () => {
     expect(recorded().tracks[0]).toBe(compositorTrack);
     await session.stop();
     expect(compositor.stop).toHaveBeenCalled();
+  });
+
+  it('moves the bubble through the session, and has none without a camera', async () => {
+    const { start, compositor } = setup();
+    const session = await start(true);
+    session.setBubble({ cx: 0.2 });
+    expect(compositor.setBubble).toHaveBeenCalledWith({ cx: 0.2 });
+    expect(session.bubble).toEqual({ cx: 0.5 });
+    const plain = await setup().start();
+    expect(plain.bubble).toBeNull();
+    plain.setBubble({ cx: 0.2 });
   });
 
   it('ends a composited take when the shared screen ends', async () => {

@@ -35,3 +35,13 @@ bubble (Days 71–72).
 Browsers may throttle timers in background tabs; capture streams normally exempt the page, but
 this is measured on Day 78 (`TODO: Verify` on Safari). Quality presets (Day 74) set the canvas
 size and fps.
+
+## Day 72 addendum — live bubble control and camera-only
+
+`BubbleLayout` gained `cameraOnly`; `Compositor.setBubble` clamps (centre inside the frame, size
+0.1–0.6 of the height). `TakeSession.setBubble`/`bubble` expose it. The recorder page shows a pad
+with the screen's aspect ratio while recording: pointer down/drag places the bubble's centre
+live; size slider, shape select and a "camera only" checkbox change it too. Camera-only keeps the
+screen shared (it fixes the output size and the take still ends with "Stop sharing") but draws only
+the camera, cropped to cover. Keyboard-only bubble placement is not in this day (`TODO: Verify`
+accessibility with the Day 76 shortcuts).

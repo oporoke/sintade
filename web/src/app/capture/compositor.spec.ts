@@ -9,7 +9,9 @@ import {
 
 describe('bubbleRect', () => {
   it('centres the bubble where asked, sized by frame height', () => {
-    expect(bubbleRect({ shape: 'circle', cx: 0.5, cy: 0.5, size: 0.25 }, 1000, 800)).toEqual({
+    expect(
+      bubbleRect({ shape: 'circle', cx: 0.5, cy: 0.5, size: 0.25, cameraOnly: false }, 1000, 800),
+    ).toEqual({
       x: 400,
       y: 300,
       size: 200,
@@ -17,7 +19,11 @@ describe('bubbleRect', () => {
   });
 
   it('keeps the bubble inside the frame', () => {
-    const corner = bubbleRect({ shape: 'circle', cx: 1.4, cy: -0.3, size: 0.25 }, 1000, 800);
+    const corner = bubbleRect(
+      { shape: 'circle', cx: 1.4, cy: -0.3, size: 0.25, cameraOnly: false },
+      1000,
+      800,
+    );
     expect(corner).toEqual({ x: 800, y: 0, size: 200 });
   });
 });
@@ -64,7 +70,7 @@ function setup(ready = { screen: true, camera: true }, shape: 'circle' | 'rounde
       getVideoTracks: () => [{ getSettings: () => ({ width: 1920, height: 1080 }) }],
     } as unknown as MediaStream,
     camera: {} as MediaStream,
-    layout: { shape, cx: 0.5, cy: 0.5, size: 0.2 },
+    layout: { shape, cx: 0.5, cy: 0.5, size: 0.2, cameraOnly: false },
     createCanvas: () => canvas,
     createSource: (stream) => ('getVideoTracks' in stream ? screen : camera),
     schedule: (fn) => {
@@ -105,6 +111,22 @@ describe('Compositor', () => {
     const { compositor } = setup();
     compositor.setBubble({ cx: 0.1 });
     expect(compositor.bubble.cx).toBe(0.1);
+  });
+
+  it('clamps a moved or resized bubble into range', () => {
+    const { compositor } = setup();
+    compositor.setBubble({ cx: 2, cy: -1, size: 5 });
+    expect(compositor.bubble).toMatchObject({ cx: 1, cy: 0, size: 0.6 });
+    compositor.setBubble({ size: 0 });
+    expect(compositor.bubble.size).toBe(0.1);
+  });
+
+  it('camera-only draws just the camera, covering the frame', () => {
+    const { compositor, calls } = setup();
+    calls.length = 0;
+    compositor.setBubble({ cameraOnly: true });
+    compositor.draw();
+    expect(calls).toEqual(['fill', 'draw:camera']);
   });
 
   it('stops the timer, the track and both sources once', () => {

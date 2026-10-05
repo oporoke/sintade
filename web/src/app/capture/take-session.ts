@@ -1,7 +1,7 @@
 import { Observable } from 'rxjs';
 
 import { AudioMixer } from './audio-mixer';
-import { Compositor } from './compositor';
+import { BubbleLayout, Compositor } from './compositor';
 import { CaptureError } from './capture-error';
 import {
   ChunkRecorder,
@@ -50,6 +50,7 @@ export class TakeSession {
     readonly ended: Promise<TakeMeta>,
     /** Each chunk's index once it is durably stored, for the uploader. */
     readonly stored$: Observable<number>,
+    private readonly compositor: Compositor | null = null,
   ) {}
 
   static async start(options: TakeSessionOptions): Promise<TakeSession> {
@@ -98,6 +99,7 @@ export class TakeSession {
       recorder,
       persisted.done,
       persisted.stored$,
+      compositor,
     );
     if (compositor) {
       // The recorder watches the canvas track, which never ends by itself: end the take when
@@ -107,6 +109,16 @@ export class TakeSession {
       persisted.done.then(release, release);
     }
     return session;
+  }
+
+  /** The webcam bubble's layout, or null when there is no camera. */
+  get bubble(): BubbleLayout | null {
+    return this.compositor?.bubble ?? null;
+  }
+
+  /** Moves, resizes or reshapes the bubble (or switches camera-only) while recording. */
+  setBubble(layout: Partial<BubbleLayout>): void {
+    this.compositor?.setBubble(layout);
   }
 
   get state$(): Observable<RecorderState> {

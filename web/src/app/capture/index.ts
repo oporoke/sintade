@@ -14,7 +14,10 @@ export {
   Compositor,
   DEFAULT_BUBBLE,
   DEFAULT_COMPOSITOR_FPS,
+  MAX_BUBBLE_SIZE,
+  MIN_BUBBLE_SIZE,
   bubbleRect,
+  clampLayout,
   coverSquare,
 } from './compositor';
 export type { BubbleLayout, BubbleRect, BubbleShape, CompositorOptions } from './compositor';
