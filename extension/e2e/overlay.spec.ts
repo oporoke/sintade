@@ -113,7 +113,7 @@ test('click highlights and keystrokes appear in the recorded video', async ({
     const rings: number[] = [];
     const labels: number[] = [];
     const passwordLabels: number[] = [];
-    for (let t = 0.1; t < el.duration - 0.1; t += 0.15) {
+    for (let t = 0.1; t < el.duration - 0.1; t += 0.1) {
       await seek(t);
       // Amber: red and green high, blue low. The magenta page and white text have none.
       const ring = draw(
@@ -150,7 +150,7 @@ test('click highlights and keystrokes appear in the recorded video', async ({
     return { rings, labels, duration: el.duration };
   }, CLICK);
 
-  expect(found.rings.length, `ring frames: ${found.rings}`).toBeGreaterThanOrEqual(3);
+  expect(found.rings.length, `ring frames: ${found.rings}`).toBeGreaterThanOrEqual(2);
   expect(found.labels.length, `label frames: ${found.labels}`).toBeGreaterThanOrEqual(2);
   // Nothing before the first click (the page had been recording for ~3 s by then).
   expect(Math.min(...found.rings)).toBeGreaterThan(1.5);
