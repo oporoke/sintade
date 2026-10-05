@@ -90,3 +90,13 @@ export type {
 } from './uploader';
 export { uploadRecoveredTake } from './recovery';
 export type { NewRecording, RecoverOptions, RecoveredUpload, RecoveryApi } from './recovery';
+export {
+  DEFAULT_AUDIO_PROCESSING,
+  DEFAULT_QUALITY,
+  FRAME_RATES,
+  RESOLUTIONS,
+  allowedResolutions,
+  bitsPerSecond,
+  clampQuality,
+} from './quality';
+export type { AudioProcessing, FrameRate, QualityPreset, Resolution } from './quality';

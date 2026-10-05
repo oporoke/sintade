@@ -12,6 +12,7 @@ describe('HomePage', () => {
     user: { id: '1', email: 'a@example.com', display_name: 'A', email_verified: true },
     workspaces: [{ id: 'w1', name: "A's workspace", role: 'owner', is_personal: true }],
     current_workspace_id: 'w1',
+    entitlements: { max_resolution: 1080, max_duration_ms: 600_000 },
   };
 
   it('shows the current user email', () => {

@@ -61,6 +61,15 @@ pub struct MeWorkspace {
     pub is_personal: bool,
 }
 
+/// What the current workspace's plan allows, for the recorder to offer only what it can keep.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MeEntitlements {
+    /// Tallest recording, in pixels of height (1080 = 1080p).
+    pub max_resolution: u32,
+    /// Longest take, in milliseconds.
+    pub max_duration_ms: u32,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct MeResponse {
     pub user: MeUser,
@@ -69,6 +78,7 @@ pub struct MeResponse {
     /// right entry out of `workspaces` as "current" without guessing.
     #[schema(value_type = uuid::Uuid)]
     pub current_workspace_id: WorkspaceId,
+    pub entitlements: MeEntitlements,
 }
 
 /// Composes the user (from `identity`) with their memberships (from `tenancy`). `Session`
@@ -110,10 +120,15 @@ pub async fn me(
         })
         .collect();
 
+    let entitlements = state.billing.entitlements(claims.workspace_id).await;
     Ok(Json(MeResponse {
         user: user.into(),
         workspaces,
         current_workspace_id: claims.workspace_id,
+        entitlements: MeEntitlements {
+            max_resolution: entitlements.max_resolution,
+            max_duration_ms: entitlements.max_duration_ms,
+        },
     }))
 }
 
@@ -298,6 +313,9 @@ mod tests {
         assert_eq!(json["workspaces"][0]["role"], "owner");
         assert_eq!(json["workspaces"][0]["is_personal"], true);
         assert_eq!(json["current_workspace_id"], json["workspaces"][0]["id"]);
+        // The free tier: the recorder may offer up to 1080p and ten minutes.
+        assert_eq!(json["entitlements"]["max_resolution"], 1080);
+        assert_eq!(json["entitlements"]["max_duration_ms"], 600_000);
     }
 
     #[sqlx::test(migrations = "../../migrations")]

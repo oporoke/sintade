@@ -19,6 +19,9 @@ import { CapabilityService, SystemAudioSupport } from '../../core/capability.ser
 import {
   AUDIO_MIXER,
   CHUNK_STORE,
+  FREE_PLAN_LIMITS,
+  PLAN_LIMITS,
+  PlanLimits,
   RECORDINGS_API,
   RecordingsApi,
   SOURCE_MANAGER,
@@ -48,6 +51,7 @@ function fakeSources() {
     pickDisplay: vi.fn().mockResolvedValue(display),
     openMic: vi.fn().mockResolvedValue(mic),
     stopMic: vi.fn(),
+    applyQuality: vi.fn().mockResolvedValue(undefined),
     stopAll: vi.fn(),
   };
   return manager as unknown as SourceManager & typeof manager;
@@ -69,6 +73,7 @@ async function setup(support: SystemAudioSupport, sources = fakeSources(), mixer
       { provide: CapabilityService, useValue: capabilities(support) },
       { provide: SOURCE_MANAGER, useValue: sources },
       { provide: AUDIO_MIXER, useValue: mixer },
+      { provide: PLAN_LIMITS, useValue: signal(planLimits) },
     ],
   });
   const fixture = TestBed.createComponent(RecorderPage);
@@ -86,6 +91,8 @@ async function setup(support: SystemAudioSupport, sources = fakeSources(), mixer
   return { fixture, element, sources, mixer, q, settle };
 }
 
+let planLimits: PlanLimits = FREE_PLAN_LIMITS;
+
 const SUPPORTED: SystemAudioSupport = { supported: true, note: null };
 
 function capabilities(support: SystemAudioSupport, getDisplayMedia = true) {
@@ -102,6 +109,54 @@ function capabilities(support: SystemAudioSupport, getDisplayMedia = true) {
 
 describe('RecorderPage', () => {
   beforeEach(() => localStorage.clear());
+
+  it('offers 4K only on a plan that allows it; a free user cannot pick it', async () => {
+    const free = await setup(SUPPORTED);
+    const four = free
+      .q<HTMLSelectElement>('recorder-resolution')!
+      .querySelector<HTMLOptionElement>('option[value="2160"]')!;
+    expect(four.disabled).toBe(true);
+    expect(four.textContent).toContain('not on your plan');
+    const select = free.q<HTMLSelectElement>('recorder-resolution')!;
+    expect(select.value).toBe('1080');
+    TestBed.resetTestingModule();
+
+    planLimits = { maxResolution: 2160, maxDurationMs: 3_600_000 };
+    try {
+      const paid = await setup(SUPPORTED);
+      const option = paid
+        .q<HTMLSelectElement>('recorder-resolution')!
+        .querySelector<HTMLOptionElement>('option[value="2160"]')!;
+      expect(option.disabled).toBe(false);
+    } finally {
+      planLimits = FREE_PLAN_LIMITS;
+    }
+  });
+
+  it('asks the browser for the chosen frame rate and passes the mic processing toggles', async () => {
+    const { q, sources, settle } = await setup(SUPPORTED);
+    const fps = q<HTMLSelectElement>('recorder-fps')!;
+    fps.value = '60';
+    fps.dispatchEvent(new Event('change'));
+    await settle();
+    q<HTMLButtonElement>('recorder-choose-screen')!.click();
+    await settle();
+    expect(sources.pickDisplay).toHaveBeenCalledWith(expect.objectContaining({ frameRate: 60 }));
+
+    const noise = q<HTMLInputElement>('recorder-noise-suppression')!;
+    expect(noise.checked).toBe(true);
+    noise.checked = false;
+    noise.dispatchEvent(new Event('change'));
+    await settle();
+    const mic = q<HTMLSelectElement>('recorder-mic-select')!;
+    mic.value = 'mic-b';
+    mic.dispatchEvent(new Event('change'));
+    await settle();
+    expect(sources.openMic).toHaveBeenLastCalledWith(
+      'mic-b',
+      expect.objectContaining({ noiseSuppression: false, echoCancellation: true }),
+    );
+  });
 
   it('disables system audio with the reason where it is unsupported', async () => {
     const { q } = await setup({
@@ -127,7 +182,11 @@ describe('RecorderPage', () => {
     q<HTMLButtonElement>('recorder-choose-screen')?.click();
     await settle();
 
-    expect(sources.pickDisplay).toHaveBeenCalledWith({ systemAudio: true });
+    expect(sources.pickDisplay).toHaveBeenCalledWith({
+      systemAudio: true,
+      frameRate: 30,
+      height: 1080,
+    });
     expect(q('recorder-screen-preview')).not.toBeNull();
     expect(q('recorder-screen-info')?.textContent).toContain('1920×1080');
   });
@@ -147,7 +206,7 @@ describe('RecorderPage', () => {
     }
     await settle();
 
-    expect(sources.openMic).toHaveBeenCalledWith('mic-b');
+    expect(sources.openMic).toHaveBeenCalledWith('mic-b', expect.any(Object));
     expect(q('recorder-mic-info')?.textContent).toContain('Mic B');
     expect(localStorage.getItem('sintade.recorder.mic')).toBe('mic-b');
   });
@@ -243,7 +302,7 @@ describe('RecorderPage before mic permission (Firefox)', () => {
     }
     await settle();
 
-    expect(sources.openMic).toHaveBeenCalledWith(undefined);
+    expect(sources.openMic).toHaveBeenCalledWith(undefined, expect.any(Object));
     expect(q('recorder-mic-info')?.textContent).toContain('Fake Mic');
     expect(localStorage.getItem('sintade.recorder.mic')).toBe('real-mic-id');
   });
@@ -311,6 +370,7 @@ describe('RecorderPage control bar', () => {
         { provide: CapabilityService, useValue: capabilities(SUPPORTED) },
         { provide: SOURCE_MANAGER, useValue: fakeSources() },
         { provide: AUDIO_MIXER, useValue: fakeMixer() },
+        { provide: PLAN_LIMITS, useValue: signal(planLimits) },
         { provide: CHUNK_STORE, useValue: Promise.resolve(store) },
         { provide: START_TAKE, useValue: startTake },
         { provide: RECORDINGS_API, useValue: api },
@@ -545,7 +605,7 @@ describe('RecorderPage problems and view-only', () => {
 
     q<HTMLButtonElement>('recorder-retry')?.click();
     await settle();
-    expect(sources.openMic).toHaveBeenLastCalledWith('mic-a');
+    expect(sources.openMic).toHaveBeenLastCalledWith('mic-a', expect.any(Object));
     expect(q('recorder-error')).toBeNull();
     expect(q('recorder-mic-info')).not.toBeNull();
   });
@@ -557,6 +617,7 @@ describe('RecorderPage problems and view-only', () => {
         { provide: CapabilityService, useValue: capabilities(SUPPORTED, false) },
         { provide: SOURCE_MANAGER, useValue: fakeSources() },
         { provide: AUDIO_MIXER, useValue: fakeMixer() },
+        { provide: PLAN_LIMITS, useValue: signal(planLimits) },
       ],
     });
     const fixture = TestBed.createComponent(RecorderPage);

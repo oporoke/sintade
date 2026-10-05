@@ -1949,18 +1949,44 @@
           }
         }
       },
+      "MeEntitlements": {
+        "type": "object",
+        "description": "What the current workspace's plan allows, for the recorder to offer only what it can keep.",
+        "required": [
+          "max_resolution",
+          "max_duration_ms"
+        ],
+        "properties": {
+          "max_duration_ms": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Longest take, in milliseconds.",
+            "minimum": 0
+          },
+          "max_resolution": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Tallest recording, in pixels of height (1080 = 1080p).",
+            "minimum": 0
+          }
+        }
+      },
       "MeResponse": {
         "type": "object",
         "required": [
           "user",
           "workspaces",
-          "current_workspace_id"
+          "current_workspace_id",
+          "entitlements"
         ],
         "properties": {
           "current_workspace_id": {
             "type": "string",
             "format": "uuid",
             "description": "The workspace the session's access cookie was issued for -- lets the client pick the\nright entry out of `workspaces` as \"current\" without guessing."
+          },
+          "entitlements": {
+            "$ref": "#/components/schemas/MeEntitlements"
           },
           "user": {
             "$ref": "#/components/schemas/MeUser"

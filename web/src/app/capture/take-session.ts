@@ -12,6 +12,7 @@ import {
 } from './chunk-recorder';
 import { ChunkStore, TakeMeta } from './chunk-store';
 import { onTrackEnded } from './track-ended';
+import { QualityPreset, bitsPerSecond } from './quality';
 import { LocksPort, persistTake } from './take-journal';
 
 export interface TakeSessionOptions {
@@ -20,6 +21,8 @@ export interface TakeSessionOptions {
   mixer: AudioMixer;
   /** The webcam; when set, the recorded video is the screen with the camera bubble on top. */
   camera?: MediaStream | null;
+  /** Resolution/frame rate/bitrate; defaults to the recorder's standard 30 fps rate. */
+  quality?: QualityPreset;
   /** Test seam for building the compositor. */
   createCompositor?: (screen: MediaStream, camera: MediaStream) => Compositor;
   store: ChunkStore;
@@ -61,10 +64,10 @@ export class TakeSession {
     // The compositor exists only when a camera is on; otherwise the screen track goes straight
     // to the recorder (§10 Record).
     const compositor = options.camera
-      ? (options.createCompositor ?? ((screen, camera) => new Compositor({ screen, camera })))(
-          options.display,
-          options.camera,
-        )
+      ? (
+          options.createCompositor ??
+          ((screen, camera) => new Compositor({ screen, camera, fps: options.quality?.fps }))
+        )(options.display, options.camera)
       : null;
     const video = compositor?.track ?? displayVideo;
     const audio = await options.mixer.mix({ mic: options.mic, display: options.display });
@@ -91,7 +94,9 @@ export class TakeSession {
     recorder.start(stream, {
       mimeType,
       timesliceMs: DEFAULT_TIMESLICE_MS,
-      bitsPerSecond: DEFAULT_VIDEO_BITS_PER_SECOND,
+      bitsPerSecond: options.quality
+        ? bitsPerSecond(options.quality)
+        : DEFAULT_VIDEO_BITS_PER_SECOND,
     });
     const session = new TakeSession(
       options.takeId,

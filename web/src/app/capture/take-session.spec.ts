@@ -1,5 +1,6 @@
 import { AudioMixer } from './audio-mixer';
 import { Compositor } from './compositor';
+import { QualityPreset } from './quality';
 import { ChunkRecorder, CreateMediaRecorder } from './chunk-recorder';
 import { ChunkStore, TakeMeta } from './chunk-store';
 import { TakeSession } from './take-session';
@@ -58,8 +59,10 @@ function setup(
     close: vi.fn().mockResolvedValue(undefined),
   };
   let recorded: MediaStream | undefined;
-  const create: CreateMediaRecorder = (stream) => {
+  let recorderOptions: MediaRecorderOptions | undefined;
+  const create: CreateMediaRecorder = (stream, recOptions) => {
     recorded = stream;
+    recorderOptions = recOptions;
     return new FakeMediaRecorder(stream) as unknown as MediaRecorder;
   };
   const store = new MemoryStore();
@@ -75,8 +78,9 @@ function setup(
     bubble: { cx: 0.5 },
     setBubble: vi.fn(),
   };
-  const start = (withCamera = false) =>
+  const start = (withCamera = false, quality?: QualityPreset) =>
     TakeSession.start({
+      quality,
       camera: withCamera ? ({} as MediaStream) : null,
       createCompositor: () => compositor as unknown as Compositor,
       display,
@@ -97,6 +101,7 @@ function setup(
     });
   return {
     start,
+    recorderOptions: () => recorderOptions,
     compositor,
     compositorTrack,
     mixer,
@@ -142,6 +147,12 @@ describe('TakeSession', () => {
     video.dispatchEvent(new Event('ended'));
     await session.ended;
     expect(compositor.stop).toHaveBeenCalled();
+  });
+
+  it('records at the preset bitrate', async () => {
+    const { start, recorderOptions } = setup();
+    await start(false, { height: 1080, fps: 60 });
+    expect(recorderOptions()?.videoBitsPerSecond).toBe(8_000_000);
   });
 
   it('records video only when there is no audio to mix', async () => {

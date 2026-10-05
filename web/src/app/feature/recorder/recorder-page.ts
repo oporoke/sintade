@@ -17,9 +17,18 @@ import {
   MicDevice,
   TakeMeta,
   AudioLevels,
+  AudioProcessing,
   AudioSourceName,
   BubbleLayout,
   BubbleShape,
+  DEFAULT_AUDIO_PROCESSING,
+  DEFAULT_QUALITY,
+  FRAME_RATES,
+  FrameRate,
+  QualityPreset,
+  RESOLUTIONS,
+  Resolution,
+  clampQuality,
   TakeSession,
   UploadHttpError,
   UploadProgress,
@@ -36,6 +45,7 @@ import { CreateRecordingResponse } from '../../core/ingest-api.service';
 import {
   AUDIO_MIXER,
   CHUNK_STORE,
+  PLAN_LIMITS,
   RECORDINGS_API,
   SOURCE_MANAGER,
   START_TAKE,
@@ -160,6 +170,32 @@ const ANY_MIC = 'any';
           </p>
         </section>
 
+        <section aria-labelledby="recorder-quality-heading">
+          <h2 id="recorder-quality-heading" i18n>Quality</h2>
+          <label>
+            <span i18n>Resolution</span>
+            <select (change)="onResolutionChange($event)" data-testid="recorder-resolution">
+              @for (option of resolutionOptions(); track option.height) {
+                <option
+                  [value]="option.height"
+                  [disabled]="!option.allowed"
+                  [selected]="option.height === quality().height"
+                >
+                  {{ option.label }}{{ option.allowed ? '' : upgradeSuffix }}
+                </option>
+              }
+            </select>
+          </label>
+          <label>
+            <span i18n>Frame rate</span>
+            <select (change)="onFrameRateChange($event)" data-testid="recorder-fps">
+              @for (fps of frameRates; track fps) {
+                <option [value]="fps" [selected]="fps === quality().fps">{{ fps }} fps</option>
+              }
+            </select>
+          </label>
+        </section>
+
         <section aria-labelledby="recorder-camera-heading">
           <h2 id="recorder-camera-heading" i18n>Camera</h2>
           <label>
@@ -198,6 +234,36 @@ const ANY_MIC = 'any';
               }
             </select>
           </label>
+          <fieldset data-testid="recorder-audio-processing">
+            <legend i18n>Microphone processing</legend>
+            <label>
+              <input
+                type="checkbox"
+                [checked]="audioProcessing().noiseSuppression"
+                (change)="onProcessingChange('noiseSuppression', $event)"
+                data-testid="recorder-noise-suppression"
+              />
+              <span i18n>Noise suppression</span>
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                [checked]="audioProcessing().echoCancellation"
+                (change)="onProcessingChange('echoCancellation', $event)"
+                data-testid="recorder-echo-cancellation"
+              />
+              <span i18n>Echo cancellation</span>
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                [checked]="audioProcessing().autoGainControl"
+                (change)="onProcessingChange('autoGainControl', $event)"
+                data-testid="recorder-auto-gain"
+              />
+              <span i18n>Automatic gain</span>
+            </label>
+          </fieldset>
         </section>
       </fieldset>
 
@@ -479,6 +545,7 @@ export class RecorderPage {
   private readonly capabilityService = inject(CapabilityService);
   private readonly sources = inject(SOURCE_MANAGER);
   private readonly mixer = inject(AUDIO_MIXER);
+  private readonly planLimits = inject(PLAN_LIMITS);
   private readonly chunkStore = inject(CHUNK_STORE);
   private readonly startTake = inject(START_TAKE);
   private readonly recordingsApi = inject(RECORDINGS_API);
@@ -502,6 +569,21 @@ export class RecorderPage {
   protected readonly systemAudioSupport = this.capabilityService.systemAudio;
   protected readonly systemAudio = signal(false);
   protected readonly camera = signal<MediaStream | null>(null);
+  private readonly requestedQuality = signal<QualityPreset>(DEFAULT_QUALITY);
+  /** What is actually recorded: the request, kept within the plan (a free user never gets 4K). */
+  protected readonly quality = computed(() =>
+    clampQuality(this.requestedQuality(), this.planLimits().maxResolution),
+  );
+  protected readonly resolutionOptions = computed(() =>
+    RESOLUTIONS.map((height) => ({
+      height,
+      allowed: height <= this.planLimits().maxResolution,
+      label: height === 2160 ? '4K' : `${height}p`,
+    })),
+  );
+  protected readonly frameRates = FRAME_RATES;
+  protected readonly upgradeSuffix = $localize` — not on your plan`;
+  protected readonly audioProcessing = signal<AudioProcessing>(DEFAULT_AUDIO_PROCESSING);
   protected readonly bubble = signal<BubbleLayout | null>(null);
   protected readonly display = signal<MediaStream | null>(null);
   protected readonly displayInfo = signal<LiveSource | null>(null);
@@ -647,6 +729,28 @@ export class RecorderPage {
     this.systemAudio.set((event.target as HTMLInputElement).checked);
   }
 
+  onResolutionChange(event: Event): void {
+    const height = Number((event.target as HTMLSelectElement).value) as Resolution;
+    this.requestedQuality.update((q) => ({ ...q, height }));
+    void this.sources.applyQuality(this.quality());
+  }
+
+  onFrameRateChange(event: Event): void {
+    const fps = Number((event.target as HTMLSelectElement).value) as FrameRate;
+    this.requestedQuality.update((q) => ({ ...q, fps }));
+    void this.sources.applyQuality(this.quality());
+  }
+
+  /** The browser applies these when the mic opens, so an open mic is reopened with the new set. */
+  async onProcessingChange(name: keyof AudioProcessing, event: Event): Promise<void> {
+    const checked = (event.target as HTMLInputElement).checked;
+    this.audioProcessing.update((all) => ({ ...all, [name]: checked }));
+    const mic = this.selectedMic();
+    if (mic && this.micInfo()) {
+      await this.openSelectedMic(mic);
+    }
+  }
+
   async onCameraChange(event: Event): Promise<void> {
     const input = event.target as HTMLInputElement;
     this.problem.set(null);
@@ -723,6 +827,8 @@ export class RecorderPage {
     try {
       const stream = await this.sources.pickDisplay({
         systemAudio: this.systemAudio() && this.systemAudioSupport().supported,
+        frameRate: this.quality().fps,
+        height: this.quality().height,
       });
       this.display.set(stream);
       this.displayInfo.set(describeDisplay(stream));
@@ -748,7 +854,10 @@ export class RecorderPage {
   /** Opens the chosen mic (also Try again after a mic problem) and starts the device check. */
   private async openSelectedMic(deviceId: string): Promise<void> {
     try {
-      const stream = await this.sources.openMic(deviceId === ANY_MIC ? undefined : deviceId);
+      const stream = await this.sources.openMic(
+        deviceId === ANY_MIC ? undefined : deviceId,
+        this.audioProcessing(),
+      );
       const [track] = stream.getAudioTracks();
       // Pin (and remember) the real device, which is known now that permission was granted.
       const actual = track?.getSettings().deviceId;
@@ -828,6 +937,7 @@ export class RecorderPage {
         mic,
         mixer: this.mixer,
         camera: this.sources.currentCamera,
+        quality: this.quality(),
         store,
         takeId,
         ...(recording ? { serverTakeId: recording.take_id } : {}),

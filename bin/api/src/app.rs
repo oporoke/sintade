@@ -36,6 +36,7 @@ pub struct AppState {
     pub catalog: Arc<catalog::CatalogService>,
     pub recordings: Arc<catalog::RecordingManager>,
     pub delivery: Arc<delivery::DeliveryService>,
+    pub billing: Arc<billing::BillingService>,
     pub rate_limiter: Arc<RateLimiter>,
     pub clock: Arc<dyn Clock>,
 }
@@ -54,6 +55,7 @@ pub fn build_router(
     build_router_from(
         routes::table(),
         AppState {
+            billing: Arc::new(billing::BillingService::new()),
             ingest,
             retry: Arc::new(RetryService::new(
                 pool.clone(),

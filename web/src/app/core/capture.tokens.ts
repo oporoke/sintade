@@ -1,4 +1,4 @@
-import { InjectionToken, inject } from '@angular/core';
+import { InjectionToken, Signal, computed, inject } from '@angular/core';
 
 import {
   AudioMixer,
@@ -9,6 +9,7 @@ import {
   openChunkStore,
   UploadApi,
 } from '../capture';
+import { AuthService } from './auth.service';
 import { CreateRecordingBody, CreateRecordingResponse, IngestApi } from './ingest-api.service';
 
 /*
@@ -54,4 +55,27 @@ export interface RecordingsApi extends UploadApi {
 export const RECORDINGS_API = new InjectionToken<RecordingsApi>('RecordingsApi', {
   providedIn: 'root',
   factory: () => inject(IngestApi),
+});
+
+/** What the current plan lets the recorder offer. Unknown limits are the free tier's. */
+export interface PlanLimits {
+  maxResolution: number;
+  maxDurationMs: number;
+}
+
+export const FREE_PLAN_LIMITS: PlanLimits = { maxResolution: 1080, maxDurationMs: 600_000 };
+
+export const PLAN_LIMITS = new InjectionToken<Signal<PlanLimits>>('PlanLimits', {
+  factory: () => {
+    const auth = inject(AuthService);
+    return computed(() => {
+      const entitlements = auth.currentUser()?.entitlements;
+      return entitlements
+        ? {
+            maxResolution: entitlements.max_resolution,
+            maxDurationMs: entitlements.max_duration_ms,
+          }
+        : FREE_PLAN_LIMITS;
+    });
+  },
 });

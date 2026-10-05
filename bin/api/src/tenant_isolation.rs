@@ -481,6 +481,7 @@ fn app(pool: &PgPool) -> Router {
     build_router_from(
         table_with_probe(),
         AppState {
+            billing: Arc::new(billing::BillingService::new()),
             pool: pool.clone(),
             identity: test_identity(pool.clone()),
             tenancy: test_tenancy(pool.clone()),

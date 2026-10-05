@@ -54,3 +54,19 @@ test('choose a screen and a microphone', async ({ page, request }) => {
   await page.reload();
   await expect(page.getByTestId('recorder-mic-select')).toHaveValue(chosen);
 });
+
+/**
+ * Day 74 Check: "free user cannot pick 4K". A freshly signed-up user is on the free tier; the
+ * recorder reads the plan's limit from `/me` and disables 4K (and a forced value would be clamped).
+ */
+test('a free user cannot pick 4K', async ({ page, request }) => {
+  await signUpAndLogIn(page, request);
+  await page.goto('/record');
+  const resolution = page.getByTestId('recorder-resolution');
+  await expect(resolution).toHaveValue('1080');
+  // (Playwright's toBeDisabled ignores <option>; the DOM property is what the browser enforces.)
+  await expect(resolution.locator('option[value="2160"]')).toHaveJSProperty('disabled', true);
+  await expect(resolution.locator('option[value="1080"]')).toHaveJSProperty('disabled', false);
+  await expect(resolution.locator('option[value="720"]')).toHaveJSProperty('disabled', false);
+  await expect(page.getByTestId('recorder-fps')).toHaveValue('30');
+});
