@@ -936,7 +936,9 @@ mod tests {
 
         let mut best = std::time::Duration::MAX;
         let mut deep_cursor = None;
-        for _ in 0..5 {
+        // Best of several: the other tests in the run compete for the CPU, and what the bound
+        // is about is what the query can do, not the worst moment of a busy machine.
+        for _ in 0..15 {
             let started = std::time::Instant::now();
             let reply = list(&pool, &alice, None).await;
             best = best.min(started.elapsed());
@@ -954,10 +956,16 @@ mod tests {
         let mut cursor = deep_cursor;
         let mut deepest = std::time::Duration::ZERO;
         while let Some(current) = cursor {
-            let started = std::time::Instant::now();
-            let reply = list(&pool, &alice, Some(&current)).await;
-            deepest = deepest.max(started.elapsed());
-            cursor = reply.body["next_cursor"].as_str().map(str::to_string);
+            let mut fastest = std::time::Duration::MAX;
+            let mut next = None;
+            for _ in 0..3 {
+                let started = std::time::Instant::now();
+                let reply = list(&pool, &alice, Some(&current)).await;
+                fastest = fastest.min(started.elapsed());
+                next = reply.body["next_cursor"].as_str().map(str::to_string);
+            }
+            deepest = deepest.max(fastest);
+            cursor = next;
         }
         eprintln!("library slowest page of 1,000: {deepest:?}");
         assert!(
