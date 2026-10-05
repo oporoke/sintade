@@ -1,6 +1,7 @@
 import { Observable } from 'rxjs';
 
 import { AudioMixer } from './audio-mixer';
+import { Compositor } from './compositor';
 import { CaptureError } from './capture-error';
 import {
   ChunkRecorder,
@@ -10,12 +11,17 @@ import {
   selectMimeType,
 } from './chunk-recorder';
 import { ChunkStore, TakeMeta } from './chunk-store';
+import { onTrackEnded } from './track-ended';
 import { LocksPort, persistTake } from './take-journal';
 
 export interface TakeSessionOptions {
   display: MediaStream;
   mic: MediaStream | null;
   mixer: AudioMixer;
+  /** The webcam; when set, the recorded video is the screen with the camera bubble on top. */
+  camera?: MediaStream | null;
+  /** Test seam for building the compositor. */
+  createCompositor?: (screen: MediaStream, camera: MediaStream) => Compositor;
   store: ChunkStore;
   /** The key the chunks are stored under: the server's take id when the take is uploaded. */
   takeId: string;
@@ -47,10 +53,19 @@ export class TakeSession {
   ) {}
 
   static async start(options: TakeSessionOptions): Promise<TakeSession> {
-    const [video] = options.display.getVideoTracks();
-    if (!video || video.readyState === 'ended') {
+    const [displayVideo] = options.display.getVideoTracks();
+    if (!displayVideo || displayVideo.readyState === 'ended') {
       throw new CaptureError('aborted', 'the shared screen is no longer available');
     }
+    // The compositor exists only when a camera is on; otherwise the screen track goes straight
+    // to the recorder (§10 Record).
+    const compositor = options.camera
+      ? (options.createCompositor ?? ((screen, camera) => new Compositor({ screen, camera })))(
+          options.display,
+          options.camera,
+        )
+      : null;
+    const video = compositor?.track ?? displayVideo;
     const audio = await options.mixer.mix({ mic: options.mic, display: options.display });
     // Chosen after mixing: a video-only take needs a MIME type without an audio codec.
     const mimeType =
@@ -58,6 +73,7 @@ export class TakeSession {
         ? selectMimeType(options.isTypeSupported, { audio: audio !== null })
         : options.mimeType;
     if (!mimeType) {
+      compositor?.stop();
       await options.mixer.close();
       throw new CaptureError('not-supported', 'this browser cannot record in a supported format');
     }
@@ -76,7 +92,21 @@ export class TakeSession {
       timesliceMs: DEFAULT_TIMESLICE_MS,
       bitsPerSecond: DEFAULT_VIDEO_BITS_PER_SECOND,
     });
-    return new TakeSession(options.takeId, mimeType, recorder, persisted.done, persisted.stored$);
+    const session = new TakeSession(
+      options.takeId,
+      mimeType,
+      recorder,
+      persisted.done,
+      persisted.stored$,
+    );
+    if (compositor) {
+      // The recorder watches the canvas track, which never ends by itself: end the take when
+      // the shared screen ends, and release the compositor once the take is stored.
+      onTrackEnded(displayVideo, () => void session.stop().catch(() => undefined));
+      const release = () => compositor.stop();
+      persisted.done.then(release, release);
+    }
+    return session;
   }
 
   get state$(): Observable<RecorderState> {

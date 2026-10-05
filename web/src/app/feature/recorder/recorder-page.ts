@@ -135,6 +135,31 @@ const ANY_MIC = 'any';
           </p>
         </section>
 
+        <section aria-labelledby="recorder-camera-heading">
+          <h2 id="recorder-camera-heading" i18n>Camera</h2>
+          <label>
+            <input
+              type="checkbox"
+              [checked]="camera() !== null"
+              (change)="onCameraChange($event)"
+              data-testid="recorder-camera"
+            />
+            <span i18n>Show my camera as a bubble</span>
+          </label>
+          @if (camera(); as camera) {
+            <video
+              [srcObject]="camera"
+              autoplay
+              muted
+              playsinline
+              width="120"
+              data-testid="recorder-camera-preview"
+              i18n-aria-label
+              aria-label="Preview of your camera"
+            ></video>
+          }
+        </section>
+
         <section aria-labelledby="recorder-mic-heading">
           <h2 id="recorder-mic-heading" i18n>Microphone</h2>
           <label>
@@ -358,6 +383,7 @@ export class RecorderPage {
 
   protected readonly systemAudioSupport = this.capabilityService.systemAudio;
   protected readonly systemAudio = signal(false);
+  protected readonly camera = signal<MediaStream | null>(null);
   protected readonly display = signal<MediaStream | null>(null);
   protected readonly displayInfo = signal<LiveSource | null>(null);
   protected readonly mics = signal<MicDevice[]>([]);
@@ -469,6 +495,22 @@ export class RecorderPage {
     this.systemAudio.set((event.target as HTMLInputElement).checked);
   }
 
+  async onCameraChange(event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement;
+    this.problem.set(null);
+    if (!input.checked) {
+      this.sources.stopCamera();
+      this.camera.set(null);
+      return;
+    }
+    try {
+      this.camera.set(await this.sources.openCamera());
+    } catch (error) {
+      input.checked = false;
+      this.showError(error, 'camera');
+    }
+  }
+
   async chooseScreen(): Promise<void> {
     this.problem.set(null);
     try {
@@ -546,7 +588,7 @@ export class RecorderPage {
               mime_type: mimeType,
               has_system_audio: hasSystemAudio,
               has_mic: hasMic,
-              has_camera: false,
+              has_camera: this.camera() !== null,
             })
             .then(
               (recording) => ({ recording, limitReached: false }),
@@ -578,6 +620,7 @@ export class RecorderPage {
         display,
         mic,
         mixer: this.mixer,
+        camera: this.sources.currentCamera,
         store,
         takeId,
         ...(recording ? { serverTakeId: recording.take_id } : {}),
