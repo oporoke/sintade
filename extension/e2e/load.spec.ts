@@ -23,6 +23,7 @@ test('loads unpacked, starts its service worker and opens the popup', async ({
   expect([...(manifest.permissions ?? [])].sort()).toEqual([
     'activeTab',
     'offscreen',
+    'scripting',
     'storage',
     'tabCapture',
   ]);

@@ -5,10 +5,12 @@ import type { OffscreenMessage, StateReply } from '../shared/messages';
 import { isRecordingStateEvent } from '../shared/messages';
 import type { RecordingState } from '../shared/recording';
 import { IDLE } from '../shared/recording';
+import { SETTINGS_KEY, normalizeSettings } from '../shared/settings';
 
 declare const __SINTADE_ORIGIN__: string;
 
 const STATE_KEY = 'recording';
+const TAB_KEY = 'recording-tab';
 const OFFSCREEN_URL = 'offscreen.html';
 
 const version = chrome.runtime.getManifest().version;
@@ -38,6 +40,24 @@ const platform: RecorderPlatform = {
   },
   async sendToOffscreen(message: OffscreenMessage) {
     return (await chrome.runtime.sendMessage(message)) as StateReply | undefined;
+  },
+  async startOverlay(tabId, settings) {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+    await chrome.tabs.sendMessage(tabId, { type: 'overlay-start', ...settings });
+  },
+  async stopOverlay(tabId) {
+    await chrome.tabs.sendMessage(tabId, { type: 'overlay-stop' });
+  },
+  async loadSettings() {
+    const stored = await chrome.storage.local.get(SETTINGS_KEY);
+    return normalizeSettings(stored[SETTINGS_KEY]);
+  },
+  async loadTab() {
+    const stored = await chrome.storage.session.get(TAB_KEY);
+    return (stored[TAB_KEY] as number | null | undefined) ?? null;
+  },
+  async saveTab(tabId) {
+    await chrome.storage.session.set({ [TAB_KEY]: tabId });
   },
   async loadState() {
     const stored = await chrome.storage.session.get(STATE_KEY);

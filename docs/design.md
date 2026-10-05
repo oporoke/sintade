@@ -1039,7 +1039,7 @@ The largest risks are browser capture inconsistencies and media cost; both are m
 | Whisper on CPU competes with FFmpeg on the worker VPS | High | Medium | Separate concurrency limit and lower priority for `Transcribe`; `base` model; move to GPU host when queue age > 1 h |
 | Mobile money operator API onboarding is slow or inconsistent (M-Pesa, Airtel Money, Mixx by Yas, HaloPesa) | High | Medium | Start merchant onboarding with each operator during MVP; launch with the first approved operator; `PaymentProvider` trait per operator; daily reconciliation job |
 | Free tier (50 × 10 min at 1080p) drives storage cost | Medium | Medium | Inactive-video retention limits, lazy HLS ladder, per-workspace storage metrics, raw-chunk cleanup |
-| Chrome Web Store review delays or rejects the extension | Medium | Medium | Minimal permissions (`activeTab`, `tabCapture`, `offscreen`, `storage`); privacy policy ready before submission; web app works without the extension |
+| Chrome Web Store review delays or rejects the extension | Medium | Medium | Minimal permissions (`activeTab`, `scripting`, `tabCapture`, `offscreen`, `storage`); privacy policy ready before submission; web app works without the extension |
 | Abuse: hosting illegal or infringing content on public links | Medium | High | Abuse reports, takedown flow, public-link rate limits, V2 automated moderation |
 | Single developer bus factor | High | High | This document, ADRs per major decision, infrastructure as code, runbooks, handoff checklist |
 
@@ -1113,7 +1113,7 @@ Rules: one row = one mergeable unit of work. `In progress` must name the branch 
 | V1 | OAuth, TOTP, active sessions | 12 | Not started |  |
 | V1 | Plans, payments, usage metering | 14 | Not started |  |
 | V1 | Notification centre, CDN, observability stack | 15, 19 | Not started |  |
-| MVP | Browser extension | 2, 16 | In progress | Day 61 (`feat/day-061-extension-scaffold`): `extension/` project (MV3 manifest, service worker, popup, esbuild pipeline, icons), loads unpacked in Chrome 154 and Edge (ADR-0017). Day 62 (`feat/day-062-session-handoff`): the popup shows who is signed in to the web app, using the browser's own session (host permission + `X-Sintade-Client` header for CSRF; ADR-0018). Day 63 (`feat/day-063-tab-recording`): Record this tab → offscreen document + shared capture engine + the same ingest; the link plays on Sintade (Chrome and Edge; ADR-0019) |
+| MVP | Browser extension | 2, 16 | In progress | Day 61 (`feat/day-061-extension-scaffold`): `extension/` project (MV3 manifest, service worker, popup, esbuild pipeline, icons), loads unpacked in Chrome 154 and Edge (ADR-0017). Day 62 (`feat/day-062-session-handoff`): the popup shows who is signed in to the web app, using the browser's own session (host permission + `X-Sintade-Client` header for CSRF; ADR-0018). Day 63 (`feat/day-063-tab-recording`): Record this tab → offscreen document + shared capture engine + the same ingest; the link plays on Sintade (Chrome and Edge; ADR-0019). Day 64 (`feat/day-064-overlay`): click rings and a keystroke label drawn into the recorded tab by an injected content script, visible in the output MP4; password fields never shown (ADR-0020) |
 | V2 | AI summary, chapters, filler removal, translation | 8 | Not started |  |
 | V2 | Public API, webhooks, third-party integrations | 16 | Not started |  |
 | V2 | Viewer insights, retention curves, CTA | 10, 17 | Not started |  |
