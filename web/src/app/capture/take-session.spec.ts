@@ -206,7 +206,7 @@ describe('TakeSession', () => {
   });
 
   it('chooses a MIME type with an audio codec only when the take has audio', async () => {
-    const supported = (type: string) => type.startsWith('video/webm');
+    const supported = (type: string) => type.startsWith('video/webm') && !type.includes('h264');
     const withAudio = await setup({ isTypeSupported: supported }).start();
     expect(withAudio.mimeType).toBe('video/webm;codecs=vp9,opus');
 

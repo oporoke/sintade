@@ -23,8 +23,13 @@ export interface RecordingSummary {
   durationMs: number;
 }
 
-/** In order of preference (§10 Record): VP9 WebM, VP8 WebM, then H.264/AAC MP4 for Safari. */
+/**
+ * In order of preference (§10 Record, ADR-0028): H.264 in WebM where the browser can encode it
+ * (hardware-accelerated on most laptops, a third of VP9's CPU in software), then VP9 WebM, VP8
+ * WebM, then H.264/AAC MP4 for Safari.
+ */
 export const PREFERRED_MIME_TYPES = [
+  'video/webm;codecs=h264,opus',
   'video/webm;codecs=vp9,opus',
   'video/webm;codecs=vp8,opus',
   'video/mp4;codecs=avc1,mp4a',
@@ -35,6 +40,7 @@ export const PREFERRED_MIME_TYPES = [
  * stream is not harmless: Firefox then records nothing and never fires `stop` (Day 31).
  */
 export const PREFERRED_VIDEO_ONLY_MIME_TYPES = [
+  'video/webm;codecs=h264',
   'video/webm;codecs=vp9',
   'video/webm;codecs=vp8',
   'video/mp4;codecs=avc1',

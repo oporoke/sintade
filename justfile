@@ -43,6 +43,11 @@ demo-m5 *args:
 demo-m6 *args:
     cd web && DEMO=1 npx playwright test e2e/m6-demo.spec.ts --workers=1 {{args}}
 
+# M9 profile: client CPU while recording at 1080p30/60, with and without the camera (Chromium).
+# Writes web/demo-output/m9/cpu.json; fails above the §11 target (1 core).
+profile-capture *args:
+    cd web && npx playwright test e2e/m9-cpu.spec.ts --project=chromium --workers=1 {{args}}
+
 # The browser extension (Manifest V3, Chrome and Edge): build into extension/dist/, then load it
 # unpacked at chrome://extensions (Developer mode -> Load unpacked).
 ext-build:

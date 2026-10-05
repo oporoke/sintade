@@ -661,7 +661,7 @@ describe('RecorderPage control bar', () => {
       const { q, startTake, stored, store, settle } = await recording(api);
       // No mic and no system audio: the video-only format.
       expect(api.createRecording).toHaveBeenCalledWith({
-        mime_type: 'video/webm;codecs=vp9',
+        mime_type: 'video/webm;codecs=h264',
         has_system_audio: false,
         has_mic: false,
         has_camera: false,

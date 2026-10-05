@@ -99,7 +99,7 @@ export type Canvas2D = Pick<
 export interface CompositorCanvas {
   width: number;
   height: number;
-  getContext(kind: '2d'): Canvas2D | null;
+  getContext(kind: '2d', options?: CanvasRenderingContext2DSettings): Canvas2D | null;
   captureStream(fps: number): MediaStream;
 }
 
@@ -194,10 +194,13 @@ export class Compositor {
     const { outWidth, outHeight } = this.region
       ? regionPixels(this.region, sourceWidth, sourceHeight)
       : { outWidth: sourceWidth, outHeight: sourceHeight };
-    const width = Math.max(MIN_SIDE, outWidth);
-    const height = Math.max(MIN_SIDE, outHeight);
+    // Even sizes: H.264 4:2:0 cannot encode odd ones.
+    const width = Math.max(MIN_SIDE, outWidth - (outWidth % 2));
+    const height = Math.max(MIN_SIDE, outHeight - (outHeight % 2));
     this.canvas = (options.createCanvas ?? browserCanvas)(width, height);
-    const ctx = this.canvas.getContext('2d');
+    // Opaque and unsynchronised: the frame is always fully painted, so the browser can skip alpha
+    // blending and does not have to wait for the page's own compositing (Day 78 profile).
+    const ctx = this.canvas.getContext('2d', { alpha: false, desynchronized: true });
     if (!ctx) {
       throw new Error('2d canvas is not available');
     }
@@ -234,9 +237,13 @@ export class Compositor {
     }
     const { ctx, canvas } = this;
     const { width, height } = canvas;
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, width, height);
     const camera = this.camera;
+    // Painting over the whole frame needs no clear first; only a not-yet-ready source does.
+    const coversFrame = this.layout.cameraOnly ? camera?.ready : this.screen.ready;
+    if (!coversFrame) {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, width, height);
+    }
     if (this.layout.cameraOnly && camera) {
       if (camera.ready) {
         const { w, h } = { w: camera.width, h: camera.height };

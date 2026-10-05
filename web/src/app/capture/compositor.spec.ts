@@ -87,7 +87,6 @@ describe('Compositor', () => {
   it('draws the screen, then the camera clipped to a circle', () => {
     const { calls } = setup();
     expect(calls).toEqual([
-      'fill',
       'draw:screen',
       'save',
       'begin',
@@ -98,6 +97,11 @@ describe('Compositor', () => {
     ]);
   });
 
+  it('clears to black only while the screen is not ready to cover the frame', () => {
+    const { calls } = setup({ screen: false, camera: true });
+    expect(calls[0]).toBe('fill');
+  });
+
   it('clips to a rounded square for the rounded shape', () => {
     const { calls } = setup(undefined, 'rounded');
     expect(calls).toContain('roundRect');
@@ -106,7 +110,7 @@ describe('Compositor', () => {
 
   it('skips sources that are not ready yet', () => {
     const { calls } = setup({ screen: true, camera: false });
-    expect(calls).toEqual(['fill', 'draw:screen']);
+    expect(calls).toEqual(['draw:screen']);
   });
 
   it('follows a moved bubble on the next frame', () => {
@@ -128,7 +132,7 @@ describe('Compositor', () => {
     calls.length = 0;
     compositor.setBubble({ cameraOnly: true });
     compositor.draw();
-    expect(calls).toEqual(['fill', 'draw:camera']);
+    expect(calls).toEqual(['draw:camera']);
   });
 
   it('stops the timer, the track and both sources once', () => {

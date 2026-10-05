@@ -85,9 +85,10 @@ function setup() {
 }
 
 describe('selectMimeType', () => {
-  it('prefers VP9, then VP8, then MP4', () => {
-    expect(selectMimeType(() => true)).toBe('video/webm;codecs=vp9,opus');
-    expect(selectMimeType((type) => !type.includes('vp9'))).toBe('video/webm;codecs=vp8,opus');
+  it('prefers H.264 WebM, then VP9, then VP8, then MP4', () => {
+    expect(selectMimeType(() => true)).toBe('video/webm;codecs=h264,opus');
+    expect(selectMimeType((type) => !type.includes('h264'))).toBe('video/webm;codecs=vp9,opus');
+    expect(selectMimeType((type) => !/h264|vp9/.test(type))).toBe('video/webm;codecs=vp8,opus');
     expect(selectMimeType((type) => type.startsWith('video/mp4'))).toBe(
       'video/mp4;codecs=avc1,mp4a',
     );
@@ -98,7 +99,10 @@ describe('selectMimeType', () => {
   });
 
   it('names no audio codec for a video-only take', () => {
-    expect(selectMimeType(() => true, { audio: false })).toBe('video/webm;codecs=vp9');
+    expect(selectMimeType(() => true, { audio: false })).toBe('video/webm;codecs=h264');
+    expect(selectMimeType((type) => !type.includes('h264'), { audio: false })).toBe(
+      'video/webm;codecs=vp9',
+    );
     expect(selectMimeType((type) => type.startsWith('video/mp4'), { audio: false })).toBe(
       'video/mp4;codecs=avc1',
     );
