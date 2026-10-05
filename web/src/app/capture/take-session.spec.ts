@@ -1,5 +1,5 @@
 import { AudioMixer } from './audio-mixer';
-import { Compositor } from './compositor';
+import { Compositor, Region } from './compositor';
 import { QualityPreset } from './quality';
 import { ChunkRecorder, CreateMediaRecorder } from './chunk-recorder';
 import { ChunkStore, TakeMeta } from './chunk-store';
@@ -75,12 +75,14 @@ function setup(
   const compositor = {
     track: compositorTrack,
     stop: vi.fn(),
+    hasCamera: true,
     bubble: { cx: 0.5 },
     setBubble: vi.fn(),
   };
-  const start = (withCamera = false, quality?: QualityPreset) =>
+  const start = (withCamera = false, quality?: QualityPreset, region?: Region) =>
     TakeSession.start({
       quality,
+      region,
       camera: withCamera ? ({} as MediaStream) : null,
       createCompositor: () => compositor as unknown as Compositor,
       display,
@@ -147,6 +149,18 @@ describe('TakeSession', () => {
     video.dispatchEvent(new Event('ended'));
     await session.ended;
     expect(compositor.stop).toHaveBeenCalled();
+  });
+
+  it('crops without a camera by recording the compositor track', async () => {
+    const { start, recorded, compositorTrack } = setup();
+    await start(false, undefined, { x: 0, y: 0, w: 0.5, h: 0.5 });
+    expect(recorded().tracks[0]).toBe(compositorTrack);
+  });
+
+  it('records the screen track untouched with neither camera nor crop', async () => {
+    const { start, recorded, video } = setup();
+    await start();
+    expect(recorded().tracks[0]).toBe(video);
   });
 
   it('records at the preset bitrate', async () => {

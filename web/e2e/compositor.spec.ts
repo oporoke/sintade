@@ -185,3 +185,70 @@ test('camera-only fills the frame with the camera', async ({ page, request, brow
   );
   expect(frames[0].every(isMagenta)).toBe(true);
 });
+
+/**
+ * Day 75 Check: "cropped region fills the output frame". The shared screen is replaced by a
+ * canvas stream, left half red and right half blue; the right half is selected by dragging on
+ * the preview. Every sampled point of the recording is blue and the video is half as wide.
+ */
+test('a cropped region fills the output frame', async ({ page, request, browserName }) => {
+  test.skip(browserName !== 'chromium', 'MediaRecorder + canvas capture checked on Chromium');
+  await page.addInitScript(() => {
+    navigator.mediaDevices.getDisplayMedia = async () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 1280;
+      canvas.height = 720;
+      const ctx = canvas.getContext('2d');
+      const paint = () => {
+        if (!ctx) return;
+        ctx.fillStyle = '#ff0000';
+        ctx.fillRect(0, 0, 640, 720);
+        ctx.fillStyle = '#0000ff';
+        ctx.fillRect(640, 0, 640, 720);
+      };
+      paint();
+      setInterval(paint, 50);
+      return canvas.captureStream(30);
+    };
+  });
+  await signUpAndLogIn(page, request);
+  await keepTakesOnDevice(page);
+  await page.goto('/record');
+  await page.getByTestId('recorder-choose-screen').click();
+  await expect(page.getByTestId('recorder-screen-preview')).toBeVisible();
+  const pad = page.getByTestId('recorder-crop-pad');
+  await expect(pad).toBeVisible();
+  const box = await pad.boundingBox();
+  if (!box) throw new Error('no crop pad');
+  await page.mouse.move(box.x + box.width * 0.5, box.y + 1);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width - 1, box.y + box.height - 1, { steps: 5 });
+  await page.mouse.up();
+  await expect(page.getByTestId('recorder-crop-box')).toBeVisible();
+  await page.getByTestId('recorder-start').click();
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('recorder-status')).toHaveText('Recording');
+  await page.waitForTimeout(3500);
+  const takeId = await stopAndGetTake(page);
+  const { frames, width, height } = await sample(
+    page,
+    takeId,
+    [1.5],
+    [
+      [0.03, 0.05],
+      [0.5, 0.5],
+      [0.97, 0.95],
+      [0.03, 0.95],
+      [0.97, 0.05],
+    ],
+  );
+  // About the right half: 640 x 720 (the crop is dragged by hand, so allow a little slack).
+  expect(width).toBeLessThan(760);
+  expect(width).toBeGreaterThan(560);
+  expect(height).toBeGreaterThan(640);
+  for (const [r, g, b] of frames[0]) {
+    expect(b).toBeGreaterThan(180);
+    expect(r).toBeLessThan(90);
+    expect(g).toBeLessThan(90);
+  }
+});

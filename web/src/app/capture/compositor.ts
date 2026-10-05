@@ -26,6 +26,42 @@ export function clampLayout(layout: BubbleLayout): BubbleLayout {
   };
 }
 
+/** A crop of the shared screen, as fractions of its width and height. */
+export interface Region {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export const MIN_REGION = 0.05;
+
+/** Keeps a region inside the frame and at least `MIN_REGION` wide and tall. */
+export function clampRegion(region: Region): Region {
+  const unit = (n: number) => Math.min(Math.max(Number.isFinite(n) ? n : 0, 0), 1);
+  const w = Math.min(Math.max(unit(region.w), MIN_REGION), 1);
+  const h = Math.min(Math.max(unit(region.h), MIN_REGION), 1);
+  return {
+    x: Math.min(unit(region.x), 1 - w),
+    y: Math.min(unit(region.y), 1 - h),
+    w,
+    h,
+  };
+}
+
+/** The region in source pixels, rounded to even sizes (H.264 4:2:0 needs them). */
+export function regionPixels(region: Region, width: number, height: number) {
+  const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
+  return {
+    sx: region.x * width,
+    sy: region.y * height,
+    sw: region.w * width,
+    sh: region.h * height,
+    outWidth: even(region.w * width),
+    outHeight: even(region.h * height),
+  };
+}
+
 export const DEFAULT_BUBBLE: BubbleLayout = {
   shape: 'circle',
   cx: 0.88,
@@ -77,7 +113,10 @@ export interface FrameSource {
 
 export interface CompositorOptions {
   screen: MediaStream;
-  camera: MediaStream;
+  /** The webcam, or null when only the screen is cropped. */
+  camera: MediaStream | null;
+  /** Crop to this part of the screen; the output frame is the region, fixed for the take. */
+  region?: Region | null;
   fps?: number;
   layout?: BubbleLayout;
   /** Test seams; default to the browser (OffscreenCanvas where available, else a canvas element). */
@@ -138,7 +177,8 @@ export class Compositor {
   private readonly canvas: CompositorCanvas;
   private readonly ctx: Canvas2D;
   private readonly screen: FrameSource;
-  private readonly camera: FrameSource;
+  private readonly camera: FrameSource | null;
+  private readonly region: Region | null;
   private readonly stopTimer: () => void;
   private layout: BubbleLayout;
   private stopped = false;
@@ -148,8 +188,14 @@ export class Compositor {
     const fps = options.fps ?? DEFAULT_COMPOSITOR_FPS;
     const [screenTrack] = options.screen.getVideoTracks();
     const settings = screenTrack?.getSettings() ?? {};
-    const width = Math.max(MIN_SIDE, settings.width ?? 1280);
-    const height = Math.max(MIN_SIDE, settings.height ?? 720);
+    const sourceWidth = Math.max(MIN_SIDE, settings.width ?? 1280);
+    const sourceHeight = Math.max(MIN_SIDE, settings.height ?? 720);
+    this.region = options.region ? clampRegion(options.region) : null;
+    const { outWidth, outHeight } = this.region
+      ? regionPixels(this.region, sourceWidth, sourceHeight)
+      : { outWidth: sourceWidth, outHeight: sourceHeight };
+    const width = Math.max(MIN_SIDE, outWidth);
+    const height = Math.max(MIN_SIDE, outHeight);
     this.canvas = (options.createCanvas ?? browserCanvas)(width, height);
     const ctx = this.canvas.getContext('2d');
     if (!ctx) {
@@ -159,7 +205,7 @@ export class Compositor {
     this.layout = clampLayout(options.layout ?? DEFAULT_BUBBLE);
     const createSource = options.createSource ?? browserSource;
     this.screen = createSource(options.screen);
-    this.camera = createSource(options.camera);
+    this.camera = options.camera ? createSource(options.camera) : null;
     const [track] = this.canvas.captureStream(fps).getVideoTracks();
     if (!track) {
       throw new Error('the canvas produced no video track');
@@ -167,6 +213,10 @@ export class Compositor {
     this.track = track;
     this.draw();
     this.stopTimer = (options.schedule ?? browserSchedule)(() => this.draw(), 1000 / fps);
+  }
+
+  get hasCamera(): boolean {
+    return this.camera !== null;
   }
 
   get bubble(): BubbleLayout {
@@ -186,25 +236,31 @@ export class Compositor {
     const { width, height } = canvas;
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, width, height);
-    if (this.layout.cameraOnly) {
-      if (this.camera.ready) {
-        const { w, h } = { w: this.camera.width, h: this.camera.height };
+    const camera = this.camera;
+    if (this.layout.cameraOnly && camera) {
+      if (camera.ready) {
+        const { w, h } = { w: camera.width, h: camera.height };
         // Cover: the largest centred crop with the frame's aspect, so nothing is stretched.
         const scale = Math.max(width / w, height / h);
         const sw = width / scale;
         const sh = height / scale;
-        ctx.drawImage(this.camera.image, (w - sw) / 2, (h - sh) / 2, sw, sh, 0, 0, width, height);
+        ctx.drawImage(camera.image, (w - sw) / 2, (h - sh) / 2, sw, sh, 0, 0, width, height);
       }
       return;
     }
     if (this.screen.ready) {
-      ctx.drawImage(this.screen.image, 0, 0, width, height);
+      if (this.region) {
+        const { sx, sy, sw, sh } = regionPixels(this.region, this.screen.width, this.screen.height);
+        ctx.drawImage(this.screen.image, sx, sy, sw, sh, 0, 0, width, height);
+      } else {
+        ctx.drawImage(this.screen.image, 0, 0, width, height);
+      }
     }
-    if (!this.camera.ready) {
+    if (!camera?.ready) {
       return;
     }
     const { x, y, size } = bubbleRect(this.layout, width, height);
-    const { sx, sy, side } = coverSquare(this.camera.width, this.camera.height);
+    const { sx, sy, side } = coverSquare(camera.width, camera.height);
     ctx.save();
     ctx.beginPath();
     if (this.layout.shape === 'circle') {
@@ -213,7 +269,7 @@ export class Compositor {
       ctx.roundRect(x, y, size, size, size * 0.18);
     }
     ctx.clip();
-    ctx.drawImage(this.camera.image, sx, sy, side, side, x, y, size, size);
+    ctx.drawImage(camera.image, sx, sy, side, side, x, y, size, size);
     ctx.restore();
   }
 
@@ -225,6 +281,6 @@ export class Compositor {
     this.stopTimer();
     this.track.stop();
     this.screen.stop();
-    this.camera.stop();
+    this.camera?.stop();
   }
 }

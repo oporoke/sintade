@@ -26,6 +26,9 @@ export interface DisplayOptions {
   frameRate?: number;
   /** Ideal capture height; the browser may deliver less (the shared surface's own size). */
   height?: number;
+  /** Draw the mouse pointer into the capture (default) or leave it out. Chromium honours it;
+   * other browsers ignore the hint. It applies when the screen is picked. */
+  cursor?: 'always' | 'never';
   /** Ask for tab/system audio. Only Chromium-family browsers deliver it (see CapabilityService). */
   systemAudio: boolean;
 }
@@ -104,6 +107,7 @@ export class SourceManager {
         video: {
           frameRate: options.frameRate ?? DEFAULT_FRAME_RATE,
           ...(options.height ? { height: { ideal: options.height } } : {}),
+          ...(options.cursor ? { cursor: options.cursor } : {}),
         },
         audio: options.systemAudio,
       });

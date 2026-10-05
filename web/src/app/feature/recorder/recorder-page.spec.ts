@@ -133,6 +133,38 @@ describe('RecorderPage', () => {
     }
   });
 
+  it('drags a crop on the preview and passes it, and the cursor choice, to the take', async () => {
+    const { q, sources, settle, fixture } = await setup(SUPPORTED);
+    q<HTMLButtonElement>('recorder-choose-screen')!.click();
+    await settle();
+    const pad = q<HTMLElement>('recorder-crop-pad')!;
+    pad.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200 }) as DOMRect;
+    const fire = (type: string, x: number, y: number) =>
+      pad.dispatchEvent(new PointerEvent(type, { clientX: x, clientY: y, pointerId: 1 }));
+    fire('pointerdown', 200, 0);
+    fire('pointermove', 400, 200);
+    fire('pointerup', 400, 200);
+    await settle();
+    const box = q<HTMLElement>('recorder-crop-box')!;
+    expect(box.style.left).toBe('50%');
+    expect(box.style.width).toBe('50%');
+    expect(box.style.height).toBe('100%');
+
+    q<HTMLButtonElement>('recorder-crop-clear')!.click();
+    await settle();
+    expect(q('recorder-crop-box')).toBeNull();
+
+    const cursor = q<HTMLInputElement>('recorder-cursor')!;
+    cursor.checked = false;
+    cursor.dispatchEvent(new Event('change'));
+    q<HTMLButtonElement>('recorder-choose-screen')!.click();
+    await settle();
+    expect(sources.pickDisplay).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cursor: 'never' }),
+    );
+    void fixture;
+  });
+
   it('asks the browser for the chosen frame rate and passes the mic processing toggles', async () => {
     const { q, sources, settle } = await setup(SUPPORTED);
     const fps = q<HTMLSelectElement>('recorder-fps')!;
@@ -186,6 +218,7 @@ describe('RecorderPage', () => {
       systemAudio: true,
       frameRate: 30,
       height: 1080,
+      cursor: 'always',
     });
     expect(q('recorder-screen-preview')).not.toBeNull();
     expect(q('recorder-screen-info')?.textContent).toContain('1920×1080');

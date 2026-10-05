@@ -15,12 +15,21 @@ export {
   DEFAULT_BUBBLE,
   DEFAULT_COMPOSITOR_FPS,
   MAX_BUBBLE_SIZE,
+  MIN_REGION,
   MIN_BUBBLE_SIZE,
   bubbleRect,
   clampLayout,
+  clampRegion,
+  regionPixels,
   coverSquare,
 } from './compositor';
-export type { BubbleLayout, BubbleRect, BubbleShape, CompositorOptions } from './compositor';
+export type {
+  BubbleLayout,
+  BubbleRect,
+  Region,
+  BubbleShape,
+  CompositorOptions,
+} from './compositor';
 export { CaptureError, toCaptureError } from './capture-error';
 export {
   AUDIO_BITS_PER_SECOND,

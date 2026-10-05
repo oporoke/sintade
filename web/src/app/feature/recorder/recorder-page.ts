@@ -26,6 +26,8 @@ import {
   FRAME_RATES,
   FrameRate,
   QualityPreset,
+  Region,
+  clampRegion,
   RESOLUTIONS,
   Resolution,
   clampQuality,
@@ -94,6 +96,28 @@ const ANY_MIC = 'any';
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [Countdown, ShareDialog],
   styles: `
+    .preview {
+      position: relative;
+      width: 480px;
+      max-width: 100%;
+    }
+    .preview video {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+    .crop-pad {
+      position: absolute;
+      inset: 0;
+      touch-action: none;
+      cursor: crosshair;
+    }
+    .crop-box {
+      position: absolute;
+      border: 2px solid currentColor;
+      box-sizing: border-box;
+      pointer-events: none;
+    }
     .bubble-pad {
       position: relative;
       width: 240px;
@@ -137,20 +161,65 @@ const ANY_MIC = 'any';
             Choose screen, window or tab
           </button>
           @if (display(); as display) {
-            <video
-              [srcObject]="display"
-              autoplay
-              muted
-              playsinline
-              width="480"
-              data-testid="recorder-screen-preview"
-              i18n-aria-label
-              aria-label="Preview of what you are sharing"
-            ></video>
+            <div class="preview">
+              <video
+                [srcObject]="display"
+                autoplay
+                muted
+                playsinline
+                width="480"
+                data-testid="recorder-screen-preview"
+                i18n-aria-label
+                aria-label="Preview of what you are sharing"
+              ></video>
+              <div
+                class="crop-pad"
+                data-testid="recorder-crop-pad"
+                (pointerdown)="onCropStart($event)"
+                (pointermove)="onCropMove($event)"
+                (pointerup)="onCropEnd()"
+              >
+                @if (region(); as r) {
+                  <span
+                    class="crop-box"
+                    data-testid="recorder-crop-box"
+                    [style.left.%]="r.x * 100"
+                    [style.top.%]="r.y * 100"
+                    [style.width.%]="r.w * 100"
+                    [style.height.%]="r.h * 100"
+                  ></span>
+                }
+              </div>
+            </div>
             @if (displayInfo(); as info) {
               <p data-testid="recorder-screen-info">{{ info.label }} — {{ info.detail }}</p>
             }
+            <p>
+              <span i18n>Drag on the picture to record only part of the screen.</span>
+              @if (region()) {
+                <button
+                  type="button"
+                  (click)="clearRegion()"
+                  data-testid="recorder-crop-clear"
+                  i18n
+                >
+                  Record the whole screen
+                </button>
+              }
+            </p>
           }
+          <p>
+            <label>
+              <input
+                type="checkbox"
+                [checked]="showCursor()"
+                (change)="onCursorChange($event)"
+                data-testid="recorder-cursor"
+              />
+              <span i18n>Show the mouse pointer</span>
+            </label>
+            <span i18n>(applies the next time you choose a screen)</span>
+          </p>
 
           <p>
             <label>
@@ -582,6 +651,9 @@ export class RecorderPage {
     })),
   );
   protected readonly frameRates = FRAME_RATES;
+  protected readonly showCursor = signal(true);
+  protected readonly region = signal<Region | null>(null);
+  private cropAnchor: { x: number; y: number } | null = null;
   protected readonly upgradeSuffix = $localize` — not on your plan`;
   protected readonly audioProcessing = signal<AudioProcessing>(DEFAULT_AUDIO_PROCESSING);
   protected readonly bubble = signal<BubbleLayout | null>(null);
@@ -751,6 +823,57 @@ export class RecorderPage {
     }
   }
 
+  onCursorChange(event: Event): void {
+    this.showCursor.set((event.target as HTMLInputElement).checked);
+  }
+
+  /** The crop is drawn by dragging on the preview; fractions of the picture, so any size works. */
+  onCropStart(event: PointerEvent): void {
+    const point = this.cropPoint(event);
+    if (!point) {
+      return;
+    }
+    (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
+    this.cropAnchor = point;
+    this.region.set(null);
+  }
+
+  onCropMove(event: PointerEvent): void {
+    const anchor = this.cropAnchor;
+    const point = this.cropPoint(event);
+    if (!anchor || !point) {
+      return;
+    }
+    this.region.set(
+      clampRegion({
+        x: Math.min(anchor.x, point.x),
+        y: Math.min(anchor.y, point.y),
+        w: Math.abs(point.x - anchor.x),
+        h: Math.abs(point.y - anchor.y),
+      }),
+    );
+  }
+
+  onCropEnd(): void {
+    this.cropAnchor = null;
+  }
+
+  clearRegion(): void {
+    this.region.set(null);
+  }
+
+  private cropPoint(event: PointerEvent): { x: number; y: number } | null {
+    const box = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    if (box.width === 0 || box.height === 0) {
+      return null;
+    }
+    const unit = (n: number) => Math.min(Math.max(n, 0), 1);
+    return {
+      x: unit((event.clientX - box.left) / box.width),
+      y: unit((event.clientY - box.top) / box.height),
+    };
+  }
+
   async onCameraChange(event: Event): Promise<void> {
     const input = event.target as HTMLInputElement;
     this.problem.set(null);
@@ -829,6 +952,7 @@ export class RecorderPage {
         systemAudio: this.systemAudio() && this.systemAudioSupport().supported,
         frameRate: this.quality().fps,
         height: this.quality().height,
+        cursor: this.showCursor() ? 'always' : 'never',
       });
       this.display.set(stream);
       this.displayInfo.set(describeDisplay(stream));
@@ -938,6 +1062,7 @@ export class RecorderPage {
         mixer: this.mixer,
         camera: this.sources.currentCamera,
         quality: this.quality(),
+        region: this.region(),
         store,
         takeId,
         ...(recording ? { serverTakeId: recording.take_id } : {}),
