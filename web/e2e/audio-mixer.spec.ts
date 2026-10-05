@@ -47,3 +47,26 @@ test('mixed test clip contains both audio sources', async ({ page, browserName }
   testInfo.annotations.push({ type: 'clip', description: clip });
   await page.screenshot({ path: testInfo.outputPath('mix-self-test.png'), fullPage: true });
 });
+
+/**
+ * Day 73 Check: "muted source is silent in output". Same self-test with the mic muted: the 440 Hz
+ * tone must be absent from the decoded clip, the 1000 Hz one still present, and the mix meter
+ * must follow only the display.
+ */
+test('a muted source is silent in the recorded clip', async ({ page, browserName }) => {
+  test.skip(
+    browserName === 'webkit',
+    'Linux WebKit has no MediaRecorder; mixer gain is unit-tested',
+  );
+  await page.goto('/debug');
+  await page.getByTestId('selftest-run-mic-muted').click();
+  await expect(page.getByTestId('selftest-levels')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('selftest-error')).toHaveCount(0);
+  await expect(page.getByTestId('selftest-tone-440')).toHaveText('absent');
+  await expect(page.getByTestId('selftest-tone-1000')).toHaveText('present');
+  const levels = (await page.getByTestId('selftest-levels').textContent()) ?? '';
+  const [mic, display, mix] = [...levels.matchAll(/(\d+\.\d+)/g)].map((m) => Number(m[1]));
+  expect(mic).toBeCloseTo(0.177, 1); // the input is alive, only its gain is zero
+  expect(display).toBeCloseTo(0.177, 1);
+  expect(mix).toBeCloseTo(0.177, 1); // the mix carries the display alone
+});

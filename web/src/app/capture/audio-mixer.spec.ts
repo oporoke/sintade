@@ -26,6 +26,10 @@ class FakeDestination extends FakeNode {
   readonly stream = { getAudioTracks: () => [this.track] } as unknown as MediaStream;
 }
 
+class FakeGain extends FakeNode {
+  readonly gain = { value: 1 };
+}
+
 class FakeSource extends FakeNode {
   constructor(readonly input: MediaStream) {
     super();
@@ -37,6 +41,7 @@ class FakeContext {
   readonly sources: FakeSource[] = [];
   readonly destinations: FakeDestination[] = [];
   readonly analysers: FakeAnalyser[] = [];
+  readonly gains: FakeGain[] = [];
   /** Constant sample value each successive analyser reports: mic 0.5, display 0.25, mix 0.75. */
   private readonly analyserValues: number[];
 
@@ -59,6 +64,11 @@ class FakeContext {
     const destination = new FakeDestination();
     this.destinations.push(destination);
     return destination;
+  });
+  createGain = vi.fn(() => {
+    const gain = new FakeGain();
+    this.gains.push(gain);
+    return gain;
   });
   createAnalyser = vi.fn(() => {
     const analyser = new FakeAnalyser(this.analyserValues.shift() ?? 0);
@@ -91,9 +101,32 @@ describe('AudioMixer', () => {
     const destination = context.destinations[0];
     expect(track).toBe(destination.track);
     expect(context.sources.map((source) => source.input)).toEqual([mic, display]);
-    for (const source of context.sources) {
-      expect(source.connections).toContain(destination);
+    // Each source reaches the destination through its own gain.
+    expect(context.gains).toHaveLength(2);
+    for (const [index, source] of context.sources.entries()) {
+      expect(source.connections).toContain(context.gains[index]);
+      expect(context.gains[index].connections).toContain(destination);
     }
+  });
+
+  it('applies volume and mute live, and keeps them across a re-mix', async () => {
+    const { context, mixer } = setup();
+    mixer.setVolume('mic', 0.5); // before the mix starts
+    await mixer.mix({ mic: stream(1), display: stream(1) });
+    expect(context.gains.map((g) => g.gain.value)).toEqual([0.5, 1]);
+
+    mixer.setMuted('mic', true);
+    mixer.setVolume('display', 9); // clamped
+    expect(context.gains.map((g) => g.gain.value)).toEqual([0, 2]);
+    expect(mixer.isMuted('mic')).toBe(true);
+    expect(mixer.volume('mic')).toBe(0.5);
+
+    mixer.setMuted('mic', false);
+    expect(context.gains[0].gain.value).toBe(0.5);
+
+    mixer.setMuted('display', true);
+    await mixer.mix({ mic: stream(1), display: stream(1) });
+    expect(context.gains.slice(2).map((g) => g.gain.value)).toEqual([0.5, 0]);
   });
 
   it('resumes a suspended context (autoplay policy)', async () => {

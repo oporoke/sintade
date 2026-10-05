@@ -12,6 +12,7 @@ import { Subscription } from 'rxjs';
 
 import {
   AudioLevels,
+  AudioSourceName,
   ChunkRecorder,
   DEFAULT_TIMESLICE_MS,
   DEFAULT_VIDEO_BITS_PER_SECOND,
@@ -179,6 +180,14 @@ interface TrackInfo {
       data-testid="selftest-run"
     >
       Run mix self-test
+    </button>
+    <button
+      type="button"
+      (click)="runSelfTest(['mic'])"
+      [disabled]="selfTestRunning()"
+      data-testid="selftest-run-mic-muted"
+    >
+      Run mix self-test with the mic muted
     </button>
     @if (selfTestRunning()) {
       <p data-testid="selftest-running">Recording…</p>
@@ -550,12 +559,12 @@ export class DebugPage {
     }
   }
 
-  async runSelfTest(): Promise<void> {
+  async runSelfTest(muted: AudioSourceName[] = []): Promise<void> {
     this.selfTestRunning.set(true);
     this.selfTest.set(null);
     this.selfTestError.set(null);
     try {
-      this.selfTest.set(await runMixSelfTest());
+      this.selfTest.set(await runMixSelfTest(undefined, muted));
     } catch (error) {
       this.selfTestError.set(error instanceof Error ? error.message : String(error));
     } finally {
