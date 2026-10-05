@@ -51,6 +51,21 @@ ext-build:
 ext-watch:
     cd extension && npm run watch
 
+# Secrets in the whole git history (gitleaks in Docker).
+secrets:
+    docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest detect --source /repo --config /repo/.gitleaks.toml --redact --no-banner
+
+# Dependency advisories (needs `cargo install cargo-audit`).
+audit:
+    cargo audit --deny warnings
+    cd web && npm audit --audit-level=high
+    cd extension && npm audit --audit-level=high
+
+# OWASP ZAP baseline of the web image and an API scan from the OpenAPI contract, against the
+# running local stack (API on :8080). Reports go to target/zap/. See scripts/zap-scan.sh.
+zap:
+    scripts/zap-scan.sh
+
 deps-up:
     docker compose up -d --wait postgres minio mailpit
     docker compose run --rm minio-init

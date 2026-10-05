@@ -7,4 +7,10 @@ RUN npm run build
 
 FROM nginx:alpine
 COPY --from=builder /app/dist/web/browser /usr/share/nginx/html
+# nginx:alpine runs envsubst over /etc/nginx/templates/*.template into conf.d at start.
+COPY deploy/nginx.conf.template /etc/nginx/templates/default.conf.template
+# Only these two are substituted: nginx's own $variables must stay.
+ENV NGINX_ENVSUBST_FILTER="^(API_UPSTREAM|STORAGE_ORIGIN)$" \
+    API_UPSTREAM=api:8080 \
+    STORAGE_ORIGIN=""
 EXPOSE 80

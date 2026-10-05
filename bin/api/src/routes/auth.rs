@@ -15,6 +15,7 @@ use serde::Deserialize;
 use utoipa::ToSchema;
 
 use crate::app::AppState;
+use crate::client_ip::client_ip;
 use crate::csrf::{CSRF_COOKIE_NAME, generate_csrf_token, verify_csrf};
 use crate::error::{ApiError, Problem};
 use crate::routes::MessageResponse;
@@ -28,19 +29,6 @@ const LOGIN_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 const LOGIN_RATE_LIMIT: u32 = 5;
 const SIGNUP_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(3600);
 const SIGNUP_RATE_LIMIT: u32 = 3;
-
-/// `docs/design.md` §11 rate limits are per-IP (or IP+email); this trusts `X-Forwarded-For`
-/// rather than the raw TCP peer address, matching the architecture (Cloudflare/BunnyCDN always
-/// sits in front per §2) -- direct-to-origin traffic without that header all share one
-/// "unknown" bucket, which is the conservative failure mode (stricter, not laxer, than intended).
-fn client_ip(headers: &HeaderMap) -> String {
-    headers
-        .get("x-forwarded-for")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(',').next())
-        .map(|ip| ip.trim().to_string())
-        .unwrap_or_else(|| "unknown".to_string())
-}
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RegisterBody {
@@ -1750,7 +1738,7 @@ mod tests {
             headers
                 .get("permissions-policy")
                 .expect("Permissions-Policy header present"),
-            "display-capture=(self)"
+            "display-capture=(self), microphone=(self), camera=(self), geolocation=(), payment=(), usb=()"
         );
     }
 }

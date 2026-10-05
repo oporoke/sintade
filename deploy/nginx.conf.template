@@ -1,0 +1,66 @@
+# The web container: the Angular app, same-origin /api (ADR-0006) and security headers.
+# envsubst fills ${API_UPSTREAM} and ${STORAGE_ORIGIN} at start (nginx:alpine templates).
+
+server {
+    listen 80;
+    server_name _;
+    server_tokens off;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # The browser app's own policy. Angular emits no inline script (inlineCritical is off), so
+    # script-src is 'self'; component styles are inline, hence style-src 'unsafe-inline'.
+    # Recordings and posters come from the storage origin through signed URLs.
+    set $csp "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: ${STORAGE_ORIGIN}; media-src 'self' blob: ${STORAGE_ORIGIN}; connect-src 'self' ${STORAGE_ORIGIN}; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+    # Headers are set per location below: nginx drops a server-level add_header from any
+    # location that has its own, and proxied /api/ answers already carry the API's own set.
+
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+
+    # The API. nginx appends the address it saw to X-Forwarded-For; the API rate-limits on the
+    # rightmost entry (bin/api/src/client_ip.rs). Behind a CDN, restore the real address first
+    # (ngx_http_realip_module with the CDN's ranges): TODO: Verify at deploy.
+    location /api/ {
+        proxy_pass http://${API_UPSTREAM};
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        client_max_body_size 1m;
+        # No add_header here on purpose: the API's stricter headers pass through unchanged.
+    }
+
+    # Hashed assets never change.
+    location ~* \.(?:js|css|woff2?|png|ico|svg)$ {
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        add_header Content-Security-Policy $csp always;
+        add_header Strict-Transport-Security "max-age=31536000" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Permissions-Policy "display-capture=(self), microphone=(self), camera=(self), geolocation=(), payment=(), usb=()" always;
+        add_header Cross-Origin-Resource-Policy "same-origin" always;
+        try_files $uri =404;
+    }
+
+    location = /robots.txt {
+        add_header Cache-Control "public, max-age=3600" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        try_files $uri =404;
+    }
+
+    # Single-page app: any other path is the app (deep links like /s/<slug>).
+    location / {
+        add_header Cache-Control "no-cache" always;
+        add_header Content-Security-Policy $csp always;
+        add_header Strict-Transport-Security "max-age=31536000" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Permissions-Policy "display-capture=(self), microphone=(self), camera=(self), geolocation=(), payment=(), usb=()" always;
+        add_header Cross-Origin-Opener-Policy "same-origin" always;
+        add_header Cross-Origin-Resource-Policy "same-origin" always;
+        try_files $uri $uri/ /index.html;
+    }
+}

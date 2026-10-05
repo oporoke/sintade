@@ -14,7 +14,8 @@ env:
   PUBLIC_BASE_URL: https://localhost:4200
   SMTP_URL: smtp://localhost:1025
   RUST_LOG: info
-  SESSION_SECRET: ggY3SFec8ZtPVVs8WQ64Bb5p9Tqjtm5G00QZf/ti68/nJgXHvhjf4CdMRoENm9o00AvKCujCpmwsYXEQgQZnVw==
+  # The e2e browsers all call from one address (see bin/api/src/rate_limit.rs).
+  RATE_LIMIT_SCALE: "20"
 
 jobs:
   backend:
@@ -42,6 +43,9 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      - name: Throwaway session secret
+        # Random per run; never committed (gitleaks scans this repo's history).
+        run: echo "SESSION_SECRET=$(openssl rand -base64 64 | tr -d '\n')" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -187,6 +191,9 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      - name: Throwaway session secret
+        # Random per run; never committed (gitleaks scans this repo's history).
+        run: echo "SESSION_SECRET=$(openssl rand -base64 64 | tr -d '\n')" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
@@ -259,20 +266,35 @@ jobs:
           done
 
   audit:
+    # Dependency advisories: any finding fails the build (Day 67: zero high findings, and no
+    # warnings such as yanked crates). Fix by upgrading; an exception needs an entry in
+    # `.cargo/audit.toml` or an `overrides` note, with a reason.
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
-      - run: cargo audit
+      - run: cargo audit --deny warnings
       - uses: actions/setup-node@v4
         with:
           node-version-file: web/.nvmrc
       - run: npm audit --audit-level=high
         working-directory: web
+      - run: npm audit --audit-level=high
+        working-directory: extension
+
+  secrets:
+    # gitleaks over the whole history (config and the few allowlisted non-secrets: .gitleaks.toml).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest detect \
+            --source /repo --config /repo/.gitleaks.toml --redact --no-banner
 
   build-images:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
