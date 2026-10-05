@@ -95,22 +95,31 @@ test('low storage warns, the screen is kept awake while recording, and leaving a
   await page.addInitScript(() => {
     const w = window as unknown as { __locks: { held: number; requests: number } };
     w.__locks = { held: 0, requests: 0 };
-    const original = navigator.wakeLock;
-    if (original) {
-      const request = original.request.bind(original);
-      Object.defineProperty(navigator, 'wakeLock', {
-        value: {
-          request: async (type: 'screen') => {
-            w.__locks.requests += 1;
-            const sentinel = await request(type);
-            w.__locks.held += 1;
-            sentinel.addEventListener('release', () => (w.__locks.held -= 1));
-            return sentinel;
-          },
+    // A fake lock: headless Chromium on CI refuses the real one, and what is under test is that
+    // the recorder asks for one while recording and lets it go afterwards.
+    Object.defineProperty(navigator, 'wakeLock', {
+      value: {
+        request: async () => {
+          w.__locks.requests += 1;
+          w.__locks.held += 1;
+          const target = new EventTarget();
+          let released = false;
+          return Object.assign(target, {
+            type: 'screen',
+            get released() {
+              return released;
+            },
+            release: async () => {
+              if (released) return;
+              released = true;
+              w.__locks.held -= 1;
+              target.dispatchEvent(new Event('release'));
+            },
+          });
         },
-        configurable: true,
-      });
-    }
+      },
+      configurable: true,
+    });
     navigator.storage.estimate = async () => ({ usage: 850_000_000, quota: 1_000_000_000 });
     window.addEventListener('beforeunload', (event) => {
       (window as unknown as { __unloadPrevented: boolean }).__unloadPrevented =
