@@ -12,7 +12,7 @@ import {
   viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { Subscription } from 'rxjs';
+import { Subscription, interval } from 'rxjs';
 
 import {
   MicDevice,
@@ -27,6 +27,9 @@ import {
   FRAME_RATES,
   FrameRate,
   QualityPreset,
+  StorageStatus,
+  bitsPerSecond,
+  expectedTakeBytes,
   Region,
   clampRegion,
   RESOLUTIONS,
@@ -53,6 +56,8 @@ import {
   RECORDINGS_API,
   SOURCE_MANAGER,
   START_TAKE,
+  STORAGE_CHECK,
+  WAKE_LOCK_GUARD,
 } from '../../core/capture.tokens';
 import { CaptureProblem, CaptureSource, captureHelp } from './capture-help';
 import { Countdown } from './countdown';
@@ -77,6 +82,8 @@ const METER_INTERVAL_MS = 50;
 const TIMER_INTERVAL_MS = 250;
 /** How far inside the plan's take limit the recorder stops (timer ticks every 250 ms). */
 const LIMIT_MARGIN_MS = 1_000;
+/** How often the storage headroom is re-read during a take. */
+const STORAGE_POLL_MS = 15_000;
 /** The "stopping soon" notice starts this long before the automatic stop. */
 const LIMIT_WARNING_MS = 30_000;
 /**
@@ -401,6 +408,10 @@ const ANY_MIC = 'any';
         </fieldset>
       }
 
+      @if (storageMessage(); as message) {
+        <p role="alert" data-testid="recorder-storage-warning">{{ message }}</p>
+      }
+
       @if (phase() === 'setup' || phase() === 'countdown') {
         <button
           type="button"
@@ -676,6 +687,8 @@ export class RecorderPage {
   private readonly mixer = inject(AUDIO_MIXER);
   private readonly planLimits = inject(PLAN_LIMITS);
   private readonly libraryApi = inject(LIBRARY_API);
+  private readonly wakeLock = inject(WAKE_LOCK_GUARD);
+  private readonly storageCheck = inject(STORAGE_CHECK);
   private readonly chunkStore = inject(CHUNK_STORE);
   private readonly startTake = inject(START_TAKE);
   private readonly recordingsApi = inject(RECORDINGS_API);
@@ -774,6 +787,16 @@ export class RecorderPage {
   protected readonly uploadNotice = signal<string | null>(null);
   /** The plan's limits: recording refused (50 reached) or the take stopped at its length cap. */
   protected readonly limitNotice = signal<string | null>(null);
+  protected readonly storage = signal<StorageStatus>({ level: 'unknown' });
+  protected readonly storageMessage = computed(() => {
+    const status = this.storage();
+    if (status.level !== 'low') {
+      return null;
+    }
+    const used = Math.round(status.usedFraction * 100);
+    const freeMb = Math.round(status.freeBytes / 1_000_000);
+    return $localize`This device is short on space for recordings: ${used}:used:% of the browser's storage is used and about ${freeMb}:free: MB is free. Free some space, or a long recording may be cut short.`;
+  });
   protected readonly confirming = signal<'restart' | 'discard' | null>(null);
   private readonly planLimitMs = signal<number | null>(null);
   /** Seconds until the automatic stop, once within the warning window (5 s steps above 10 s). */
@@ -821,12 +844,14 @@ export class RecorderPage {
   protected readonly resumeLabel = $localize`Resume`;
 
   constructor() {
+    void this.refreshStorage();
     this.sources.displayEnded$.pipe(takeUntilDestroyed()).subscribe(() => {
       this.display.set(null);
       this.displayInfo.set(null);
     });
     this.destroyRef.onDestroy(() => {
       this.destroyed = true;
+      void this.wakeLock.release();
       // Leaving mid-take still saves it (and the journal would recover it anyway).
       void this.session?.stop().catch(() => undefined);
       this.sessionSubscriptions.forEach((subscription) => subscription.unsubscribe());
@@ -1092,6 +1117,7 @@ export class RecorderPage {
     this.uploadNotice.set(null);
     this.upload.set(null);
     this.stopPressedAt = null;
+    void this.refreshStorage();
     this.phase.set('countdown');
     const mic = this.sources.currentMic;
     const hasMic = (mic?.getAudioTracks().length ?? 0) > 0;
@@ -1154,6 +1180,7 @@ export class RecorderPage {
       this.bubble.set(session.bubble);
       this.watchLevelsWhileRecording();
       this.phase.set('recording');
+      void this.wakeLock.acquire();
       this.uploader = recording ? new Uploader({ api: this.recordingsApi, store, takeId }) : null;
       const uploader = this.uploader;
       if (!uploader) {
@@ -1185,6 +1212,7 @@ export class RecorderPage {
             void this.stop();
           }
         }),
+        interval(STORAGE_POLL_MS).subscribe(() => void this.refreshStorage()),
         session.state$.subscribe((state) => {
           if (state === 'paused') this.phase.set('paused');
           else if (state === 'recording') this.phase.set('recording');
@@ -1195,6 +1223,7 @@ export class RecorderPage {
       session.ended.then(
         (take) => this.finish(take),
         (error: unknown) => {
+          void this.wakeLock.release();
           this.phase.set('setup');
           this.showError(error, 'screen');
         },
@@ -1242,6 +1271,7 @@ export class RecorderPage {
         await this.libraryApi.trash(recordingId).catch(() => undefined);
       }
     } finally {
+      void this.wakeLock.release();
       this.sessionSubscriptions.forEach((subscription) => subscription.unsubscribe());
       this.sessionSubscriptions = [];
       this.session = null;
@@ -1300,6 +1330,22 @@ export class RecorderPage {
     event.preventDefault();
   }
 
+  /** Closing the tab mid-take loses the live recording (the saved part is offered for upload next time). */
+  @HostListener('window:beforeunload', ['$event'])
+  onBeforeUnload(event: BeforeUnloadEvent): void {
+    if (['countdown', 'recording', 'paused', 'saving', 'uploading'].includes(this.phase())) {
+      event.preventDefault();
+      event.returnValue = '';
+    }
+  }
+
+  /** How much storage headroom there is for a take of the plan's longest length. */
+  private async refreshStorage(): Promise<void> {
+    const seconds = this.planLimitMs() ?? this.planLimits().maxDurationMs;
+    const expected = expectedTakeBytes(bitsPerSecond(this.quality()), seconds);
+    this.storage.set(await this.storageCheck(expected));
+  }
+
   private toggleMicMute(): void {
     const muted = !this.mixer.isMuted('mic');
     this.mixer.setMuted('mic', muted);
@@ -1325,6 +1371,7 @@ export class RecorderPage {
     }
     const stoppedAt = this.stopPressedAt ?? performance.now();
     this.session = null;
+    void this.wakeLock.release();
     this.bubble.set(null);
     this.planLimitMs.set(null);
     this.elapsedMs.set(take.durationMs);

@@ -4,6 +4,9 @@ import {
   AudioMixer,
   ChunkStore,
   SourceManager,
+  StorageStatus,
+  WakeLockGuard,
+  checkStorage,
   TakeSession,
   TakeSessionOptions,
   openChunkStore,
@@ -79,3 +82,14 @@ export const PLAN_LIMITS = new InjectionToken<Signal<PlanLimits>>('PlanLimits', 
     });
   },
 });
+
+/** A fresh wake-lock guard per recorder page. */
+export const WAKE_LOCK_GUARD = new InjectionToken<WakeLockGuard>('WakeLockGuard', {
+  factory: () => new WakeLockGuard(),
+});
+
+/** Reads the device's storage headroom; replaceable in tests. */
+export const STORAGE_CHECK = new InjectionToken<(expectedBytes: number) => Promise<StorageStatus>>(
+  'StorageCheck',
+  { factory: () => (expectedBytes) => checkStorage(undefined, expectedBytes) },
+);
