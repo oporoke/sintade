@@ -2,6 +2,7 @@
 
 pub mod hls;
 pub mod probe;
+pub mod sprite;
 pub mod transcode;
 
 use kernel::{RecordingId, TakeId, WorkspaceId};
@@ -62,6 +63,12 @@ pub fn mp4_key(workspace_id: WorkspaceId, recording_id: RecordingId) -> String {
 /// is a directory (docs/design.md §8 storage layout).
 pub fn hls_prefix(workspace_id: WorkspaceId, recording_id: RecordingId) -> String {
     format!("ws/{workspace_id}/rec/{recording_id}/hls")
+}
+
+/// Where a recording's scrub sprite, `sprite.vtt` and animated preview live (docs/design.md §8
+/// storage layout). The VTT names its sheets relative to itself, so they share this prefix.
+pub fn img_prefix(workspace_id: WorkspaceId, recording_id: RecordingId) -> String {
+    format!("ws/{workspace_id}/rec/{recording_id}/img")
 }
 
 /// Where a recording's poster lives (docs/design.md §8 storage layout).

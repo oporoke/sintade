@@ -9,8 +9,8 @@ use sqlx::PgPool;
 
 use crate::domain::probe::ProbeRejection;
 use crate::domain::{
-    ChunkManifest, Container, ManifestChunk, ManifestError, hls_prefix, mp4_key, poster_key,
-    preview_content_type, source_key,
+    ChunkManifest, Container, ManifestChunk, ManifestError, hls_prefix, img_prefix, mp4_key,
+    poster_key, preview_content_type, source_key,
 };
 use crate::infra;
 use crate::infra::scratch::{ScratchDir, ScratchSpace};
@@ -18,6 +18,7 @@ use crate::infra::source::{AssembleError, assemble_source, download_file};
 use crate::infra::tools::{MediaTools, ToolError};
 
 use super::hls::BuildHlsError;
+use super::sprite::GenerateSpriteError;
 use super::transcode::{
     PosterReport, TranscodeError, TranscodeReport, make_poster, transcode_file,
 };
@@ -30,6 +31,9 @@ pub const PROCESS_TAKE: &str = "ProcessTake";
 
 /// The job kind that cuts a recording's MP4 into the HLS ladder (docs/design.md §10 Process).
 pub const BUILD_HLS: &str = "BuildHls";
+
+/// The job kind that makes a recording's scrub sprite and animated preview.
+pub const GENERATE_SPRITE: &str = "GenerateSprite";
 
 /// `TakeFinalized` as media reads it from the outbox envelope (ingest's contract, ADR-0012).
 #[derive(Debug, Clone, Deserialize)]
@@ -60,6 +64,22 @@ pub struct ProcessTake {
 pub struct BuildHls {
     pub take_id: TakeId,
     pub workspace_id: WorkspaceId,
+}
+
+/// The `GenerateSprite` job's payload: which take; the MP4 it samples is the recording's.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct GenerateSprite {
+    pub take_id: TakeId,
+    pub workspace_id: WorkspaceId,
+}
+
+/// How a `GenerateSprite` run ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpriteOutcome {
+    /// The sheets, the VTT and the preview are stored and recorded.
+    Built { tiles: u32, sheets: usize },
+    /// No such take in this workspace.
+    NotFound,
 }
 
 /// How a `BuildHls` run ended.
@@ -128,6 +148,9 @@ pub enum ProcessError {
 
     #[error(transparent)]
     Outbox(#[from] OutboxError),
+
+    #[error(transparent)]
+    Queue(#[from] JobQueueError),
 
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
@@ -417,6 +440,131 @@ impl MediaService {
         })
     }
 
+    /// `GenerateSprite` (docs/design.md §10 Process step 6): samples the recording's stored MP4
+    /// into tiled sheets with their `sprite.vtt`, and an animated WebP preview; stores them under
+    /// `img/` (the VTT last, so it never names a sheet that isn't there) and records them as
+    /// renditions. A rerun replaces what is stored.
+    #[tracing::instrument(skip_all, fields(take_id = %request.take_id, workspace_id = %request.workspace_id))]
+    pub async fn generate_sprite(
+        &self,
+        request: GenerateSprite,
+    ) -> Result<SpriteOutcome, GenerateSpriteError> {
+        let Some(job) = infra::find_job(&self.pool, request.take_id, request.workspace_id).await?
+        else {
+            return Ok(SpriteOutcome::NotFound);
+        };
+        let scratch = self.scratch.create(job.take_id).await?;
+        let result = self.generate_sprite_in(&job, &scratch).await;
+        scratch.remove().await?;
+        result
+    }
+
+    async fn generate_sprite_in(
+        &self,
+        job: &infra::MediaJobRow,
+        scratch: &ScratchDir,
+    ) -> Result<SpriteOutcome, GenerateSpriteError> {
+        let mp4 = scratch.file("default.mp4");
+        let key = mp4_key(job.workspace_id, job.recording_id);
+        if download_file(self.store.as_ref(), &key, &mp4)
+            .await?
+            .is_none()
+        {
+            return Err(GenerateSpriteError::NotReady);
+        }
+        let out = scratch.file("img");
+        let declared_ms = u32::try_from(job.duration_ms).unwrap_or(0);
+        let set = super::sprite::build_sprite(&self.tools, &mp4, &out, declared_ms).await?;
+
+        let prefix = img_prefix(job.workspace_id, job.recording_id);
+        let mut sheet_rows = Vec::new();
+        for (index, sheet) in set.sheets.iter().enumerate() {
+            let key = format!(
+                "{prefix}/{}",
+                crate::domain::sprite::sheet_name(index as u32)
+            );
+            let bytes = self.store.put_file(&key, sheet, "image/jpeg").await?;
+            sheet_rows.push((index, key, bytes));
+        }
+        let preview_key = format!("{prefix}/preview.webp");
+        let preview_bytes = self
+            .store
+            .put_file(&preview_key, &set.preview, "image/webp")
+            .await?;
+        let vtt_key = format!("{prefix}/sprite.vtt");
+        let vtt_bytes = self.store.put_file(&vtt_key, &set.vtt, "text/vtt").await?;
+        tracing::info!(tiles = set.tiles, sheets = set.sheets.len(), key = %vtt_key, "sprite stored");
+
+        let mut tx = self.pool.begin().await?;
+        for (index, key, bytes) in &sheet_rows {
+            infra::upsert_rendition(
+                &mut tx,
+                job.workspace_id,
+                job.recording_id,
+                job.take_id,
+                "sprite",
+                &index.to_string(),
+                key,
+                i64::try_from(*bytes).unwrap_or(i64::MAX),
+                serde_json::json!({}),
+            )
+            .await?;
+        }
+        infra::upsert_rendition(
+            &mut tx,
+            job.workspace_id,
+            job.recording_id,
+            job.take_id,
+            "sprite",
+            "vtt",
+            &vtt_key,
+            i64::try_from(vtt_bytes).unwrap_or(i64::MAX),
+            serde_json::json!({
+                "interval_ms": set.interval_s * 1000,
+                "tiles": set.tiles,
+                "sheets": set.sheets.len(),
+                "tile_width": crate::domain::sprite::TILE_WIDTH,
+                "tile_height": set.tile_height,
+            }),
+        )
+        .await?;
+        infra::upsert_rendition(
+            &mut tx,
+            job.workspace_id,
+            job.recording_id,
+            job.take_id,
+            "preview",
+            "default",
+            &preview_key,
+            i64::try_from(preview_bytes).unwrap_or(i64::MAX),
+            serde_json::json!({
+                "width": crate::domain::sprite::PREVIEW_WIDTH,
+                "height": set.preview_height,
+                "frames": crate::domain::sprite::PREVIEW_FRAMES,
+            }),
+        )
+        .await?;
+        for kind in ["sprite", "preview"] {
+            self.outbox
+                .push(
+                    &mut tx,
+                    &RenditionReady {
+                        recording_id: job.recording_id,
+                        take_id: job.take_id,
+                        workspace_id: job.workspace_id,
+                        kind: kind.to_string(),
+                        variants: Vec::new(),
+                    },
+                )
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(SpriteOutcome::Built {
+            tiles: set.tiles,
+            sheets: set.sheets.len(),
+        })
+    }
+
     async fn run_in_scratch(&self, job: &infra::MediaJobRow) -> Result<Produced, StepError> {
         let chunks: Vec<ManifestChunk> =
             serde_json::from_value(job.chunks.clone()).map_err(ProcessError::from)?;
@@ -561,6 +709,17 @@ impl MediaService {
         )
         .await?;
         infra::mark_done(&mut tx, job.take_id, job.workspace_id, self.clock.now()).await?;
+        // The scrub sprite and preview come after the MP4, at the queue's pace (§10 Process
+        // step 6). The ladder is not queued here: it waits for the first view (Day 80).
+        JobQueue::enqueue_in(
+            &mut tx,
+            GENERATE_SPRITE,
+            serde_json::to_value(GenerateSprite {
+                take_id: job.take_id,
+                workspace_id: job.workspace_id,
+            })?,
+        )
+        .await?;
         let measured = Measured {
             duration_ms: i32::try_from(produced.duration_ms).unwrap_or(i32::MAX),
             width: i32::try_from(report.mp4.width).unwrap_or(0),
@@ -1665,5 +1824,138 @@ mod tests {
                 .expect("built")
         );
         assert_eq!(jobs(pool).await, 0);
+    }
+
+    fn sprite_request(seeded: &Seeded) -> GenerateSprite {
+        GenerateSprite {
+            take_id: seeded.take,
+            workspace_id: seeded.workspace,
+        }
+    }
+
+    /// Day 81: processing queues the sprite job; running it stores the sheets, the VTT that
+    /// names them and the animated preview, and records them.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn generate_sprite_stores_the_sheets_vtt_and_preview(pool: PgPool) {
+        if !crate::testing::ffmpeg_available().await {
+            return;
+        }
+        let seeded = seed(&pool).await;
+        let (media, store) = service_with(&pool);
+        enqueue_fixture(&media, &store, &seeded, "real_chrome_vp9_opus_10s.webm").await;
+        assert_eq!(run(&media, &seeded).await, ProcessOutcome::Ran);
+        let queued = sqlx::query_scalar!(
+            r#"SELECT payload FROM jobs WHERE kind = 'GenerateSprite' AND done_at IS NULL"#
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("jobs");
+        assert_eq!(queued.len(), 1, "ProcessTake queues one sprite job");
+        assert_eq!(queued[0]["take_id"], seeded.take.to_string());
+
+        let outcome = media
+            .generate_sprite(sprite_request(&seeded))
+            .await
+            .expect("sprite");
+        let SpriteOutcome::Built { tiles, sheets } = outcome else {
+            panic!("{outcome:?}");
+        };
+        assert_eq!(sheets, 1);
+        assert!((9..=11).contains(&tiles), "10 s at one a second: {tiles}");
+        assert!(scratch_is_empty(&media).await);
+
+        let prefix = format!("ws/{}/rec/{}/img", seeded.workspace, seeded.recording);
+        for (key, content_type) in [
+            ("sprite_0.jpg", "image/jpeg"),
+            ("sprite.vtt", "text/vtt"),
+            ("preview.webp", "image/webp"),
+        ] {
+            assert_eq!(
+                store.content_type(&format!("{prefix}/{key}")).as_deref(),
+                Some(content_type),
+                "{key}"
+            );
+        }
+        let vtt = String::from_utf8(store.bytes(&format!("{prefix}/sprite.vtt")).expect("vtt"))
+            .expect("text");
+        let cues = crate::domain::sprite::parse_vtt(&vtt).expect("cues");
+        assert_eq!(cues.len() as u32, tiles);
+        // 1280x720 at 160 wide.
+        assert_eq!((cues[0].w, cues[0].h), (160, 90));
+        assert!(
+            store
+                .bytes(&format!("{prefix}/{}", cues[0].sheet))
+                .is_some(),
+            "a cue names a sheet that is stored"
+        );
+
+        let rows = sqlx::query!(
+            r#"SELECT kind::text AS "kind!", variant, storage_key, meta FROM renditions
+               WHERE recording_id = $1 AND kind IN ('sprite', 'preview')
+               ORDER BY kind, variant"#,
+            seeded.recording.into_uuid()
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("renditions");
+        let listed: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|row| (row.kind.as_str(), row.variant.as_str()))
+            .collect();
+        assert_eq!(
+            listed,
+            [("preview", "default"), ("sprite", "0"), ("sprite", "vtt")]
+        );
+        assert_eq!(rows[2].storage_key, format!("{prefix}/sprite.vtt"));
+        assert_eq!(rows[2].meta["tile_height"], 90);
+        assert_eq!(rows[2].meta["interval_ms"], 1000);
+        assert_eq!(rows[0].meta["width"], 320);
+
+        let ready = events(&pool, "RenditionReady").await;
+        let kinds: Vec<&str> = ready
+            .iter()
+            .filter_map(|e| e["data"]["kind"].as_str())
+            .collect();
+        assert_eq!(kinds, ["sprite", "preview"]);
+
+        // A rerun replaces; it doesn't pile up rows.
+        media
+            .generate_sprite(sprite_request(&seeded))
+            .await
+            .expect("again");
+        let count = sqlx::query_scalar!(
+            r#"SELECT count(*) AS "n!" FROM renditions
+               WHERE recording_id = $1 AND kind IN ('sprite', 'preview')"#,
+            seeded.recording.into_uuid()
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(count, 3);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn generate_sprite_waits_for_the_mp4_and_stays_in_its_workspace(pool: PgPool) {
+        let seeded = seed(&pool).await;
+        let (media, store) = service_with(&pool);
+        let message = message(&seeded, 1);
+        store.insert(&message.data.chunks[0].key, vec![1]);
+        media.enqueue_processing(message).await.expect("enqueue");
+
+        let error = media
+            .generate_sprite(sprite_request(&seeded))
+            .await
+            .expect_err("not ready");
+        assert!(matches!(error, GenerateSpriteError::NotReady), "{error}");
+        assert!(scratch_is_empty(&media).await);
+
+        let other = GenerateSprite {
+            take_id: seeded.take,
+            workspace_id: WorkspaceId::new_v7(),
+        };
+        assert_eq!(
+            media.generate_sprite(other).await.expect("scoped"),
+            SpriteOutcome::NotFound
+        );
     }
 }
