@@ -209,3 +209,55 @@ pub async fn link(
         reply.body["id"].as_str().expect("id").to_string(),
     )
 }
+
+/// A streaming GET through the whole router (SSE): the status, and the body to read frames from.
+pub async fn open_stream(
+    pool: &PgPool,
+    caller: Option<&Caller>,
+    uri: &str,
+) -> (StatusCode, axum::body::BodyDataStream) {
+    let app = build_router(
+        pool.clone(),
+        test_identity(pool.clone()),
+        test_tenancy(pool.clone()),
+        test_ingest(pool.clone()),
+        test_store(),
+        test_rate_limiter(pool.clone()),
+        test_clock(),
+        "http://localhost:4200",
+    );
+    let mut request = Request::builder().method(Method::GET).uri(uri);
+    if let Some(caller) = caller {
+        request = request.header("cookie", caller.cookie.clone());
+    }
+    let response = app
+        .oneshot(request.body(Body::empty()).expect("request"))
+        .await
+        .expect("call");
+    (response.status(), response.into_body().into_data_stream())
+}
+
+/// The next SSE frame (up to the blank line) from `stream`, or `None` if nothing came in
+/// `within`. Keep-alive comments are skipped.
+pub async fn next_frame(
+    stream: &mut axum::body::BodyDataStream,
+    within: std::time::Duration,
+) -> Option<String> {
+    use tokio_stream::StreamExt;
+    let mut text = String::new();
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        if let Some(end) = text.find("\n\n") {
+            let frame: String = text[..end].to_string();
+            text = text[end + 2..].to_string();
+            if !frame.starts_with(':') {
+                return Some(frame);
+            }
+            continue;
+        }
+        let chunk = tokio::time::timeout_at(deadline, stream.next())
+            .await
+            .ok()??;
+        text.push_str(&String::from_utf8_lossy(&chunk.expect("chunk")));
+    }
+}

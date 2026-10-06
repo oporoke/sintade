@@ -116,6 +116,16 @@ fn tenant_table() -> Vec<(Method, &'static str, Probe)> {
             }),
         ),
         (
+            Method::GET,
+            "/api/v1/recordings/{recording_id}/events",
+            Probe::Owned(|pool, workspace_id| {
+                Box::pin(async move {
+                    let recording_id = ready_recording_in(&pool, workspace_id).await;
+                    get(&format!("/api/v1/recordings/{recording_id}/events"))
+                })
+            }),
+        ),
+        (
             Method::PATCH,
             "/api/v1/recordings/{recording_id}",
             Probe::Owned(|pool, workspace_id| {
@@ -505,6 +515,7 @@ fn app(pool: &PgPool) -> Router {
                 Arc::new(catalog::CatalogService::new()),
                 test_clock(),
             )),
+            status_hub: crate::status_hub::StatusHub::detached(),
             rate_limiter: test_rate_limiter(pool.clone()),
             clock: test_clock(),
         },
@@ -617,6 +628,15 @@ async fn send_full(
         .await
         .expect("router call succeeds");
     let status = response.status();
+    // A live stream (SSE) never ends: its status and headers are the answer; dropping the
+    // response closes it.
+    let is_stream = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .is_some_and(|value| value.as_bytes().starts_with(b"text/event-stream"));
+    if is_stream {
+        return (status, String::new());
+    }
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read body");

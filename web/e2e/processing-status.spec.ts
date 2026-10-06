@@ -29,6 +29,8 @@ test('a stranger can watch within 5 s of Stop, then the page upgrades to the MP4
   const url = (await line.locator('a').getAttribute('href')) ?? '';
 
   const viewer = await anonymousPage(browser);
+  const asked: string[] = [];
+  viewer.on('request', (request) => asked.push(new URL(request.url()).pathname));
   await viewer.goto(url);
   // Processing is still running (or just finishing): either the notice or already the player.
   const video = viewer.getByTestId('watch-video');
@@ -47,5 +49,15 @@ test('a stranger can watch within 5 s of Stop, then the page upgrades to the MP4
   await expect(video).toHaveAttribute('src', /mp4\/default\.mp4/);
   await expect(viewer.getByTestId('watch-processing')).toHaveCount(0);
   expect(await video.evaluate((el: HTMLVideoElement) => el.readyState)).toBeGreaterThanOrEqual(1);
+  // Day 82: a page that saw the recording processing followed it on its status stream instead
+  // of asking over and over (when processing was already over on arrival, there is nothing to
+  // follow).
+  const slug = new URL(url).pathname.split('/').pop();
+  if (previewing) {
+    expect(
+      asked.filter((path) => path === `/api/v1/s/${slug}/events`).length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(asked.filter((path) => path === `/api/v1/s/${slug}`).length).toBeLessThanOrEqual(3);
+  }
   await viewer.context().close();
 });

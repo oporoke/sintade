@@ -37,6 +37,7 @@ pub struct AppState {
     pub recordings: Arc<catalog::RecordingManager>,
     pub delivery: Arc<delivery::DeliveryService>,
     pub billing: Arc<billing::BillingService>,
+    pub status_hub: Arc<crate::status_hub::StatusHub>,
     pub rate_limiter: Arc<RateLimiter>,
     pub clock: Arc<dyn Clock>,
 }
@@ -76,6 +77,7 @@ pub fn build_router(
                 Arc::new(catalog::CatalogService::new()),
                 clock.clone(),
             )),
+            status_hub: crate::status_hub::StatusHub::new(pool.clone()),
             pool,
             identity,
             tenancy,

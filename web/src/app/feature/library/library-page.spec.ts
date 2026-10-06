@@ -1,7 +1,9 @@
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
+import { Subject } from 'rxjs';
 
 import { LIBRARY_API, LibraryPort, RecordingSummary } from '../../core/library-api.service';
+import { RecordingStatus, STATUS_STREAM } from '../../core/status-stream.service';
 import { SHARE_API } from '../../core/share-api.service';
 import { LibraryPage } from './library-page';
 
@@ -17,11 +19,23 @@ function item(n: number, patch: Partial<RecordingSummary> = {}): RecordingSummar
   };
 }
 
-async function open(api: Partial<LibraryPort>) {
+async function open(
+  api: Partial<LibraryPort>,
+  streams: Record<string, Subject<RecordingStatus>> = {},
+) {
   TestBed.configureTestingModule({
     imports: [LibraryPage],
     providers: [
       provideRouter([]),
+      {
+        provide: STATUS_STREAM,
+        useValue: {
+          follow: (path: string) => {
+            const id = path.split('/')[2];
+            return streams[id] ?? new Subject<RecordingStatus>();
+          },
+        },
+      },
       { provide: LIBRARY_API, useValue: api },
       {
         provide: SHARE_API,
@@ -211,5 +225,80 @@ describe('LibraryPage', () => {
     expect(trash).toHaveBeenCalledWith('rec-1');
     expect(all('library-item').map((c) => c.getAttribute('data-recording-id'))).toEqual(['rec-2']);
     expect(q('library-notice')?.textContent).toContain('30 days');
+  });
+
+  describe('live status', () => {
+    const status = (state: string): RecordingStatus => ({
+      state,
+      hls: false,
+      sprite: false,
+      preview: false,
+    });
+
+    /** Day 82's Check: a card that is processing becomes ready without a reload. */
+    it('turns a processing card into a ready one when the stream says so', async () => {
+      const processing = item(2, { state: 'processing', poster_url: null, duration_ms: null });
+      const list = vi
+        .fn()
+        .mockResolvedValueOnce({ items: [item(1), processing], next_cursor: null })
+        .mockResolvedValue({
+          items: [item(1), item(2, { poster_url: 'https://store/poster-2.jpg' })],
+          next_cursor: null,
+        });
+      const stream = new Subject<RecordingStatus>();
+      const { all, settle } = await open({ list }, { 'rec-2': stream });
+      const card = () => all('library-item')[1];
+      expect(card().querySelector('[data-testid="library-state"]')?.textContent).toBe('Processing');
+      expect(card().querySelector('img')).toBeNull();
+
+      stream.next(status('ready'));
+      await settle();
+      await settle();
+      expect(card().querySelector('[data-testid="library-state"]')).toBeNull();
+      expect(card().querySelector('img')?.getAttribute('src')).toBe('https://store/poster-2.jpg');
+      expect(card().querySelector('[data-testid="library-download"]')).not.toBeNull();
+      expect(stream.observed).toBe(false);
+    });
+
+    it('shows a recording that failed as failed, and follows only unfinished ones', async () => {
+      const follow = vi.fn((path: string) => {
+        void path;
+        return new Subject<RecordingStatus>();
+      });
+      TestBed.configureTestingModule({
+        imports: [LibraryPage],
+        providers: [
+          provideRouter([]),
+          { provide: STATUS_STREAM, useValue: { follow } },
+          {
+            provide: LIBRARY_API,
+            useValue: {
+              list: vi.fn().mockResolvedValue({
+                items: [item(1), item(2, { state: 'processing' }), item(3, { state: 'failed' })],
+                next_cursor: null,
+              }),
+            },
+          },
+          { provide: SHARE_API, useValue: { list: vi.fn(), create: vi.fn() } },
+        ],
+      });
+      const fixture = TestBed.createComponent(LibraryPage);
+      fixture.detectChanges();
+      await new Promise((resolve) => setTimeout(resolve));
+      expect(follow).toHaveBeenCalledTimes(1);
+      expect(follow).toHaveBeenCalledWith('/recordings/rec-2/events');
+    });
+
+    it('closes its streams when the page goes away', async () => {
+      const stream = new Subject<RecordingStatus>();
+      const list = vi.fn().mockResolvedValue({
+        items: [item(2, { state: 'processing' })],
+        next_cursor: null,
+      });
+      await open({ list }, { 'rec-2': stream });
+      expect(stream.observed).toBe(true);
+      TestBed.resetTestingModule();
+      expect(stream.observed).toBe(false);
+    });
   });
 });

@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod events;
 pub mod links;
 pub mod me;
 pub mod recordings;
@@ -139,6 +140,18 @@ pub fn table() -> Vec<Route> {
             "/api/v1/s/{slug}/download",
             Viewer,
             watch::download,
+        ),
+        Route::new(
+            Method::GET,
+            "/api/v1/s/{slug}/events",
+            Viewer,
+            watch::events,
+        ),
+        Route::new(
+            Method::GET,
+            "/api/v1/recordings/{recording_id}/events",
+            Workspace,
+            events::recording_events,
         ),
         Route::new(
             Method::GET,

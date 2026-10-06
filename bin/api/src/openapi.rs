@@ -5,6 +5,7 @@ use crate::routes::auth::{
     __path_forgot_password, __path_login, __path_logout, __path_logout_all, __path_refresh,
     __path_register, __path_reset_password,
 };
+use crate::routes::events::__path_recording_events;
 use crate::routes::links::{
     __path_create_link, __path_list_links, __path_revoke_link, __path_update_link,
 };
@@ -17,7 +18,7 @@ use crate::routes::takes::{
     __path_ack_chunk, __path_finalize_take, __path_presign_chunks, __path_take_status,
 };
 use crate::routes::verify_email::__path_verify_email;
-use crate::routes::watch::{__path_download, __path_playback, __path_watch};
+use crate::routes::watch::{__path_download, __path_events, __path_playback, __path_watch};
 
 /// The API contract. `api openapi` prints it; `just openapi` writes it to
 /// `docs/api/openapi.json` and generates `web/src/app/api/schema.ts` from it.
@@ -48,6 +49,8 @@ use crate::routes::watch::{__path_download, __path_playback, __path_watch};
         revoke_link,
         watch,
         playback,
+        events,
+        recording_events,
         download,
         download_recording,
         presign_chunks,

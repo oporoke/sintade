@@ -1,6 +1,9 @@
 import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
 
+import { Subject } from 'rxjs';
+
+import { RecordingStatus, STATUS_STREAM } from '../../core/status-stream.service';
 import { PlaybackData, WatchApi, WatchData, WatchHttpError } from '../../core/watch-api.service';
 import { STATUS_POLL_MAX_MS, STATUS_POLL_MS, WatchPage, pollDelay } from './watch-page';
 
@@ -210,11 +213,12 @@ describe('WatchPage', () => {
       vi.restoreAllMocks();
     });
 
-    async function openFake(api: Partial<WatchApi>) {
+    async function openFake(api: Partial<WatchApi>, stream?: Subject<RecordingStatus>) {
       TestBed.configureTestingModule({
         imports: [WatchPage],
         providers: [
           provideRouter([]),
+          ...(stream ? [{ provide: STATUS_STREAM, useValue: { follow: () => stream } }] : []),
           { provide: WatchApi, useValue: api },
           {
             provide: ActivatedRoute,
@@ -315,6 +319,66 @@ describe('WatchPage', () => {
       TestBed.resetTestingModule();
       await settle(STATUS_POLL_MS * 3);
       expect(watch).toHaveBeenCalledTimes(1);
+    });
+
+    const status = (state: string): RecordingStatus => ({
+      state,
+      hls: false,
+      sprite: false,
+      preview: false,
+    });
+
+    /** Day 82's Check: the page moves on when the server says so, without a timer asking. */
+    it('waits on the live status stream and plays the MP4 the moment it is ready', async () => {
+      const stream = new Subject<RecordingStatus>();
+      const watch = vi.fn().mockResolvedValueOnce(PROCESSING).mockResolvedValue(READY);
+      const playback = vi
+        .fn()
+        .mockRejectedValueOnce(new WatchHttpError(409))
+        .mockResolvedValue(PLAYBACK);
+      const { root, settle } = await openFake({ watch, playback }, stream);
+      expect(q(root, 'watch-processing')).not.toBeNull();
+
+      stream.next(status('processing')); // what the page already knows
+      await settle(STATUS_POLL_MAX_MS * 3); // no timer is asking
+      expect(watch).toHaveBeenCalledTimes(1);
+      expect(q(root, 'watch-processing')).not.toBeNull();
+
+      stream.next(status('ready'));
+      await settle();
+      expect(watch).toHaveBeenCalledTimes(2);
+      expect(q(root, 'watch-processing')).toBeNull();
+      expect((q(root, 'watch-video') as HTMLVideoElement).getAttribute('src')).toBe(PLAYBACK.url);
+      expect(stream.observed).toBe(false); // closed once it has what it needed
+    });
+
+    it('asks now and then instead when the status stream cannot be had', async () => {
+      const stream = new Subject<RecordingStatus>();
+      const watch = vi.fn().mockResolvedValueOnce(PROCESSING).mockResolvedValue(READY);
+      const playback = vi
+        .fn()
+        .mockRejectedValueOnce(new WatchHttpError(409))
+        .mockResolvedValue(PLAYBACK);
+      const { root, settle } = await openFake({ watch, playback }, stream);
+
+      stream.error(new Error('refused'));
+      await settle(pollDelay(0));
+      expect(watch).toHaveBeenCalledTimes(2);
+      expect((q(root, 'watch-video') as HTMLVideoElement).getAttribute('src')).toBe(PLAYBACK.url);
+    });
+
+    it('closes the status stream when the page goes away', async () => {
+      const stream = new Subject<RecordingStatus>();
+      await openFake(
+        {
+          watch: vi.fn().mockResolvedValue(PROCESSING),
+          playback: vi.fn().mockRejectedValue(new WatchHttpError(409)),
+        },
+        stream,
+      );
+      expect(stream.observed).toBe(true);
+      TestBed.resetTestingModule();
+      expect(stream.observed).toBe(false);
     });
 
     it('slows its checks down the longer a recording takes', () => {

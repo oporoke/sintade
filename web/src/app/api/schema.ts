@@ -242,6 +242,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/recordings/{recording_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Live status of one of the caller's recordings. */
+        get: operations["recording_events"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/recordings/{recording_id}/links": {
         parameters: {
             query?: never;
@@ -330,6 +347,26 @@ export interface paths {
          *     recording.
          */
         get: operations["download"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/s/{slug}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Live status of the recording behind a share link, for a viewer the link admits: the watch
+         *     page waits on this while the recording is processing instead of polling.
+         */
+        get: operations["events"];
         put?: never;
         post?: never;
         delete?: never;
@@ -668,6 +705,17 @@ export interface components {
         };
         /** @enum {string} */
         RecordingStateName: "processing";
+        /** @description What a recording looks like right now. */
+        RecordingStatus: {
+            /** @description The adaptive (HLS) ladder exists. */
+            hls: boolean;
+            /** @description The animated preview exists. */
+            preview: boolean;
+            /** @description The scrub sprite and its `sprite.vtt` exist. */
+            sprite: boolean;
+            /** @description `uploading`, `processing`, `ready` or `failed`. */
+            state: string;
+        };
         RecordingSummary: {
             /** @description RFC 3339. */
             created_at: string;
@@ -1424,6 +1472,47 @@ export interface operations {
             };
         };
     };
+    recording_events: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The recording */
+                recording_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A `text/event-stream` of `status` events, each a RecordingStatus; a `gone` event ends it when the recording disappears */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["RecordingStatus"];
+                };
+            };
+            /** @description No valid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such recording in the caller's workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     list_links: {
         parameters: {
             query?: never;
@@ -1782,6 +1871,47 @@ export interface operations {
             };
             /** @description The MP4 isn't ready yet */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    events: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The link's slug */
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A `text/event-stream` of `status` events, each a RecordingStatus */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["RecordingStatus"];
+                };
+            };
+            /** @description Sign in to watch this link */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such live link, or not for this viewer */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

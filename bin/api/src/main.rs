@@ -7,6 +7,7 @@ mod rate_limit;
 mod routes;
 mod security_headers;
 mod session;
+mod status_hub;
 #[cfg(test)]
 mod tenant_isolation;
 mod workspace_context;

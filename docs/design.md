@@ -802,7 +802,7 @@ Rules: chunk index is 0-based and contiguous; re-uploading an acked index with t
 | --- | --- | --- |
 | `TakeFinalized` | ingest | media |
 | `RecordingReady` | media | catalog, messaging, engagement |
-| `RenditionReady { kind, variant }` | media | delivery cache, SSE |
+| `RenditionReady { kind, variants }` | media | delivery cache, SSE (ADR-0029: `variants` lists a ladder's rungs) |
 | `AudioReady` | media | intelligence |
 | `ProcessingFailed { reason }` | media | catalog, messaging |
 | `TranscriptReady` | intelligence | catalog (search), messaging |

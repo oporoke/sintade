@@ -1,6 +1,7 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   ElementRef,
   Injector,
   OnInit,
@@ -10,8 +11,10 @@ import {
   viewChild,
 } from '@angular/core';
 import { RouterLink } from '@angular/router';
+import { Subscription } from 'rxjs';
 
 import { LIBRARY_API, RecordingSummary } from '../../core/library-api.service';
+import { STATUS_STREAM } from '../../core/status-stream.service';
 import { formatDuration } from '../recorder/format';
 import { ShareDialog } from '../share/share-dialog';
 
@@ -204,6 +207,9 @@ export class LibraryPage implements OnInit {
   private readonly shareDialog = viewChild.required(ShareDialog);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly injector = inject(Injector);
+  private readonly statusStream = inject(STATUS_STREAM);
+  /** Open status streams, by recording: one per recording that is still being made ready. */
+  private readonly following = new Map<string, Subscription>();
 
   protected readonly items = signal<RecordingSummary[]>([]);
   protected readonly nextCursor = signal<string | null>(null);
@@ -214,8 +220,70 @@ export class LibraryPage implements OnInit {
   protected readonly confirming = signal<string | null>(null);
   protected readonly notice = signal<string | null>(null);
 
+  constructor() {
+    inject(DestroyRef).onDestroy(() => {
+      for (const subscription of this.following.values()) {
+        subscription.unsubscribe();
+      }
+      this.following.clear();
+    });
+  }
+
   ngOnInit(): void {
     void this.loadMore();
+  }
+
+  /**
+   * Recordings that aren't ready yet follow their live status (docs/design.md §9): the card
+   * changes from "Processing" to its thumbnail by itself, with no reload. A recording whose
+   * stream can't be opened simply stays as it was until the page is opened again.
+   */
+  private followUnfinished(): void {
+    for (const item of this.items()) {
+      if (
+        (item.state !== 'processing' && item.state !== 'uploading') ||
+        this.following.has(item.id)
+      ) {
+        continue;
+      }
+      const id = item.id;
+      this.following.set(
+        id,
+        this.statusStream.follow(`/recordings/${encodeURIComponent(id)}/events`).subscribe({
+          next: (status) => {
+            this.items.update((all) =>
+              all.map((each) => (each.id === id ? { ...each, state: status.state } : each)),
+            );
+            if (status.state === 'ready' || status.state === 'failed') {
+              this.unfollow(id);
+              if (status.state === 'ready') {
+                void this.refreshItem(id);
+              }
+            }
+          },
+          error: () => this.unfollow(id),
+          complete: () => this.unfollow(id),
+        }),
+      );
+    }
+  }
+
+  private unfollow(id: string): void {
+    this.following.get(id)?.unsubscribe();
+    this.following.delete(id);
+  }
+
+  /** Takes what finishing added (thumbnail, length) from a fresh first page. */
+  private async refreshItem(id: string): Promise<void> {
+    try {
+      const page = await this.api.list(null);
+      const fresh = page.items.find((each) => each.id === id);
+      if (fresh) {
+        this.items.update((all) => all.map((each) => (each.id === id ? fresh : each)));
+      }
+    } catch {
+      // The state is already right; the thumbnail arrives with the next load.
+    }
   }
 
   protected async loadMore(): Promise<void> {
@@ -229,6 +297,7 @@ export class LibraryPage implements OnInit {
       this.items.update((current) => [...current, ...page.items]);
       this.nextCursor.set(page.next_cursor ?? null);
       this.loaded.set(true);
+      this.followUnfinished();
     } catch {
       this.error.set(true);
     } finally {

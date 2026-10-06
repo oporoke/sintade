@@ -9,7 +9,9 @@ import {
   viewChild,
 } from '@angular/core';
 import { ActivatedRoute, RouterLink } from '@angular/router';
+import { Subscription } from 'rxjs';
 
+import { STATUS_STREAM } from '../../core/status-stream.service';
 import { PlaybackData, WatchApi, WatchData, WatchHttpError } from '../../core/watch-api.service';
 import { formatDuration } from '../recorder/format';
 import { PLAYBACK_SPEEDS, keyAction, seekTarget } from './player-keys';
@@ -180,6 +182,7 @@ export class WatchPage implements OnInit {
   private readonly route = inject(ActivatedRoute);
   private readonly api = inject(WatchApi);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly statusStream = inject(STATUS_STREAM);
 
   protected readonly speeds = PLAYBACK_SPEEDS;
   protected readonly view = signal<View>({ kind: 'loading' });
@@ -193,6 +196,10 @@ export class WatchPage implements OnInit {
   private startedAt = 0;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private pollAttempt = 0;
+  /** The live status stream while the recording is being made ready. */
+  private live: Subscription | null = null;
+  /** The stream failed to open or was refused: ask now and then instead. */
+  private liveBroken = false;
   /** The MP4's grant, once it exists while the preview is still on screen. */
   private upgrade: PlaybackData | null = null;
   /** Where the video was when it was switched to the MP4. */
@@ -216,6 +223,7 @@ export class WatchPage implements OnInit {
 
   protected async load(): Promise<void> {
     this.stopPolling();
+    this.liveBroken = false;
     this.pollAttempt = 0;
     this.upgrade = null;
     this.startedAt = performance.now();
@@ -237,6 +245,7 @@ export class WatchPage implements OnInit {
         this.view.set({ kind: 'login' });
       } else if (watch.state === 'failed') {
         this.view.set({ kind: 'failed', watch });
+        this.stopPolling();
       } else if (watch.state === 'processing') {
         await this.whileProcessing(slug, watch);
       } else {
@@ -292,17 +301,60 @@ export class WatchPage implements OnInit {
     this.stopPolling();
   }
 
+  /**
+   * Waits for the recording to change: on the live status stream (docs/design.md §9), so the
+   * page moves on the moment processing ends; or, if the stream can't be had, by asking again
+   * after a growing delay.
+   */
   private schedulePoll(): void {
-    this.stopPolling();
+    this.clearTimer();
+    if (this.followLive()) {
+      return;
+    }
     this.pollTimer = setTimeout(() => void this.refresh(), pollDelay(this.pollAttempt));
     this.pollAttempt += 1;
   }
 
-  private stopPolling(): void {
+  private followLive(): boolean {
+    if (this.liveBroken) {
+      return false;
+    }
+    if (this.live) {
+      return true;
+    }
+    let first = true;
+    this.live = this.statusStream.follow(`/s/${encodeURIComponent(this.slug())}/events`).subscribe({
+      next: (status) => {
+        // The first status is what the page already knows, unless it moved on meanwhile.
+        const known = first && status.state === 'processing';
+        first = false;
+        if (!known) {
+          void this.refresh();
+        }
+      },
+      error: () => {
+        this.live = null;
+        this.liveBroken = true;
+        this.schedulePoll();
+      },
+      complete: () => {
+        this.live = null;
+      },
+    });
+    return true;
+  }
+
+  private clearTimer(): void {
     if (this.pollTimer !== null) {
       clearTimeout(this.pollTimer);
       this.pollTimer = null;
     }
+  }
+
+  private stopPolling(): void {
+    this.clearTimer();
+    this.live?.unsubscribe();
+    this.live = null;
   }
 
   protected onPause(): void {

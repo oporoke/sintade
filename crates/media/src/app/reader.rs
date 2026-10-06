@@ -101,6 +101,30 @@ impl RenditionReader {
         }))
     }
 
+    /// Which renditions the recording has, as `(kind, variant)`: what live status reports.
+    #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
+    pub async fn available(
+        &self,
+        workspace_id: WorkspaceId,
+        recording_id: RecordingId,
+    ) -> Result<Vec<(String, String)>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT kind::text AS "kind!", variant
+            FROM renditions
+            WHERE workspace_id = $1 AND recording_id = $2
+            "#,
+            workspace_id.into_uuid(),
+            recording_id.into_uuid(),
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.kind, row.variant))
+            .collect())
+    }
+
     /// The first view of a recording asks for its HLS ladder (docs/design.md §14: rungs only for
     /// recordings viewed at least once). Enqueues `BuildHls` for the recording's processed take
     /// unless it has a ladder already or one is queued. Returns whether a job was enqueued.

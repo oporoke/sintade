@@ -24,10 +24,9 @@ test('the library: empty state, a real recording with a thumbnail, and paginatio
     await page.goto('/library');
     const card = page.locator(`[data-recording-id="${shared.recordingId}"]`);
     await expect(card).toBeVisible();
-    await expect(async () => {
-      await page.reload();
-      await expect(card.locator('img')).toBeVisible({ timeout: 2_000 });
-    }).toPass({ timeout: 60_000, intervals: [1_000] });
+    // Day 82: the page is never reloaded; the card follows the recording's live status.
+    await expect(card.locator('img')).toBeVisible({ timeout: 60_000 });
+    await expect(card.getByTestId('library-state')).toHaveCount(0);
     await expect(card.getByTestId('library-title')).toHaveText('Untitled recording');
     await expect(card.getByTestId('library-duration')).toContainText('s');
     await expect(card.getByTestId('library-download')).toBeVisible();

@@ -282,6 +282,42 @@ pub async fn playback(
     )))
 }
 
+/// Live status of the recording behind a share link, for a viewer the link admits: the watch
+/// page waits on this while the recording is processing instead of polling.
+#[utoipa::path(
+    get,
+    path = "/api/v1/s/{slug}/events",
+    tag = "watch",
+    params(("slug" = String, Path, description = "The link's slug")),
+    responses(
+        (status = 200, description = "A `text/event-stream` of `status` events, each a RecordingStatus", body = super::events::RecordingStatus, content_type = "text/event-stream"),
+        (status = 401, description = "Sign in to watch this link", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such live link, or not for this viewer", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+#[tracing::instrument(skip_all)]
+pub async fn events(
+    State(state): State<AppState>,
+    session: MaybeSession,
+    Path(slug): Path<String>,
+) -> Result<Response, ApiError> {
+    let resolved = resolve(&state, &session, &slug).await?;
+    match resolved.decision {
+        Decision::Hidden => return Err(AppError::NotFound.into()),
+        Decision::LoginRequired => {
+            return Err(
+                AppError::Unauthorized("sign in to watch this recording".to_string()).into(),
+            );
+        }
+        Decision::Allow => {}
+    }
+    Ok(no_store(super::events::stream(
+        state,
+        resolved.workspace_id,
+        resolved.recording_id,
+    )))
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct DownloadResponse {
     /// A signed URL that saves the MP4; open it (the browser downloads it).

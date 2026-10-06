@@ -770,6 +770,59 @@
         }
       }
     },
+    "/api/v1/recordings/{recording_id}/events": {
+      "get": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "Live status of one of the caller's recordings.",
+        "operationId": "recording_events",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "description": "The recording",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A `text/event-stream` of `status` events, each a RecordingStatus; a `gone` event ends it when the recording disappears",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordingStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such recording in the caller's workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/recordings/{recording_id}/links": {
       "get": {
         "tags": [
@@ -1233,6 +1286,58 @@
           },
           "409": {
             "description": "The MP4 isn't ready yet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/s/{slug}/events": {
+      "get": {
+        "tags": [
+          "watch"
+        ],
+        "summary": "Live status of the recording behind a share link, for a viewer the link admits: the watch\npage waits on this while the recording is processing instead of polling.",
+        "operationId": "events",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "description": "The link's slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A `text/event-stream` of `status` events, each a RecordingStatus",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordingStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in to watch this link",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such live link, or not for this viewer",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2257,6 +2362,34 @@
         "enum": [
           "processing"
         ]
+      },
+      "RecordingStatus": {
+        "type": "object",
+        "description": "What a recording looks like right now.",
+        "required": [
+          "state",
+          "hls",
+          "sprite",
+          "preview"
+        ],
+        "properties": {
+          "hls": {
+            "type": "boolean",
+            "description": "The adaptive (HLS) ladder exists."
+          },
+          "preview": {
+            "type": "boolean",
+            "description": "The animated preview exists."
+          },
+          "sprite": {
+            "type": "boolean",
+            "description": "The scrub sprite and its `sprite.vtt` exist."
+          },
+          "state": {
+            "type": "string",
+            "description": "`uploading`, `processing`, `ready` or `failed`."
+          }
+        }
       },
       "RecordingSummary": {
         "type": "object",
