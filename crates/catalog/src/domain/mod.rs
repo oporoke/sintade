@@ -1,3 +1,6 @@
+mod chapters;
+pub use chapters::{Chapter, ChapterError, ChapterList, MAX_CHAPTER_TITLE_CHARS, MAX_CHAPTERS};
+
 /// Longest title accepted, in characters (not bytes).
 pub const MAX_TITLE_CHARS: usize = 200;
 

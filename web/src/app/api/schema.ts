@@ -222,6 +222,27 @@ export interface paths {
         patch: operations["rename_recording"];
         trace?: never;
     };
+    "/api/v1/recordings/{recording_id}/chapters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The recording's chapters, earliest first. */
+        get: operations["get_chapters"];
+        /**
+         * Replaces the recording's chapters (owner or admin). They show on the watch page as a table
+         *     of contents and as marks on the scrub bar.
+         */
+        put: operations["put_chapters"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/recordings/{recording_id}/download": {
         parameters: {
             query?: never;
@@ -580,6 +601,23 @@ export interface components {
         };
         /** @enum {string} */
         AckStatus: "acked" | "already_acked";
+        /** @description A titled start time. */
+        ChapterDto: {
+            /**
+             * Format: int32
+             * @description Milliseconds from the start of the recording.
+             */
+            start_ms: number;
+            /** @description 1 to 120 characters. */
+            title: string;
+        };
+        ChaptersBody: {
+            /**
+             * @description The whole list: it replaces the recording's chapters. At most 100; unique start times
+             *     within the recording's length.
+             */
+            chapters: components["schemas"]["ChapterDto"][];
+        };
         ChunkUploadUrl: {
             /** Format: int32 */
             idx: number;
@@ -855,6 +893,8 @@ export interface components {
             allow_download?: boolean | null;
             /** @description Whether this viewer may download the MP4: the link allows it, or they own the recording. */
             can_download?: boolean | null;
+            /** @description The owner's chapters, earliest first (empty when there are none). */
+            chapters: components["schemas"]["ChapterDto"][];
             /** @description RFC 3339. */
             created_at?: string | null;
             /** Format: int32 */
@@ -1465,6 +1505,110 @@ export interface operations {
                 };
             };
             /** @description Invalid title */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_chapters: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The recording */
+                recording_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The chapters */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChaptersBody"];
+                };
+            };
+            /** @description No valid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such recording in the caller's workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_chapters: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The recording */
+                recording_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChaptersBody"];
+            };
+        };
+        responses: {
+            /** @description The chapters as stored (sorted, titles trimmed) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChaptersBody"];
+                };
+            };
+            /** @description No valid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Missing CSRF token, or not the owner and not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such recording in the caller's workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many, duplicate or out-of-range chapters, or a bad title */
             422: {
                 headers: {
                     [name: string]: unknown;

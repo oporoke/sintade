@@ -18,6 +18,7 @@ import { PlaybackData, WatchApi, WatchData, WatchHttpError } from '../../core/wa
 import { formatDuration } from '../recorder/format';
 import { QualityLevel, VideoPlayer } from './hls-player';
 import { PLAYBACK_SPEEDS, keyAction, seekTarget, stepSpeed, stepVolume } from './player-keys';
+import { chapterAt } from '../chapters/chapters-text';
 import { loadResume, saveResume } from './resume';
 import { SpriteCue, cueAt, parseSpriteVtt } from './sprite-preview';
 
@@ -87,6 +88,30 @@ type View =
       background: var(--color-primary);
       opacity: 0.6;
       pointer-events: none;
+    }
+    .scrub .mark {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: var(--color-text);
+      opacity: 0.7;
+      pointer-events: none;
+    }
+    .chapters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-2);
+      padding: var(--space-2) var(--space-3);
+      background: var(--color-surface-raised);
+    }
+    .chapters button.active {
+      font-weight: 700;
+      outline: 2px solid var(--color-primary);
+    }
+    .chapters .when {
+      color: var(--color-text-muted);
+      margin-right: 0.25em;
     }
     .scrub .tip {
       position: absolute;
@@ -188,6 +213,15 @@ type View =
             (click)="onScrubClick($event)"
           >
             <div class="fill" [style.width.%]="progress() * 100"></div>
+            @for (chapter of chapters(); track chapter.start_ms) {
+              @if (chapter.start_ms > 0 && durationS() > 0) {
+                <span
+                  class="mark"
+                  data-testid="watch-chapter-mark"
+                  [style.left.%]="(chapter.start_ms / 1000 / durationS()) * 100"
+                ></span>
+              }
+            }
             @if (hover(); as tip) {
               <div class="tip" data-testid="watch-scrub-tip" [style.left.%]="tip.fraction * 100">
                 @if (tip.cue; as cue) {
@@ -204,6 +238,27 @@ type View =
               </div>
             }
           </div>
+          @if (chapters().length > 0) {
+            <nav
+              class="chapters"
+              aria-label="Chapters"
+              i18n-aria-label
+              data-testid="watch-chapters"
+            >
+              @for (chapter of chapters(); track chapter.start_ms) {
+                <button
+                  type="button"
+                  data-testid="watch-chapter"
+                  [attr.aria-current]="chapter === activeChapter() ? 'true' : null"
+                  [class.active]="chapter === activeChapter()"
+                  (click)="seekToChapter(chapter.start_ms)"
+                >
+                  <span class="when">{{ duration(chapter.start_ms) }}</span>
+                  {{ chapter.title }}
+                </button>
+              }
+            </nav>
+          }
           <div class="bar">
             <label>
               <span i18n>Speed</span>
@@ -304,6 +359,14 @@ export class WatchPage implements OnInit {
     return at ? { ...at, cue: cueAt(this.cues(), at.timeS) } : null;
   });
   protected readonly progress = signal(0);
+  protected readonly durationS = signal(0);
+  private readonly time = signal(0);
+  /** The owner's chapters for what is on screen. */
+  protected readonly chapters = computed(() => {
+    const view = this.view();
+    return view.kind === 'ready' ? (view.watch.chapters ?? []) : [];
+  });
+  protected readonly activeChapter = computed(() => chapterAt(this.chapters(), this.time()));
   private lastSavedAt = 0;
   private resumed = false;
   private videoPlayer: VideoPlayer | null = null;
@@ -534,7 +597,9 @@ export class WatchPage implements OnInit {
     if (!video) {
       return;
     }
+    this.time.set(video.currentTime);
     if (Number.isFinite(video.duration) && video.duration > 0) {
+      this.durationS.set(video.duration);
       this.progress.set(Math.min(video.currentTime / video.duration, 1));
     }
     const now = performance.now();
@@ -566,6 +631,14 @@ export class WatchPage implements OnInit {
     this.hoverAt.set({ fraction, timeS });
   }
 
+  protected seekToChapter(startMs: number): void {
+    const video = this.video()?.nativeElement;
+    if (video) {
+      video.currentTime = startMs / 1000;
+      this.time.set(video.currentTime);
+    }
+  }
+
   protected onScrubClick(event: MouseEvent): void {
     const video = this.video()?.nativeElement;
     const bar = event.currentTarget as HTMLElement;
@@ -593,6 +666,9 @@ export class WatchPage implements OnInit {
     const video = this.video()?.nativeElement;
     if (!video) {
       return;
+    }
+    if (Number.isFinite(video.duration)) {
+      this.durationS.set(video.duration);
     }
     if (this.resume) {
       video.currentTime = this.resume.at;

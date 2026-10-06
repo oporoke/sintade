@@ -16,6 +16,7 @@ import { Subscription } from 'rxjs';
 import { LIBRARY_API, RecordingSummary } from '../../core/library-api.service';
 import { STATUS_STREAM } from '../../core/status-stream.service';
 import { formatDuration } from '../recorder/format';
+import { ChaptersDialog } from '../chapters/chapters-dialog';
 import { ShareDialog } from '../share/share-dialog';
 
 /**
@@ -26,7 +27,7 @@ import { ShareDialog } from '../share/share-dialog';
 @Component({
   selector: 'app-library-page',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, ShareDialog],
+  imports: [RouterLink, ShareDialog, ChaptersDialog],
   styles: `
     :host {
       display: block;
@@ -151,6 +152,9 @@ import { ShareDialog } from '../share/share-dialog';
                 Share
               </button>
               @if (item.state === 'ready') {
+                <button type="button" data-testid="library-chapters" (click)="chapters(item)" i18n>
+                  Chapters
+                </button>
                 <button type="button" data-testid="library-download" (click)="download(item)" i18n>
                   Download
                 </button>
@@ -200,11 +204,13 @@ import { ShareDialog } from '../share/share-dialog';
       <p role="status" data-testid="library-notice">{{ message }}</p>
     }
     <app-share-dialog />
+    <app-chapters-dialog />
   `,
 })
 export class LibraryPage implements OnInit {
   private readonly api = inject(LIBRARY_API);
   private readonly shareDialog = viewChild.required(ShareDialog);
+  private readonly chaptersDialog = viewChild.required(ChaptersDialog);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly injector = inject(Injector);
   private readonly statusStream = inject(STATUS_STREAM);
@@ -373,6 +379,10 @@ export class LibraryPage implements OnInit {
     } catch {
       this.notice.set($localize`Couldn't move it to the trash. Try again.`);
     }
+  }
+
+  protected chapters(item: RecordingSummary): void {
+    void this.chaptersDialog().open(item.id);
   }
 
   protected share(item: RecordingSummary): void {

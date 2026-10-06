@@ -246,7 +246,7 @@ pub struct RenameResponse {
 }
 
 /// Whether the caller may edit or trash this recording: its owner, or an admin of the workspace.
-async fn require_owner_or_admin(
+pub(crate) async fn require_owner_or_admin(
     state: &AppState,
     ctx: &WorkspaceContext,
     recording_id: RecordingId,
@@ -270,9 +270,12 @@ async fn require_owner_or_admin(
     Ok(())
 }
 
-fn manage_error(error: catalog::ManageError) -> ApiError {
+pub(crate) fn manage_error(error: catalog::ManageError) -> ApiError {
     match error {
         catalog::ManageError::NotFound => AppError::NotFound.into(),
+        catalog::ManageError::InvalidChapters(error) => {
+            AppError::Validation(error.to_string()).into()
+        }
         other => {
             tracing::error!(error = %other, "manage recording failed");
             AppError::Internal("could not update the recording".to_string()).into()

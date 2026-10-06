@@ -5,6 +5,7 @@ use crate::routes::auth::{
     __path_forgot_password, __path_login, __path_logout, __path_logout_all, __path_refresh,
     __path_register, __path_reset_password,
 };
+use crate::routes::chapters::{__path_get_chapters, __path_put_chapters};
 use crate::routes::events::__path_recording_events;
 use crate::routes::links::{
     __path_create_link, __path_list_links, __path_revoke_link, __path_update_link,
@@ -44,6 +45,8 @@ use crate::routes::watch::{
         create_recording,
         list_recordings,
         rename_recording,
+        get_chapters,
+        put_chapters,
         trash_recording,
         retry_recording,
         create_link,

@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod chapters;
 pub mod events;
 pub mod links;
 pub mod me;
@@ -176,6 +177,18 @@ pub fn table() -> Vec<Route> {
             "/api/v1/s/{slug}/hls/{rung}/index.m3u8",
             Viewer,
             watch::hls_rung,
+        ),
+        Route::new(
+            Method::GET,
+            "/api/v1/recordings/{recording_id}/chapters",
+            Workspace,
+            chapters::get_chapters,
+        ),
+        Route::new(
+            Method::PUT,
+            "/api/v1/recordings/{recording_id}/chapters",
+            Workspace,
+            chapters::put_chapters,
         ),
         Route::new(
             Method::GET,

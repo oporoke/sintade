@@ -697,6 +697,140 @@
         }
       }
     },
+    "/api/v1/recordings/{recording_id}/chapters": {
+      "get": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "The recording's chapters, earliest first.",
+        "operationId": "get_chapters",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "description": "The recording",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The chapters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChaptersBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such recording in the caller's workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "Replaces the recording's chapters (owner or admin). They show on the watch page as a table\nof contents and as marks on the scrub bar.",
+        "operationId": "put_chapters",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "description": "The recording",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChaptersBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The chapters as stored (sorted, titles trimmed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChaptersBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing CSRF token, or not the owner and not an admin",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such recording in the caller's workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Too many, duplicate or out-of-range chapters, or a bad title",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/recordings/{recording_id}/download": {
       "get": {
         "tags": [
@@ -2027,6 +2161,43 @@
           "already_acked"
         ]
       },
+      "ChapterDto": {
+        "type": "object",
+        "description": "A titled start time.",
+        "required": [
+          "start_ms",
+          "title"
+        ],
+        "properties": {
+          "start_ms": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Milliseconds from the start of the recording.",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string",
+            "description": "1 to 120 characters."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChaptersBody": {
+        "type": "object",
+        "required": [
+          "chapters"
+        ],
+        "properties": {
+          "chapters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChapterDto"
+            },
+            "description": "The whole list: it replaces the recording's chapters. At most 100; unique start times\nwithin the recording's length."
+          }
+        },
+        "additionalProperties": false
+      },
       "ChunkUploadUrl": {
         "type": "object",
         "required": [
@@ -2831,7 +3002,8 @@
       "WatchResponse": {
         "type": "object",
         "required": [
-          "requirement"
+          "requirement",
+          "chapters"
         ],
         "properties": {
           "allow_download": {
@@ -2846,6 +3018,13 @@
               "null"
             ],
             "description": "Whether this viewer may download the MP4: the link allows it, or they own the recording."
+          },
+          "chapters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChapterDto"
+            },
+            "description": "The owner's chapters, earliest first (empty when there are none)."
           },
           "created_at": {
             "type": [

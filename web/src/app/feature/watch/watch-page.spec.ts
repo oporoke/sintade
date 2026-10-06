@@ -46,6 +46,7 @@ const READY: WatchData = {
   allow_download: false,
   can_download: false,
   poster_url: 'https://store/poster.jpg',
+  chapters: [],
 };
 const PLAYBACK: PlaybackData = {
   kind: 'mp4',
@@ -131,6 +132,46 @@ describe('WatchPage', () => {
     video.currentTime = 64;
     video.dispatchEvent(new Event('ended'));
     expect(localStorage.getItem('sintade.resume.abcdefghijkl')).toBeNull();
+  });
+
+  it('lists the chapters, marks them on the scrub bar and seeks when one is clicked', async () => {
+    const watch = vi.fn().mockResolvedValue({
+      ...READY,
+      chapters: [
+        { start_ms: 0, title: 'Intro' },
+        { start_ms: 20_000, title: 'Demo' },
+      ],
+    });
+    const playback = vi.fn().mockResolvedValue(PLAYBACK);
+    const root = await open({ watch, playback });
+    const video = q(root, 'watch-video') as HTMLVideoElement;
+    Object.defineProperty(video, 'duration', { value: 65, configurable: true });
+    video.dispatchEvent(new Event('loadedmetadata'));
+    lastFixture.detectChanges();
+
+    const buttons = Array.from(root.querySelectorAll('[data-testid="watch-chapter"]'));
+    expect(buttons.map((b) => b.textContent?.replace(/\s+/g, ' ').trim())).toEqual([
+      '0 s Intro',
+      '20 s Demo',
+    ]);
+    // The mark for 0:00 is skipped; 20 s of 65 s sits at ~31 %.
+    const marks = root.querySelectorAll<HTMLElement>('[data-testid="watch-chapter-mark"]');
+    expect(marks).toHaveLength(1);
+    expect(parseFloat(marks[0].style.left)).toBeCloseTo(30.8, 0);
+
+    (buttons[1] as HTMLButtonElement).click();
+    lastFixture.detectChanges();
+    expect(video.currentTime).toBe(20);
+    expect(buttons[1].getAttribute('aria-current')).toBe('true');
+    expect(buttons[0].getAttribute('aria-current')).toBeNull();
+  });
+
+  it('shows no chapter list when the recording has none', async () => {
+    const root = await open({
+      watch: vi.fn().mockResolvedValue(READY),
+      playback: vi.fn().mockResolvedValue(PLAYBACK),
+    });
+    expect(q(root, 'watch-chapters')).toBeNull();
   });
 
   it('plays a ready recording with its poster and offers speeds', async () => {

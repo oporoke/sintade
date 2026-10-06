@@ -4,7 +4,7 @@ use kernel::{RecordingId, UserId, WorkspaceId};
 use platform::{Clock, ObjectStore, Outbox, OutboxError, StorageError};
 use sqlx::PgPool;
 
-use crate::domain::Title;
+use crate::domain::{Chapter, ChapterError, ChapterList, Title};
 use crate::events::{RecordingPurged, RecordingTrashed};
 use crate::infra;
 
@@ -19,6 +19,8 @@ pub enum ManageError {
     /// No such recording in the caller's workspace.
     #[error("recording not found")]
     NotFound,
+    #[error("invalid chapters: {0}")]
+    InvalidChapters(#[from] ChapterError),
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
     #[error("outbox error: {0}")]
@@ -66,6 +68,52 @@ impl RecordingManager {
         } else {
             Err(ManageError::NotFound)
         }
+    }
+
+    /// The recording's chapters, earliest first.
+    #[tracing::instrument(skip_all, fields(recording_id = %id, workspace_id = %workspace_id))]
+    pub async fn chapters(
+        &self,
+        workspace_id: WorkspaceId,
+        id: RecordingId,
+    ) -> Result<Vec<Chapter>, ManageError> {
+        let mut conn = self.pool.acquire().await?;
+        let rows = infra::chapters(&mut conn, id, workspace_id).await?;
+        Ok(rows
+            .into_iter()
+            .map(|(start_ms, title)| Chapter {
+                start_ms: u32::try_from(start_ms).unwrap_or(0),
+                title,
+            })
+            .collect())
+    }
+
+    /// Replaces the recording's chapters with `chapters` (validated against its duration).
+    #[tracing::instrument(skip_all, fields(recording_id = %id, workspace_id = %workspace_id))]
+    pub async fn set_chapters(
+        &self,
+        workspace_id: WorkspaceId,
+        id: RecordingId,
+        chapters: Vec<Chapter>,
+    ) -> Result<Vec<Chapter>, ManageError> {
+        let mut tx = self.pool.begin().await?;
+        let duration = infra::live_duration(&mut tx, id, workspace_id)
+            .await?
+            .ok_or(ManageError::NotFound)?;
+        let list = ChapterList::parse(chapters, duration.and_then(|ms| u32::try_from(ms).ok()))?;
+        let rows: Vec<(i32, &str)> = list
+            .as_slice()
+            .iter()
+            .map(|chapter| {
+                (
+                    i32::try_from(chapter.start_ms).unwrap_or(i32::MAX),
+                    chapter.title.as_str(),
+                )
+            })
+            .collect();
+        infra::replace_chapters(&mut tx, id, workspace_id, &rows).await?;
+        tx.commit().await?;
+        Ok(list.as_slice().to_vec())
     }
 
     /// Moves the recording to the trash. Its links stop resolving on the next request: the

@@ -418,3 +418,70 @@ pub async fn delete_trashed(
     .await?;
     Ok(result.rows_affected() == 1)
 }
+
+/// The recording's duration if it exists in the workspace and is not in the trash.
+/// `None`: no such recording; `Some(None)`: it exists but has no duration yet.
+pub async fn live_duration(
+    conn: &mut PgConnection,
+    id: RecordingId,
+    workspace_id: WorkspaceId,
+) -> Result<Option<Option<i32>>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT duration_ms FROM recordings WHERE id = $1 AND workspace_id = $2 AND trashed_at IS NULL",
+        id.into_uuid(),
+        workspace_id.into_uuid(),
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(row.map(|row| row.duration_ms))
+}
+
+/// The recording's chapters, earliest first.
+pub async fn chapters(
+    conn: &mut PgConnection,
+    id: RecordingId,
+    workspace_id: WorkspaceId,
+) -> Result<Vec<(i32, String)>, sqlx::Error> {
+    let rows = sqlx::query!(
+        "SELECT start_ms, title FROM chapters
+         WHERE recording_id = $1 AND workspace_id = $2 ORDER BY start_ms",
+        id.into_uuid(),
+        workspace_id.into_uuid(),
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.start_ms, row.title))
+        .collect())
+}
+
+/// Replaces the recording's chapters with `chapters` (in the caller's transaction).
+pub async fn replace_chapters(
+    conn: &mut PgConnection,
+    id: RecordingId,
+    workspace_id: WorkspaceId,
+    chapters: &[(i32, &str)],
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "DELETE FROM chapters WHERE recording_id = $1 AND workspace_id = $2",
+        id.into_uuid(),
+        workspace_id.into_uuid(),
+    )
+    .execute(&mut *conn)
+    .await?;
+    for (start_ms, title) in chapters {
+        sqlx::query!(
+            "INSERT INTO chapters (id, workspace_id, recording_id, start_ms, title)
+             VALUES ($1, $2, $3, $4, $5)",
+            uuid::Uuid::now_v7(),
+            workspace_id.into_uuid(),
+            id.into_uuid(),
+            start_ms,
+            title,
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
+}

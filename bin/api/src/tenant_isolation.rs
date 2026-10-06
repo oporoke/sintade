@@ -155,6 +155,30 @@ fn tenant_table() -> Vec<(Method, &'static str, Probe)> {
         ),
         (
             Method::GET,
+            "/api/v1/recordings/{recording_id}/chapters",
+            Probe::Owned(|pool, workspace_id| {
+                Box::pin(async move {
+                    let recording_id = ready_recording_in(&pool, workspace_id).await;
+                    get(&format!("/api/v1/recordings/{recording_id}/chapters"))
+                })
+            }),
+        ),
+        (
+            Method::PUT,
+            "/api/v1/recordings/{recording_id}/chapters",
+            Probe::Owned(|pool, workspace_id| {
+                Box::pin(async move {
+                    let recording_id = ready_recording_in(&pool, workspace_id).await;
+                    json_request(
+                        Method::PUT,
+                        &format!("/api/v1/recordings/{recording_id}/chapters"),
+                        r#"{"chapters":[{"start_ms":0,"title":"Intro"}]}"#,
+                    )
+                })
+            }),
+        ),
+        (
+            Method::GET,
             "/api/v1/recordings",
             Probe::Listing {
                 request: || get("/api/v1/recordings"),

@@ -47,6 +47,8 @@ pub struct WatchResponse {
     pub can_download: Option<bool>,
     /// A signed poster URL (15 minutes) once the poster exists.
     pub poster_url: Option<String>,
+    /// The owner's chapters, earliest first (empty when there are none).
+    pub chapters: Vec<super::chapters::ChapterDto>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, ToSchema, PartialEq, Eq)]
@@ -187,6 +189,7 @@ pub async fn watch(
                 allow_download: None,
                 can_download: None,
                 poster_url: None,
+                chapters: Vec::new(),
             })));
         }
         Decision::Allow => {}
@@ -206,6 +209,17 @@ pub async fn watch(
             }),
         _ => None,
     };
+    let chapters = state
+        .recordings
+        .chapters(resolved.workspace_id, resolved.recording_id)
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "watch: could not read the chapters");
+            Vec::new()
+        })
+        .into_iter()
+        .map(super::chapters::ChapterDto::from)
+        .collect();
     let to_u32 = |value: Option<i32>| value.and_then(|v| u32::try_from(v).ok());
     Ok(no_store(Json(WatchResponse {
         requirement: Requirement::None,
@@ -218,6 +232,7 @@ pub async fn watch(
         allow_download: Some(resolved.link.allow_download),
         can_download: Some(resolved.link.allow_download || resolved.is_owner),
         poster_url,
+        chapters,
     })))
 }
 
