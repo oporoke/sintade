@@ -109,3 +109,18 @@ export {
   clampQuality,
 } from './quality';
 export type { AudioProcessing, FrameRate, QualityPreset, Resolution } from './quality';
+export {
+  STORAGE_WARN_FRACTION,
+  WakeLockGuard,
+  checkStorage,
+  expectedTakeBytes,
+  storageStatus,
+} from './guards';
+export type {
+  StorageEstimatePort,
+  StorageStatus,
+  VisibilityPort,
+  WakeLockPort,
+  WakeLockSentinelPort,
+  WakeLockState,
+} from './guards';
