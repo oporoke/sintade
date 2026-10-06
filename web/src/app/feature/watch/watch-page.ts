@@ -1,6 +1,7 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  computed,
   ElementRef,
   DestroyRef,
   OnInit,
@@ -16,7 +17,9 @@ import { STATUS_STREAM } from '../../core/status-stream.service';
 import { PlaybackData, WatchApi, WatchData, WatchHttpError } from '../../core/watch-api.service';
 import { formatDuration } from '../recorder/format';
 import { QualityLevel, VideoPlayer } from './hls-player';
-import { PLAYBACK_SPEEDS, keyAction, seekTarget } from './player-keys';
+import { PLAYBACK_SPEEDS, keyAction, seekTarget, stepSpeed, stepVolume } from './player-keys';
+import { loadResume, saveResume } from './resume';
+import { SpriteCue, cueAt, parseSpriteVtt } from './sprite-preview';
 
 /** How soon a recording that is still processing is checked again (docs/design.md §10 Watch). */
 export const STATUS_POLL_MS = 1000;
@@ -71,6 +74,34 @@ type View =
       width: 100%;
       max-height: 80vh;
       background: #000;
+    }
+    .scrub {
+      position: relative;
+      height: 14px;
+      background: var(--color-surface-raised);
+      cursor: pointer;
+      touch-action: none;
+    }
+    .scrub .fill {
+      height: 100%;
+      background: var(--color-primary);
+      opacity: 0.6;
+      pointer-events: none;
+    }
+    .scrub .tip {
+      position: absolute;
+      bottom: 18px;
+      transform: translateX(-50%);
+      pointer-events: none;
+      background: #000;
+      color: #fff;
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      font-size: 0.8rem;
+      text-align: center;
+    }
+    .scrub .tip .tile {
+      background-repeat: no-repeat;
     }
     .bar {
       display: flex;
@@ -145,7 +176,34 @@ type View =
             (loadeddata)="onFirstFrame()"
             (loadedmetadata)="onMetadata()"
             (pause)="onPause()"
+            (ended)="onPause()"
+            (timeupdate)="onTime()"
           ></video>
+          <div
+            class="scrub"
+            data-testid="watch-scrub"
+            role="presentation"
+            (pointermove)="onScrubMove($event)"
+            (pointerleave)="hoverAt.set(null)"
+            (click)="onScrubClick($event)"
+          >
+            <div class="fill" [style.width.%]="progress() * 100"></div>
+            @if (hover(); as tip) {
+              <div class="tip" data-testid="watch-scrub-tip" [style.left.%]="tip.fraction * 100">
+                @if (tip.cue; as cue) {
+                  <div
+                    class="tile"
+                    data-testid="watch-scrub-tile"
+                    [style.width.px]="cue.width"
+                    [style.height.px]="cue.height"
+                    [style.background-image]="'url(&quot;' + cue.url + '&quot;)'"
+                    [style.background-position]="'-' + cue.x + 'px -' + cue.y + 'px'"
+                  ></div>
+                }
+                <div data-testid="watch-scrub-time">{{ duration(tip.timeS * 1000) }}</div>
+              </div>
+            }
+          </div>
           <div class="bar">
             <label>
               <span i18n>Speed</span>
@@ -194,7 +252,10 @@ type View =
                 The download couldn't start. Try again.
               </span>
             }
-            <span class="meta" i18n>Keys: ← → seek 5 s, space play/pause, F fullscreen</span>
+            <span class="meta" i18n
+              >Keys: ← → seek 5 s, J L 10 s, 0–9 jump, &lt; &gt; speed, ↑ ↓ volume, space
+              play/pause, F fullscreen, M mute</span
+            >
           </div>
         </div>
       }
@@ -234,6 +295,17 @@ export class WatchPage implements OnInit {
   /** Where the video was when it was switched to the MP4. */
   private resume: { at: number; play: boolean } | null = null;
 
+  /** The sprite's thumbnails, once loaded. */
+  private readonly cues = signal<SpriteCue[]>([]);
+  protected readonly hoverAt = signal<{ fraction: number; timeS: number } | null>(null);
+  /** The hover tooltip: where the pointer is and the thumbnail there (once the sprite loaded). */
+  protected readonly hover = computed(() => {
+    const at = this.hoverAt();
+    return at ? { ...at, cue: cueAt(this.cues(), at.timeS) } : null;
+  });
+  protected readonly progress = signal(0);
+  private lastSavedAt = 0;
+  private resumed = false;
   private videoPlayer: VideoPlayer | null = null;
   /** The grant the video element is currently set up for. */
   private mounted: PlaybackData | null = null;
@@ -245,6 +317,7 @@ export class WatchPage implements OnInit {
   constructor() {
     this.destroyRef.onDestroy(() => {
       this.stopPolling();
+      this.saveNow();
       this.videoPlayer?.destroy();
     });
     // Hands the video element its source whenever the page has a new grant to play.
@@ -265,6 +338,19 @@ export class WatchPage implements OnInit {
     this.levels.set([]);
     this.quality.set(-1);
     this.currentHeight.set(null);
+    this.cues.set([]);
+    this.hoverAt.set(null);
+    this.resumed = false;
+    if (playback.sprite_url) {
+      this.api
+        .sprite(playback.sprite_url)
+        .then((text) => {
+          if (this.mounted === playback) {
+            this.cues.set(parseSpriteVtt(text));
+          }
+        })
+        .catch(() => undefined);
+    }
     void VideoPlayer.start(
       video,
       { hlsUrl: playback.hls_url, url: playback.url },
@@ -439,7 +525,56 @@ export class WatchPage implements OnInit {
   }
 
   protected onPause(): void {
+    this.saveNow();
     this.applyUpgradeIfIdle();
+  }
+
+  protected onTime(): void {
+    const video = this.video()?.nativeElement;
+    if (!video) {
+      return;
+    }
+    if (Number.isFinite(video.duration) && video.duration > 0) {
+      this.progress.set(Math.min(video.currentTime / video.duration, 1));
+    }
+    const now = performance.now();
+    if (now - this.lastSavedAt > 2000) {
+      this.saveNow();
+    }
+  }
+
+  /** Remembers where this viewer is (not for the original preview, which can't seek well). */
+  private saveNow(): void {
+    const video = this.video()?.nativeElement;
+    const current = this.view();
+    if (!video || current.kind !== 'ready' || current.preview || !this.resumed) {
+      return;
+    }
+    this.lastSavedAt = performance.now();
+    saveResume(this.slug(), video.currentTime, video.duration);
+  }
+
+  protected onScrubMove(event: PointerEvent): void {
+    const video = this.video()?.nativeElement;
+    const bar = event.currentTarget as HTMLElement;
+    if (!video || !Number.isFinite(video.duration) || video.duration <= 0) {
+      return;
+    }
+    const box = bar.getBoundingClientRect();
+    const fraction = Math.min(Math.max((event.clientX - box.left) / box.width, 0), 1);
+    const timeS = fraction * video.duration;
+    this.hoverAt.set({ fraction, timeS });
+  }
+
+  protected onScrubClick(event: MouseEvent): void {
+    const video = this.video()?.nativeElement;
+    const bar = event.currentTarget as HTMLElement;
+    if (!video || !Number.isFinite(video.duration) || video.duration <= 0) {
+      return;
+    }
+    const box = bar.getBoundingClientRect();
+    const fraction = Math.min(Math.max((event.clientX - box.left) / box.width, 0), 1);
+    video.currentTime = fraction * video.duration;
   }
 
   private applyUpgradeIfIdle(): void {
@@ -456,10 +591,24 @@ export class WatchPage implements OnInit {
 
   protected onMetadata(): void {
     const video = this.video()?.nativeElement;
-    if (video && this.resume) {
+    if (!video) {
+      return;
+    }
+    if (this.resume) {
       video.currentTime = this.resume.at;
       this.resume = null;
+    } else if (!this.resumed) {
+      const current = this.view();
+      const at =
+        current.kind === 'ready' && !current.preview
+          ? loadResume(this.slug(), video.duration)
+          : null;
+      if (at !== null) {
+        video.currentTime = at;
+      }
     }
+    // Nothing is saved until the stored position has been applied (or ruled out).
+    this.resumed = true;
   }
 
   protected onFirstFrame(): void {
@@ -537,6 +686,21 @@ export class WatchPage implements OnInit {
         break;
       case 'mute':
         video.muted = !video.muted;
+        break;
+      case 'seek-to':
+        if (Number.isFinite(video.duration)) {
+          video.currentTime = video.duration * action.fraction;
+        }
+        break;
+      case 'seek-edge':
+        video.currentTime = action.edge === 'start' ? 0 : video.duration || 0;
+        break;
+      case 'speed':
+        this.setSpeed(String(stepSpeed(this.speed(), action.direction)));
+        break;
+      case 'volume':
+        video.volume = stepVolume(video.volume, action.delta);
+        video.muted = false;
         break;
     }
   }

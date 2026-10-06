@@ -20,7 +20,7 @@ use crate::routes::takes::{
 use crate::routes::verify_email::__path_verify_email;
 use crate::routes::watch::{
     __path_download, __path_events, __path_hls_master, __path_hls_rung, __path_playback,
-    __path_watch,
+    __path_sprite_vtt, __path_watch,
 };
 
 /// The API contract. `api openapi` prints it; `just openapi` writes it to
@@ -54,6 +54,7 @@ use crate::routes::watch::{
         playback,
         hls_master,
         hls_rung,
+        sprite_vtt,
         events,
         recording_events,
         download,

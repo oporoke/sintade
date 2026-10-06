@@ -124,6 +124,27 @@ impl RenditionReader {
         Ok(key.and_then(|key| key.strip_suffix("/master.m3u8").map(str::to_string)))
     }
 
+    /// The storage key of the recording's `sprite.vtt`, once the sprite is made.
+    #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
+    pub async fn sprite_vtt_key(
+        &self,
+        workspace_id: WorkspaceId,
+        recording_id: RecordingId,
+    ) -> Result<Option<String>, sqlx::Error> {
+        sqlx::query_scalar!(
+            r#"
+            SELECT storage_key FROM renditions
+            WHERE workspace_id = $1 AND recording_id = $2
+              AND kind = 'sprite' AND variant = 'vtt'
+            ORDER BY created_at DESC LIMIT 1
+            "#,
+            workspace_id.into_uuid(),
+            recording_id.into_uuid(),
+        )
+        .fetch_optional(&self.pool)
+        .await
+    }
+
     /// Which renditions the recording has, as `(kind, variant)`: what live status reports.
     #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
     pub async fn available(

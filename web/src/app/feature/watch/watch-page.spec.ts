@@ -113,6 +113,26 @@ describe('WatchPage', () => {
     expect(instance.nextLevel).toBe(-1);
   });
 
+  it('resumes where this viewer left off and remembers the position as they watch', async () => {
+    localStorage.clear();
+    localStorage.setItem('sintade.resume.abcdefghijkl', '30');
+    const watch = vi.fn().mockResolvedValue(READY);
+    const playback = vi.fn().mockResolvedValue(PLAYBACK);
+    const root = await open({ watch, playback });
+    const video = q(root, 'watch-video') as HTMLVideoElement;
+    Object.defineProperty(video, 'duration', { value: 65, configurable: true });
+    video.dispatchEvent(new Event('loadedmetadata'));
+    expect(video.currentTime).toBe(30);
+
+    video.currentTime = 41;
+    video.dispatchEvent(new Event('pause'));
+    expect(localStorage.getItem('sintade.resume.abcdefghijkl')).toBe('41');
+    // Watched to the end: next time it starts over.
+    video.currentTime = 64;
+    video.dispatchEvent(new Event('ended'));
+    expect(localStorage.getItem('sintade.resume.abcdefghijkl')).toBeNull();
+  });
+
   it('plays a ready recording with its poster and offers speeds', async () => {
     const watch = vi.fn().mockResolvedValue(READY);
     const playback = vi.fn().mockResolvedValue(PLAYBACK);

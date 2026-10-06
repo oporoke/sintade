@@ -7,7 +7,7 @@ pub const RUNGS: [&str; 3] = ["360p", "720p", "1080p"];
 
 /// Whether `file` is a plain file name: what a playlist may reference. Anything with a path in
 /// it is refused, so a stored playlist can't point a signature at another recording's object.
-fn is_plain_file(file: &str) -> bool {
+pub(crate) fn is_plain_file(file: &str) -> bool {
     !file.is_empty()
         && !file.starts_with('.')
         && file
@@ -118,5 +118,66 @@ mod tests {
         assert!(out.contains("\nhttps://s/seg_0000.m4s?sig=1\n"), "{out}");
         assert!(out.contains("\nhttps://s/seg_0001.m4s?sig=1\n"), "{out}");
         assert!(out.contains("#EXTINF:4.0,\n") && out.ends_with("#EXT-X-ENDLIST\n"));
+    }
+}
+
+/// `sprite.vtt` with each cue's sheet (`sprite_0.jpg#xywh=...`) replaced by `signed(sheet)` plus
+/// the same fragment. `None` if a cue names anything but a plain file.
+pub fn sprite_files(vtt: &str) -> Option<Vec<String>> {
+    let mut files = Vec::new();
+    for line in vtt.lines() {
+        if let Some((file, _)) = line.split_once("#xywh=") {
+            if !is_plain_file(file) {
+                return None;
+            }
+            files.push(file.to_string());
+        }
+    }
+    Some(files)
+}
+
+pub fn rewrite_sprite(vtt: &str, urls: &std::collections::HashMap<String, String>) -> String {
+    let mut out = String::with_capacity(vtt.len() * 3);
+    for line in vtt.lines() {
+        match line.split_once("#xywh=") {
+            Some((file, rect)) if urls.contains_key(file) => {
+                out.push_str(&format!("{}#xywh={rect}", urls[file]));
+            }
+            _ => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    out
+}
+
+#[cfg(test)]
+mod sprite_tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    const VTT: &str = "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nsprite_0.jpg#xywh=0,0,160,90\n\n00:00:01.000 --> 00:00:02.000\nsprite_0.jpg#xywh=160,0,160,90\n";
+
+    #[test]
+    fn each_cue_gets_its_sheet_signed_and_keeps_its_rectangle() {
+        assert_eq!(
+            sprite_files(VTT).expect("plain"),
+            ["sprite_0.jpg", "sprite_0.jpg"]
+        );
+        let urls = HashMap::from([("sprite_0.jpg".to_string(), "https://s/a?sig=1".to_string())]);
+        let out = rewrite_sprite(VTT, &urls);
+        assert!(
+            out.contains("\nhttps://s/a?sig=1#xywh=160,0,160,90\n"),
+            "{out}"
+        );
+        assert!(out.starts_with("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n"));
+    }
+
+    #[test]
+    fn a_sheet_with_a_path_is_refused() {
+        assert_eq!(
+            sprite_files("WEBVTT\n\n0 --> 1\n../x.jpg#xywh=0,0,1,1\n"),
+            None
+        );
     }
 }

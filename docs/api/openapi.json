@@ -1524,6 +1524,58 @@
         }
       }
     },
+    "/api/v1/s/{slug}/sprite.vtt": {
+      "get": {
+        "tags": [
+          "watch"
+        ],
+        "summary": "The scrub sprite's cue file: each cue names a signed sheet and the tile's rectangle in it.",
+        "operationId": "sprite_vtt",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "description": "The link's slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "WebVTT whose cues are `<signed sheet url>#xywh=x,y,w,h`",
+            "content": {
+              "text/vtt": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in to watch this link",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such live link, not for this viewer, or no sprite yet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/takes/{take_id}/chunks/{idx}/ack": {
       "post": {
         "tags": [
@@ -2378,6 +2430,13 @@
               "string",
               "null"
             ]
+          },
+          "sprite_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The scrub sprite's cue file (`/s/{slug}/sprite.vtt`) once the sprite exists."
           },
           "url": {
             "type": "string",

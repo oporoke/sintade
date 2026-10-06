@@ -179,6 +179,19 @@ impl DeliveryService {
             .is_some())
     }
 
+    /// Whether the recording's scrub sprite exists yet.
+    pub async fn has_sprite(
+        &self,
+        workspace_id: WorkspaceId,
+        recording_id: RecordingId,
+    ) -> Result<bool, DeliveryError> {
+        Ok(self
+            .renditions
+            .sprite_vtt_key(workspace_id, recording_id)
+            .await?
+            .is_some())
+    }
+
     /// The master playlist, as stored: it names each rung relatively. `None` before the ladder
     /// exists.
     #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
@@ -235,6 +248,43 @@ impl DeliveryService {
             }
         }
         Ok(Some(hls::rewrite(&playlist, &urls)))
+    }
+
+    /// The scrub sprite's `sprite.vtt` with each sheet signed for 15 minutes; `None` until the
+    /// sprite exists.
+    #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
+    pub async fn sprite_vtt(
+        &self,
+        workspace_id: WorkspaceId,
+        recording_id: RecordingId,
+    ) -> Result<Option<String>, DeliveryError> {
+        let Some(key) = self
+            .renditions
+            .sprite_vtt_key(workspace_id, recording_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(vtt) = self.read_playlist(&key).await? else {
+            return Ok(None);
+        };
+        let Some(files) = hls::sprite_files(&vtt) else {
+            tracing::error!("sprite: a stored vtt references a path");
+            return Ok(None);
+        };
+        let prefix = key.rsplit_once('/').map_or("", |(prefix, _)| prefix);
+        let mut urls = std::collections::HashMap::new();
+        for file in files {
+            if let std::collections::hash_map::Entry::Vacant(entry) = urls.entry(file) {
+                let url = self
+                    .store
+                    .presign_get(&format!("{prefix}/{}", entry.key()), GRANT_TTL)
+                    .await?
+                    .to_string();
+                entry.insert(url);
+            }
+        }
+        Ok(Some(hls::rewrite_sprite(&vtt, &urls)))
     }
 
     /// A playlist is small; anything past 1 MiB is not one.

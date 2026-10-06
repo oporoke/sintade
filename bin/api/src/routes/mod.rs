@@ -161,6 +161,12 @@ pub fn table() -> Vec<Route> {
         ),
         Route::new(
             Method::GET,
+            "/api/v1/s/{slug}/sprite.vtt",
+            Viewer,
+            watch::sprite_vtt,
+        ),
+        Route::new(
+            Method::GET,
             "/api/v1/s/{slug}/hls/master.m3u8",
             Viewer,
             watch::hls_master,

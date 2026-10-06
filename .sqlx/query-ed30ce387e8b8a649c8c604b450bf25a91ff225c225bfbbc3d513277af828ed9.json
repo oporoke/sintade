@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT storage_key FROM renditions\n            WHERE workspace_id = $1 AND recording_id = $2\n              AND kind = 'sprite' AND variant = 'vtt'\n            ORDER BY created_at DESC LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "storage_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "renditions",
+            "name": "storage_key"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ed30ce387e8b8a649c8c604b450bf25a91ff225c225bfbbc3d513277af828ed9"
+}

@@ -71,6 +71,8 @@ pub struct PlaybackResponse {
     /// with signed segments behind it. Absent before that (the first view asks for the ladder),
     /// when `url` is the one to play.
     pub hls_url: Option<String>,
+    /// The scrub sprite's cue file (`/s/{slug}/sprite.vtt`) once the sprite exists.
+    pub sprite_url: Option<String>,
     /// Seconds the URLs stay valid (900).
     pub expires_in_s: u64,
     pub duration_ms: Option<u32>,
@@ -283,10 +285,23 @@ pub async fn playback(
         }
         _ => None,
     };
+    let sprite_url = match state
+        .delivery
+        .has_sprite(resolved.workspace_id, resolved.recording_id)
+        .await
+    {
+        Ok(true) => Some(format!("/api/v1/s/{slug}/sprite.vtt")),
+        Ok(false) => None,
+        Err(error) => {
+            tracing::warn!(%error, "playback: could not look up the sprite");
+            None
+        }
+    };
     Ok(no_store((
         StatusCode::OK,
         Json(PlaybackResponse {
             hls_url,
+            sprite_url,
             kind: match grant.kind {
                 delivery::PlaybackKind::Mp4 => PlaybackKind::Mp4,
                 delivery::PlaybackKind::Preview => PlaybackKind::Preview,
@@ -362,6 +377,38 @@ pub async fn hls_master(
         .map_err(internal)?
         .ok_or(AppError::NotFound)?;
     Ok(playlist_response(playlist))
+}
+
+/// The scrub sprite's cue file: each cue names a signed sheet and the tile's rectangle in it.
+#[utoipa::path(
+    get,
+    path = "/api/v1/s/{slug}/sprite.vtt",
+    tag = "watch",
+    params(("slug" = String, Path, description = "The link's slug")),
+    responses(
+        (status = 200, description = "WebVTT whose cues are `<signed sheet url>#xywh=x,y,w,h`", content_type = "text/vtt", body = String),
+        (status = 401, description = "Sign in to watch this link", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such live link, not for this viewer, or no sprite yet", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+#[tracing::instrument(skip_all)]
+pub async fn sprite_vtt(
+    State(state): State<AppState>,
+    session: MaybeSession,
+    Path(slug): Path<String>,
+) -> Result<Response, ApiError> {
+    let resolved = admitted(&state, &session, &slug).await?;
+    let vtt = state
+        .delivery
+        .sprite_vtt(resolved.workspace_id, resolved.recording_id)
+        .await
+        .map_err(internal)?
+        .ok_or(AppError::NotFound)?;
+    Ok(no_store((
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "text/vtt")],
+        vtt,
+    )))
 }
 
 /// One rung's playlist, its init and media segments signed for 15 minutes.
@@ -510,7 +557,9 @@ mod tests {
     use axum::http::{Method, StatusCode};
     use sqlx::PgPool;
 
-    use crate::routes::testkit::{call, caller, ladder, link, recording, renditions, source_only};
+    use crate::routes::testkit::{
+        call, caller, ladder, link, recording, renditions, source_only, sprite,
+    };
 
     fn watch_uri(slug: &str) -> String {
         format!("/api/v1/s/{slug}")
@@ -596,6 +645,41 @@ mod tests {
             .await;
             assert_eq!(reply.status, StatusCode::NOT_FOUND, "{bad}");
         }
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn the_sprite_cue_file_has_signed_sheets_and_follows_link_access(pool: PgPool) {
+        let (owner, id) = ready(&pool).await;
+        let (slug, link_id) = link(&pool, &owner, id, "link").await;
+        let uri = format!("/api/v1/s/{slug}/sprite.vtt");
+        let none = call(&pool, None, Method::GET, &uri, None).await;
+        assert_eq!(none.status, StatusCode::NOT_FOUND);
+        let before = call(&pool, None, Method::GET, &playback_uri(&slug), None).await;
+        assert_eq!(before.body["sprite_url"], serde_json::Value::Null);
+
+        sprite(&pool, owner.workspace_id, id).await;
+        let play = call(&pool, None, Method::GET, &playback_uri(&slug), None).await;
+        assert_eq!(play.body["sprite_url"], uri);
+        let vtt = call(&pool, None, Method::GET, &uri, None).await;
+        assert_eq!(vtt.status, StatusCode::OK, "{}", vtt.text);
+        assert_eq!(vtt.content_type.as_deref(), Some("text/vtt"));
+        assert!(vtt.text.starts_with("WEBVTT\n"), "{}", vtt.text);
+        assert!(vtt.text.contains("X-Amz-Signature="), "{}", vtt.text);
+        assert!(vtt.text.contains("#xywh=160,0,160,90"), "{}", vtt.text);
+        assert!(!vtt.text.contains("\nsprite_0.jpg"), "{}", vtt.text);
+
+        // A private link hides it like everything else.
+        let _ = link_id;
+        let (private, _) = link(&pool, &owner, id, "private").await;
+        let hidden = call(
+            &pool,
+            None,
+            Method::GET,
+            &format!("/api/v1/s/{private}/sprite.vtt"),
+            None,
+        )
+        .await;
+        assert_eq!(hidden.status, StatusCode::NOT_FOUND);
     }
 
     #[sqlx::test(migrations = "../../migrations")]

@@ -429,6 +429,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/s/{slug}/sprite.vtt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The scrub sprite's cue file: each cue names a signed sheet and the tile's rectangle in it. */
+        get: operations["sprite_vtt"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/takes/{take_id}/chunks/{idx}/ack": {
         parameters: {
             query?: never;
@@ -714,6 +731,8 @@ export interface components {
             hls_url?: string | null;
             kind: components["schemas"]["PlaybackKind"];
             poster_url?: string | null;
+            /** @description The scrub sprite's cue file (`/s/{slug}/sprite.vtt`) once the sprite exists. */
+            sprite_url?: string | null;
             /** @description A signed URL for the video. */
             url: string;
         };
@@ -2089,6 +2108,47 @@ export interface operations {
             };
             /** @description The MP4 isn't ready yet */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    sprite_vtt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The link's slug */
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description WebVTT whose cues are `<signed sheet url>#xywh=x,y,w,h` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/vtt": string;
+                };
+            };
+            /** @description Sign in to watch this link */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such live link, not for this viewer, or no sprite yet */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

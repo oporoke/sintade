@@ -344,3 +344,40 @@ pub async fn next_frame(
         text.push_str(&String::from_utf8_lossy(&chunk.expect("chunk")));
     }
 }
+
+/// A scrub sprite (one sheet, two cues) for a recording that has a take, stored in the real test
+/// bucket and recorded as renditions.
+pub async fn sprite(pool: &PgPool, workspace_id: WorkspaceId, recording: RecordingId) {
+    let store = crate::app::tests::test_store();
+    let prefix = format!("test/{workspace_id}/rec/{recording}/img");
+    let dir = std::env::temp_dir().join(format!("sprite-{recording}"));
+    std::fs::create_dir_all(&dir).expect("scratch");
+    let file = dir.join("f");
+    std::fs::write(
+        &file,
+        "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nsprite_0.jpg#xywh=0,0,160,90\n\n00:00:01.000 --> 00:00:02.000\nsprite_0.jpg#xywh=160,0,160,90\n",
+    )
+    .expect("vtt");
+    let key = format!("{prefix}/sprite.vtt");
+    store.put_file(&key, &file, "text/vtt").await.expect("put");
+    let _ = std::fs::remove_dir_all(&dir);
+    let take = sqlx::query_scalar!(
+        "SELECT id FROM takes WHERE recording_id = $1 LIMIT 1",
+        recording.into_uuid()
+    )
+    .fetch_one(pool)
+    .await
+    .expect("the recording needs a take first");
+    sqlx::query!(
+        "INSERT INTO renditions (id, workspace_id, recording_id, take_id, kind, variant, storage_key)
+         VALUES ($1, $2, $3, $4, 'sprite', 'vtt', $5)",
+        uuid::Uuid::now_v7(),
+        workspace_id.into_uuid(),
+        recording.into_uuid(),
+        take,
+        key,
+    )
+    .execute(pool)
+    .await
+    .expect("sprite rendition");
+}

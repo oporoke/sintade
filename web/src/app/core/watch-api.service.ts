@@ -30,6 +30,15 @@ export class WatchApi {
     return call(this.api.get<PlaybackData>(`/s/${encodeURIComponent(slug)}/playback`));
   }
 
+  /** The scrub sprite's cue file (`PlaybackData.sprite_url`), as text. */
+  async sprite(url: string): Promise<string> {
+    const response = await fetch(url, { credentials: 'include' });
+    if (!response.ok) {
+      throw new WatchHttpError(response.status);
+    }
+    return response.text();
+  }
+
   download(slug: string): Promise<DownloadData> {
     return call(this.api.get<DownloadData>(`/s/${encodeURIComponent(slug)}/download`));
   }
