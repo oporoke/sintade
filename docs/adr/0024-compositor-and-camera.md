@@ -45,3 +45,13 @@ live; size slider, shape select and a "camera only" checkbox change it too. Came
 screen shared (it fixes the output size and the take still ends with "Stop sharing") but draws only
 the camera, cropped to cover. Keyboard-only bubble placement is not in this day (`TODO: Verify`
 accessibility with the Day 76 shortcuts).
+
+## Day 75 addendum — region crop and cursor
+
+The compositor also exists when only a crop is set (`camera` may be null; `TakeSession` builds it
+for a camera *or* a region). A region is fractions of the shared screen; the canvas is the
+region's size (rounded to even), fixed for the take, and the screen is drawn from the region only
+so it fills the frame. The user drags the crop on the setup preview (not changeable while
+recording: a moving canvas size would break the encoder). The pointer is hidden with the
+`cursor: 'never'` display-capture constraint, which Chromium honours at pick time and others
+ignore (`TODO: Verify` Safari/Firefox); the UI says it applies the next time a screen is chosen.

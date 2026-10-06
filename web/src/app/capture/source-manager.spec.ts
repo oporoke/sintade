@@ -81,6 +81,16 @@ describe('SourceManager', () => {
       });
     });
 
+    it('can hide the cursor', async () => {
+      const { devices, manager } = setup();
+      devices.getDisplayMedia.mockResolvedValue(fakeStream('video').stream);
+      await manager.pickDisplay({ systemAudio: false, cursor: 'never' });
+      expect(devices.getDisplayMedia).toHaveBeenCalledWith({
+        video: { frameRate: 30, cursor: 'never' },
+        audio: false,
+      });
+    });
+
     it('re-aims the picked display at a preset, and shrugs off a refusal', async () => {
       const { devices, manager } = setup();
       const { stream, tracks } = fakeStream('video');
