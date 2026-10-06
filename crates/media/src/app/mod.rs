@@ -5,7 +5,7 @@ pub(crate) mod transcode;
 
 mod reader;
 pub use hls::{BuildHlsError, HlsError};
-pub use reader::{PlaybackKeys, RenditionReader, SourceKey};
+pub use reader::{PlaybackKeys, RenditionReader, RequestLadderError, SourceKey};
 pub use retry::{RetryError, RetryService};
 pub use service::{
     BUILD_HLS, BuildHls, EnqueueError, HlsOutcome, MediaService, PROCESS_TAKE, ProcessError,

@@ -90,6 +90,17 @@ impl DeliveryService {
             ),
             _ => return Ok(None),
         };
+        if kind == PlaybackKind::Mp4 {
+            // The first view asks for the adaptive ladder. A failure here must not stop the
+            // viewer watching the MP4.
+            if let Err(error) = self
+                .renditions
+                .request_ladder(workspace_id, recording_id)
+                .await
+            {
+                tracing::warn!(%error, "playback: could not request the HLS ladder");
+            }
+        }
         let url = self.store.presign_get(&key, GRANT_TTL).await?.to_string();
         let poster_url = match keys.poster {
             Some(key) => Some(self.store.presign_get(&key, GRANT_TTL).await?.to_string()),
@@ -278,6 +289,99 @@ mod tests {
                 .poster_url
                 .is_some_and(|url| url.contains("poster.jpg"))
         );
+    }
+
+    /// Marks the seeded recording's take as processed, as `ProcessTake` would.
+    async fn mark_processed(pool: &PgPool, workspace: WorkspaceId, recording: RecordingId) {
+        sqlx::query!(
+            "INSERT INTO media_jobs (take_id, workspace_id, recording_id, mime_type, duration_ms,
+                                    chunks, state)
+             SELECT id, workspace_id, recording_id, 'video/webm', 1000, '[]', 'done'
+             FROM takes WHERE recording_id = $1 AND workspace_id = $2",
+            recording.into_uuid(),
+            workspace.into_uuid(),
+        )
+        .execute(pool)
+        .await
+        .expect("media job");
+    }
+
+    async fn ladder_jobs(pool: &PgPool) -> i64 {
+        sqlx::query_scalar!(r#"SELECT count(*) AS "n!" FROM jobs WHERE kind = 'BuildHls'"#)
+            .fetch_one(pool)
+            .await
+            .expect("jobs")
+    }
+
+    /// Day 80's Check: an unviewed recording has no ladder job (so no HLS objects); the first
+    /// view asks for one, and many views ask once.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn the_first_view_asks_for_the_ladder_once(pool: PgPool) {
+        let (workspace, recording) = seed(&pool, true).await;
+        mark_processed(&pool, workspace, recording).await;
+        assert_eq!(ladder_jobs(&pool).await, 0, "unviewed: nothing queued");
+
+        let delivery = service(pool.clone());
+        for _ in 0..3 {
+            delivery
+                .grant(workspace, recording, false)
+                .await
+                .expect("grant")
+                .expect("an MP4 exists");
+        }
+        assert_eq!(ladder_jobs(&pool).await, 1);
+        let payload = sqlx::query_scalar!(r#"SELECT payload FROM jobs WHERE kind = 'BuildHls'"#)
+            .fetch_one(&pool)
+            .await
+            .expect("payload");
+        assert_eq!(payload["workspace_id"], workspace.to_string());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_recording_with_a_ladder_or_without_an_mp4_asks_for_nothing(pool: PgPool) {
+        // Has a ladder already.
+        let (workspace, built) = seed(&pool, true).await;
+        mark_processed(&pool, workspace, built).await;
+        sqlx::query!(
+            "INSERT INTO renditions (id, workspace_id, recording_id, take_id, kind, variant, storage_key)
+             SELECT $1, workspace_id, recording_id, id, 'hls', 'master', 'hls/master.m3u8'
+             FROM takes WHERE recording_id = $2",
+            uuid::Uuid::now_v7(),
+            built.into_uuid(),
+        )
+        .execute(&pool)
+        .await
+        .expect("ladder");
+        // Still processing: no MP4, so nothing is played, nothing asked for.
+        let (other, processing) = seed(&pool, false).await;
+        mark_processed(&pool, other, processing).await;
+
+        let delivery = service(pool.clone());
+        delivery
+            .grant(workspace, built, false)
+            .await
+            .expect("grant");
+        delivery
+            .grant(other, processing, false)
+            .await
+            .expect("grant");
+        assert_eq!(ladder_jobs(&pool).await, 0);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_view_never_asks_for_another_workspaces_ladder(pool: PgPool) {
+        let (workspace, recording) = seed(&pool, true).await;
+        mark_processed(&pool, workspace, recording).await;
+        let delivery = service(pool.clone());
+        let elsewhere = WorkspaceId::new_v7();
+        assert!(
+            delivery
+                .grant(elsewhere, recording, false)
+                .await
+                .expect("grant")
+                .is_none()
+        );
+        assert_eq!(ladder_jobs(&pool).await, 0);
     }
 
     #[sqlx::test(migrations = "../../migrations")]

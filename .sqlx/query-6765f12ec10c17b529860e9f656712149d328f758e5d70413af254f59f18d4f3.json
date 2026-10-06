@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT EXISTS (\n                SELECT 1 FROM renditions\n                WHERE workspace_id = $1 AND recording_id = $2 AND take_id = $3\n                  AND kind = 'hls' AND variant = 'master'\n            ) AS \"built!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "built!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "6765f12ec10c17b529860e9f656712149d328f758e5d70413af254f59f18d4f3"
+}

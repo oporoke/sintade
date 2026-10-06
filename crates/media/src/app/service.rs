@@ -23,7 +23,7 @@ use super::transcode::{
 };
 use crate::domain::hls::content_type as hls_content_type;
 use crate::domain::transcode::Mp4Plan;
-use crate::events::{ProcessingFailed, RecordingReady};
+use crate::events::{ProcessingFailed, RecordingReady, RenditionReady};
 
 /// The job kind that turns a finalized take into renditions (docs/design.md §10 Process).
 pub const PROCESS_TAKE: &str = "ProcessTake";
@@ -395,6 +395,22 @@ impl MediaService {
             }),
         )
         .await?;
+        self.outbox
+            .push(
+                &mut tx,
+                &RenditionReady {
+                    recording_id: job.recording_id,
+                    take_id: job.take_id,
+                    workspace_id: job.workspace_id,
+                    kind: "hls".to_string(),
+                    variants: ladder
+                        .rungs
+                        .iter()
+                        .map(|rung| rung.built.rung.name.to_string())
+                        .collect(),
+                },
+            )
+            .await?;
         tx.commit().await?;
         Ok(HlsOutcome::Built {
             rungs: ladder.rungs.len(),
@@ -636,6 +652,7 @@ const GAVE_UP: &str = "processing failed after several attempts";
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::RenditionReader;
     use crate::app::retry::{RetryError, RetryService};
     use crate::testing::MemoryStore;
 
@@ -1147,6 +1164,13 @@ mod tests {
         enqueue_fixture(&media, &store, &seeded, "real_chrome_vp9_opus_10s.webm").await;
 
         assert_eq!(run(&media, &seeded).await, ProcessOutcome::Ran);
+        // The ladder is lazy (Day 80): processing alone queues none and stores no HLS.
+        let ladder_jobs =
+            sqlx::query_scalar!(r#"SELECT count(*) AS "n!" FROM jobs WHERE kind = 'BuildHls'"#)
+                .fetch_one(&pool)
+                .await
+                .expect("jobs");
+        assert_eq!(ladder_jobs, 0);
 
         let (state, duration, width, height, size) = recording_row(&pool, &seeded).await;
         assert_eq!(state, "ready");
@@ -1501,6 +1525,19 @@ mod tests {
         assert_eq!(rows[1].meta["height"], 720);
         assert!(rows[1].size_bytes.expect("size") > 0);
 
+        // `RenditionReady` tells live status the ladder exists.
+        let ready = events(&pool, "RenditionReady").await;
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0]["data"]["kind"], "hls");
+        assert_eq!(
+            ready[0]["data"]["variants"],
+            serde_json::json!(["360p", "720p"])
+        );
+        assert_eq!(
+            ready[0]["data"]["recording_id"],
+            seeded.recording.to_string()
+        );
+
         // A rerun replaces; it doesn't pile up rows.
         media.build_hls(hls_request(&seeded)).await.expect("again");
         let count = sqlx::query_scalar!(
@@ -1565,5 +1602,68 @@ mod tests {
             jobs[0].payload["workspace_id"],
             seeded.workspace.to_string()
         );
+    }
+
+    /// The first view's request: nothing before processing is done, one job once it is, none
+    /// while that one is queued, none once the ladder exists.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn request_ladder_enqueues_once_and_only_when_needed(pool: PgPool) {
+        if !crate::testing::ffmpeg_available().await {
+            return;
+        }
+        let seeded = seed(&pool).await;
+        let (media, store) = service_with(&pool);
+        let reader = RenditionReader::new(pool.clone());
+        let jobs = |pool: PgPool| async move {
+            sqlx::query_scalar!(
+                r#"SELECT count(*) AS "n!" FROM jobs WHERE kind = 'BuildHls' AND done_at IS NULL"#
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("jobs")
+        };
+        enqueue_fixture(&media, &store, &seeded, "real_chrome_vp9_opus_10s.webm").await;
+        assert!(
+            !reader
+                .request_ladder(seeded.workspace, seeded.recording)
+                .await
+                .expect("early"),
+            "not processed yet"
+        );
+
+        assert_eq!(run(&media, &seeded).await, ProcessOutcome::Ran);
+        let other = WorkspaceId::new_v7();
+        assert!(
+            !reader
+                .request_ladder(other, seeded.recording)
+                .await
+                .expect("scoped")
+        );
+        assert!(
+            reader
+                .request_ladder(seeded.workspace, seeded.recording)
+                .await
+                .expect("first")
+        );
+        assert!(
+            !reader
+                .request_ladder(seeded.workspace, seeded.recording)
+                .await
+                .expect("again")
+        );
+        assert_eq!(jobs(pool.clone()).await, 1);
+
+        media.build_hls(hls_request(&seeded)).await.expect("hls");
+        sqlx::query!("UPDATE jobs SET done_at = now() WHERE kind = 'BuildHls'")
+            .execute(&pool)
+            .await
+            .expect("done");
+        assert!(
+            !reader
+                .request_ladder(seeded.workspace, seeded.recording)
+                .await
+                .expect("built")
+        );
+        assert_eq!(jobs(pool).await, 0);
     }
 }

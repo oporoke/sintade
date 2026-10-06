@@ -1,4 +1,6 @@
-use kernel::{RecordingId, WorkspaceId};
+use super::service::{BUILD_HLS, BuildHls};
+use kernel::{RecordingId, TakeId, WorkspaceId};
+use platform::JobQueue;
 use sqlx::PgPool;
 
 /// The original recording file, playable by most browsers while the MP4 is still being made.
@@ -98,4 +100,66 @@ impl RenditionReader {
             poster: find("thumbnail").map(|row| row.storage_key.clone()),
         }))
     }
+
+    /// The first view of a recording asks for its HLS ladder (docs/design.md §14: rungs only for
+    /// recordings viewed at least once). Enqueues `BuildHls` for the recording's processed take
+    /// unless it has a ladder already or one is queued. Returns whether a job was enqueued.
+    #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
+    pub async fn request_ladder(
+        &self,
+        workspace_id: WorkspaceId,
+        recording_id: RecordingId,
+    ) -> Result<bool, RequestLadderError> {
+        let take = sqlx::query_scalar!(
+            r#"
+            SELECT take_id FROM media_jobs
+            WHERE workspace_id = $1 AND recording_id = $2 AND state = 'done'
+            ORDER BY created_at DESC LIMIT 1
+            "#,
+            workspace_id.into_uuid(),
+            recording_id.into_uuid(),
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(take) = take else {
+            return Ok(false);
+        };
+        let built = sqlx::query_scalar!(
+            r#"
+            SELECT EXISTS (
+                SELECT 1 FROM renditions
+                WHERE workspace_id = $1 AND recording_id = $2 AND take_id = $3
+                  AND kind = 'hls' AND variant = 'master'
+            ) AS "built!"
+            "#,
+            workspace_id.into_uuid(),
+            recording_id.into_uuid(),
+            take,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if built {
+            return Ok(false);
+        }
+        let payload = serde_json::to_value(BuildHls {
+            take_id: TakeId::from_uuid(take),
+            workspace_id,
+        })?;
+        let queued = JobQueue::new(self.pool.clone())
+            .enqueue_unless_identical_pending(BUILD_HLS, payload)
+            .await?;
+        Ok(queued.is_some())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RequestLadderError {
+    #[error("database error: {0}")]
+    Database(#[from] sqlx::Error),
+
+    #[error(transparent)]
+    Queue(#[from] platform::JobQueueError),
+
+    #[error("could not encode the job: {0}")]
+    Encode(#[from] serde_json::Error),
 }

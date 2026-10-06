@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT take_id FROM media_jobs\n            WHERE workspace_id = $1 AND recording_id = $2 AND state = 'done'\n            ORDER BY created_at DESC LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "take_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "media_jobs",
+            "name": "take_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a731478e453f09c909a80a49765fe5265b7a3c6d3281308e9858b350271f374f"
+}

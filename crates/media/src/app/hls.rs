@@ -45,6 +45,9 @@ pub enum BuildHlsError {
     #[error(transparent)]
     Queue(#[from] platform::JobQueueError),
 
+    #[error(transparent)]
+    Outbox(#[from] platform::OutboxError),
+
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
 

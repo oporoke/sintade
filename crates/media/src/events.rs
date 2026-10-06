@@ -55,3 +55,30 @@ impl DomainEvent for ProcessingFailed {
         self.workspace_id
     }
 }
+
+/// A rendition other than the first MP4 now exists (the HLS ladder, later the sprite and
+/// captions): live status and the player pick it up from here (Day 82). Written in the same
+/// transaction as the rendition rows.
+#[derive(Debug, Clone, Serialize)]
+pub struct RenditionReady {
+    pub recording_id: RecordingId,
+    pub take_id: TakeId,
+    #[serde(skip)]
+    pub workspace_id: WorkspaceId,
+    /// The rendition kind: `hls`.
+    pub kind: String,
+    /// The rungs a ladder holds, lowest first; empty for a single-file rendition.
+    pub variants: Vec<String>,
+}
+
+impl DomainEvent for RenditionReady {
+    const EVENT_TYPE: &'static str = "RenditionReady";
+
+    fn aggregate_id(&self) -> uuid::Uuid {
+        self.recording_id.into_uuid()
+    }
+
+    fn workspace_id(&self) -> WorkspaceId {
+        self.workspace_id
+    }
+}
