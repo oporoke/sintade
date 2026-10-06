@@ -9,22 +9,27 @@ use sqlx::PgPool;
 
 use crate::domain::probe::ProbeRejection;
 use crate::domain::{
-    ChunkManifest, Container, ManifestChunk, ManifestError, mp4_key, poster_key,
+    ChunkManifest, Container, ManifestChunk, ManifestError, hls_prefix, mp4_key, poster_key,
     preview_content_type, source_key,
 };
 use crate::infra;
 use crate::infra::scratch::{ScratchDir, ScratchSpace};
-use crate::infra::source::{AssembleError, assemble_source};
+use crate::infra::source::{AssembleError, assemble_source, download_file};
 use crate::infra::tools::{MediaTools, ToolError};
 
+use super::hls::BuildHlsError;
 use super::transcode::{
     PosterReport, TranscodeError, TranscodeReport, make_poster, transcode_file,
 };
+use crate::domain::hls::content_type as hls_content_type;
 use crate::domain::transcode::Mp4Plan;
 use crate::events::{ProcessingFailed, RecordingReady};
 
 /// The job kind that turns a finalized take into renditions (docs/design.md §10 Process).
 pub const PROCESS_TAKE: &str = "ProcessTake";
+
+/// The job kind that cuts a recording's MP4 into the HLS ladder (docs/design.md §10 Process).
+pub const BUILD_HLS: &str = "BuildHls";
 
 /// `TakeFinalized` as media reads it from the outbox envelope (ingest's contract, ADR-0012).
 #[derive(Debug, Clone, Deserialize)]
@@ -48,6 +53,22 @@ pub struct TakeFinalizedData {
 pub struct ProcessTake {
     pub take_id: TakeId,
     pub workspace_id: WorkspaceId,
+}
+
+/// The `BuildHls` job's payload: which take; the MP4 it is cut from is the recording's.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct BuildHls {
+    pub take_id: TakeId,
+    pub workspace_id: WorkspaceId,
+}
+
+/// How a `BuildHls` run ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HlsOutcome {
+    /// The ladder is stored and recorded.
+    Built { rungs: usize },
+    /// No such take in this workspace.
+    NotFound,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -269,6 +290,115 @@ impl MediaService {
                 Err(error)
             }
         }
+    }
+
+    /// Enqueues `BuildHls` for a processed take.
+    #[tracing::instrument(skip_all, fields(take_id = %request.take_id, workspace_id = %request.workspace_id))]
+    pub async fn enqueue_hls(&self, request: BuildHls) -> Result<(), EnqueueError> {
+        JobQueue::new(self.pool.clone())
+            .enqueue(BUILD_HLS, serde_json::to_value(request)?)
+            .await?;
+        Ok(())
+    }
+
+    /// `BuildHls` (docs/design.md §10 Process): cuts the recording's stored MP4 into the
+    /// 360p/720p/1080p ladder (only the rungs its height reaches) in a scratch directory that
+    /// is removed afterwards, stores it under `hls/`, and records the master and each rung as
+    /// renditions. Playlists are stored last, so none ever lists an object that isn't there. A
+    /// rerun replaces what is stored.
+    #[tracing::instrument(skip_all, fields(take_id = %request.take_id, workspace_id = %request.workspace_id))]
+    pub async fn build_hls(&self, request: BuildHls) -> Result<HlsOutcome, BuildHlsError> {
+        let Some(job) = infra::find_job(&self.pool, request.take_id, request.workspace_id).await?
+        else {
+            return Ok(HlsOutcome::NotFound);
+        };
+        let scratch = self.scratch.create(job.take_id).await?;
+        let result = self.build_hls_in(&job, &scratch).await;
+        scratch.remove().await?;
+        result
+    }
+
+    async fn build_hls_in(
+        &self,
+        job: &infra::MediaJobRow,
+        scratch: &ScratchDir,
+    ) -> Result<HlsOutcome, BuildHlsError> {
+        let mp4 = scratch.file("default.mp4");
+        let key = mp4_key(job.workspace_id, job.recording_id);
+        if download_file(self.store.as_ref(), &key, &mp4)
+            .await?
+            .is_none()
+        {
+            return Err(BuildHlsError::NotReady);
+        }
+        let out = scratch.file("hls");
+        let expected_ms = u32::try_from(job.duration_ms).unwrap_or(0);
+        let ladder = super::hls::build_ladder(&self.tools, &mp4, &out, expected_ms).await?;
+
+        let prefix = hls_prefix(job.workspace_id, job.recording_id);
+        for rung in &ladder.rungs {
+            let name = rung.built.rung.name;
+            let files = std::iter::once("init.mp4".to_string())
+                .chain(rung.segments.iter().map(|segment| segment.file.clone()))
+                .chain(std::iter::once("index.m3u8".to_string()));
+            for file in files {
+                self.store
+                    .put_file(
+                        &format!("{prefix}/{name}/{file}"),
+                        &rung.dir.join(&file),
+                        hls_content_type(&file),
+                    )
+                    .await?;
+            }
+        }
+        let master_key = format!("{prefix}/master.m3u8");
+        let master_bytes = self
+            .store
+            .put_file(&master_key, &ladder.master, hls_content_type("master.m3u8"))
+            .await?;
+        tracing::info!(rungs = ladder.rungs.len(), key = %master_key, "HLS ladder stored");
+
+        let mut tx = self.pool.begin().await?;
+        for rung in &ladder.rungs {
+            let name = rung.built.rung.name;
+            infra::upsert_rendition(
+                &mut tx,
+                job.workspace_id,
+                job.recording_id,
+                job.take_id,
+                "hls",
+                name,
+                &format!("{prefix}/{name}/index.m3u8"),
+                i64::try_from(rung.bytes).unwrap_or(i64::MAX),
+                serde_json::json!({
+                    "width": rung.built.width,
+                    "height": rung.built.height,
+                    "segments": rung.segments.len(),
+                    "duration_ms": rung.duration_ms,
+                    "average_bps": rung.built.average_bps,
+                    "peak_bps": rung.built.peak_bps,
+                }),
+            )
+            .await?;
+        }
+        infra::upsert_rendition(
+            &mut tx,
+            job.workspace_id,
+            job.recording_id,
+            job.take_id,
+            "hls",
+            "master",
+            &master_key,
+            i64::try_from(master_bytes).unwrap_or(i64::MAX),
+            serde_json::json!({
+                "rungs": ladder.rungs.iter().map(|rung| rung.built.rung.name).collect::<Vec<_>>(),
+            }),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(HlsOutcome::Built {
+            rungs: ladder.rungs.len(),
+        })
     }
 
     async fn run_in_scratch(&self, job: &infra::MediaJobRow) -> Result<Produced, StepError> {
@@ -1287,5 +1417,153 @@ mod tests {
         // The poster, the MP4 and (stored first, so a viewer could preview it) the source.
         assert_eq!(renditions, 3);
         assert!(scratch_is_empty(&media).await);
+    }
+    fn hls_request(seeded: &Seeded) -> BuildHls {
+        BuildHls {
+            take_id: seeded.take,
+            workspace_id: seeded.workspace,
+        }
+    }
+
+    /// Day 79's Check: a processed recording gets its ladder stored and recorded, and what is
+    /// stored validates with ffprobe.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn build_hls_stores_the_ladder_and_records_it(pool: PgPool) {
+        if !crate::testing::ffmpeg_available().await {
+            return;
+        }
+        let seeded = seed(&pool).await;
+        let (media, store) = service_with(&pool);
+        enqueue_fixture(&media, &store, &seeded, "real_chrome_vp9_opus_10s.webm").await;
+        assert_eq!(run(&media, &seeded).await, ProcessOutcome::Ran);
+
+        let outcome = media.build_hls(hls_request(&seeded)).await.expect("hls");
+        assert_eq!(outcome, HlsOutcome::Built { rungs: 2 });
+        assert!(scratch_is_empty(&media).await);
+
+        let prefix = format!("ws/{}/rec/{}/hls", seeded.workspace, seeded.recording);
+        let master = store
+            .bytes(&format!("{prefix}/master.m3u8"))
+            .expect("master");
+        let master = String::from_utf8(master).expect("text");
+        assert!(master.contains("360p/index.m3u8") && master.contains("720p/index.m3u8"));
+        assert!(
+            !master.contains("1080p"),
+            "a 720p recording has no 1080p rung"
+        );
+        for (key, content_type) in [
+            ("master.m3u8", "application/vnd.apple.mpegurl"),
+            ("720p/index.m3u8", "application/vnd.apple.mpegurl"),
+            ("720p/init.mp4", "video/mp4"),
+            ("720p/seg_0000.m4s", "video/iso.segment"),
+            ("360p/seg_0000.m4s", "video/iso.segment"),
+        ] {
+            assert_eq!(
+                store.content_type(&format!("{prefix}/{key}")).as_deref(),
+                Some(content_type),
+                "{key}"
+            );
+        }
+
+        // Every object the playlists name is in storage.
+        for rung in ["360p", "720p"] {
+            let playlist = store
+                .bytes(&format!("{prefix}/{rung}/index.m3u8"))
+                .expect("rung");
+            let playlist = String::from_utf8(playlist).expect("text");
+            let segments = crate::domain::hls::parse_playlist(&playlist).expect("playlist");
+            assert!(segments.len() >= 2);
+            for segment in segments {
+                assert!(
+                    store
+                        .bytes(&format!("{prefix}/{rung}/{}", segment.file))
+                        .is_some(),
+                    "{rung}/{}",
+                    segment.file
+                );
+            }
+        }
+
+        let rows = sqlx::query!(
+            r#"SELECT variant, storage_key, size_bytes, meta FROM renditions
+               WHERE recording_id = $1 AND workspace_id = $2 AND kind = 'hls'
+               ORDER BY variant"#,
+            seeded.recording.into_uuid(),
+            seeded.workspace.into_uuid()
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("renditions");
+        let variants: Vec<&str> = rows.iter().map(|row| row.variant.as_str()).collect();
+        assert_eq!(variants, ["360p", "720p", "master"]);
+        assert_eq!(rows[2].storage_key, format!("{prefix}/master.m3u8"));
+        assert_eq!(rows[1].storage_key, format!("{prefix}/720p/index.m3u8"));
+        assert_eq!(rows[1].meta["height"], 720);
+        assert!(rows[1].size_bytes.expect("size") > 0);
+
+        // A rerun replaces; it doesn't pile up rows.
+        media.build_hls(hls_request(&seeded)).await.expect("again");
+        let count = sqlx::query_scalar!(
+            r#"SELECT count(*) AS "n!" FROM renditions WHERE recording_id = $1 AND kind = 'hls'"#,
+            seeded.recording.into_uuid()
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(count, 3);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn build_hls_waits_for_the_mp4_and_stays_in_its_workspace(pool: PgPool) {
+        let seeded = seed(&pool).await;
+        let (media, store) = service_with(&pool);
+        let message = message(&seeded, 1);
+        store.insert(&message.data.chunks[0].key, vec![1]);
+        media.enqueue_processing(message).await.expect("enqueue");
+
+        // Not processed yet: no MP4 to cut, so the job fails and is retried later.
+        let error = media
+            .build_hls(hls_request(&seeded))
+            .await
+            .expect_err("not ready");
+        assert!(matches!(error, BuildHlsError::NotReady), "{error}");
+        assert!(scratch_is_empty(&media).await);
+
+        // Another workspace's id finds nothing, whatever take it names.
+        let other = BuildHls {
+            take_id: seeded.take,
+            workspace_id: WorkspaceId::new_v7(),
+        };
+        assert_eq!(
+            media.build_hls(other).await.expect("scoped"),
+            HlsOutcome::NotFound
+        );
+        let nothing =
+            sqlx::query_scalar!(r#"SELECT count(*) AS "n!" FROM renditions WHERE kind = 'hls'"#)
+                .fetch_one(&pool)
+                .await
+                .expect("count");
+        assert_eq!(nothing, 0);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn enqueue_hls_adds_one_build_hls_job(pool: PgPool) {
+        let seeded = seed(&pool).await;
+        let media = service(&pool);
+        media
+            .enqueue_hls(hls_request(&seeded))
+            .await
+            .expect("enqueue");
+        let jobs =
+            sqlx::query!(r#"SELECT payload FROM jobs WHERE kind = 'BuildHls' AND done_at IS NULL"#)
+                .fetch_all(&pool)
+                .await
+                .expect("jobs");
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].payload["take_id"], seeded.take.to_string());
+        assert_eq!(
+            jobs[0].payload["workspace_id"],
+            seeded.workspace.to_string()
+        );
     }
 }

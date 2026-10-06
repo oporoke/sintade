@@ -8,9 +8,10 @@ mod infra;
 mod testing;
 
 pub use app::{
-    EnqueueError, MediaService, PROCESS_TAKE, PlaybackKeys, ProcessError, ProcessOutcome,
-    ProcessTake, RenditionReader, RetryError, RetryService, SourceKey, TakeFinalizedData,
-    TakeFinalizedMessage, TranscodeError, TranscodeReport, transcode_file,
+    BUILD_HLS, BuildHls, BuildHlsError, EnqueueError, HlsError, HlsOutcome, MediaService,
+    PROCESS_TAKE, PlaybackKeys, ProcessError, ProcessOutcome, ProcessTake, RenditionReader,
+    RetryError, RetryService, SourceKey, TakeFinalizedData, TakeFinalizedMessage, TranscodeError,
+    TranscodeReport, transcode_file,
 };
 pub use domain::probe::SourceInfo;
 pub use domain::transcode::Mp4Plan;

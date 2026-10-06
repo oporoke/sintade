@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use handler::{HandlerRegistry, JobCtx, JobHandler};
+use handlers::build_hls::BuildHlsHandler;
 use handlers::noop::NoopHandler;
 use handlers::ops_watchdog::OpsWatchdogHandler;
 use handlers::process_take::ProcessTakeHandler;
@@ -212,14 +213,18 @@ async fn run_job_loop(
     registry.register(NoopHandler);
     registry.register(SendEmailHandler::new(mailer));
     registry.register(SweepStaleUploadsHandler::new(ingest));
-    registry.register(ProcessTakeHandler::new(media));
+    registry.register(ProcessTakeHandler::new(media.clone()));
+    registry.register(BuildHlsHandler::new(media));
     registry.register(PurgeRecordingHandler::new(recordings));
     registry.register(watchdog);
     let registry = Arc::new(registry);
-    let limits = KindLimits::new().limit(
-        ProcessTakeHandler::KIND,
-        process_take_concurrency.min(concurrency),
-    );
+    // One ladder at a time: it is three encodes, and it must not starve `ProcessTake`.
+    let limits = KindLimits::new()
+        .limit(
+            ProcessTakeHandler::KIND,
+            process_take_concurrency.min(concurrency),
+        )
+        .limit(BuildHlsHandler::KIND, 1);
     tracing::info!(concurrency, process_take_concurrency, "job slots");
 
     let mut slots = tokio::task::JoinSet::new();

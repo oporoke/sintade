@@ -1,3 +1,4 @@
+pub mod build_hls;
 pub mod noop;
 pub mod ops_watchdog;
 pub mod process_take;

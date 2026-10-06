@@ -87,3 +87,18 @@ pub async fn assemble_source(
     out.into_inner().sync_all().await?;
     Ok(total)
 }
+
+/// Streams the object at `key` into `target`. `None` if storage doesn't have it.
+pub async fn download_file(
+    store: &dyn ObjectStore,
+    key: &str,
+    target: &Path,
+) -> Result<Option<u64>, AssembleError> {
+    let Some(mut reader) = store.get(key).await? else {
+        return Ok(None);
+    };
+    let mut file = tokio::fs::File::create(target).await?;
+    let bytes = tokio::io::copy(&mut reader, &mut file).await?;
+    file.flush().await?;
+    Ok(Some(bytes))
+}
