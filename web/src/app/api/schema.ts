@@ -375,6 +375,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/s/{slug}/hls/master.m3u8": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The master playlist of the recording's adaptive ladder. It names each rung relatively, so
+         *     the player asks this API for each rung's playlist next.
+         */
+        get: operations["hls_master"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/s/{slug}/hls/{rung}/index.m3u8": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One rung's playlist, its init and media segments signed for 15 minutes. */
+        get: operations["hls_rung"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/s/{slug}/playback": {
         parameters: {
             query?: never;
@@ -669,6 +706,12 @@ export interface components {
              * @description Seconds the URLs stay valid (900).
              */
             expires_in_s: number;
+            /**
+             * @description The adaptive (HLS) master playlist, once the recording's ladder is built: same-origin,
+             *     with signed segments behind it. Absent before that (the first view asks for the ladder),
+             *     when `url` is the one to play.
+             */
+            hls_url?: string | null;
             kind: components["schemas"]["PlaybackKind"];
             poster_url?: string | null;
             /** @description A signed URL for the video. */
@@ -1911,6 +1954,90 @@ export interface operations {
                 };
             };
             /** @description No such live link, or not for this viewer */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    hls_master: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The link's slug */
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description An HLS master playlist */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.apple.mpegurl": string;
+                };
+            };
+            /** @description Sign in to watch this link */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such live link, not for this viewer, or no ladder yet */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    hls_rung: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The link's slug */
+                slug: string;
+                /** @description `360p`, `720p` or `1080p` */
+                rung: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description An HLS media playlist with signed segment URLs */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.apple.mpegurl": string;
+                };
+            };
+            /** @description Sign in to watch this link */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such live link, not for this viewer, or no such rung */
             404: {
                 headers: {
                     [name: string]: unknown;

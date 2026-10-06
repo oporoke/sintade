@@ -67,6 +67,10 @@ pub struct PlaybackResponse {
     /// can't play it should keep showing the processing notice.
     pub content_type: String,
     pub poster_url: Option<String>,
+    /// The adaptive (HLS) master playlist, once the recording's ladder is built: same-origin,
+    /// with signed segments behind it. Absent before that (the first view asks for the ladder),
+    /// when `url` is the one to play.
+    pub hls_url: Option<String>,
     /// Seconds the URLs stay valid (900).
     pub expires_in_s: u64,
     pub duration_ms: Option<u32>,
@@ -263,9 +267,26 @@ pub async fn playback(
                 "this recording is still being processed".to_string(),
             ))
         })?;
+    let hls_url = match (
+        grant.kind,
+        state
+            .delivery
+            .has_ladder(resolved.workspace_id, resolved.recording_id)
+            .await,
+    ) {
+        (delivery::PlaybackKind::Mp4, Ok(true)) => {
+            Some(format!("/api/v1/s/{slug}/hls/master.m3u8"))
+        }
+        (_, Err(error)) => {
+            tracing::warn!(%error, "playback: could not look up the HLS ladder");
+            None
+        }
+        _ => None,
+    };
     Ok(no_store((
         StatusCode::OK,
         Json(PlaybackResponse {
+            hls_url,
             kind: match grant.kind {
                 delivery::PlaybackKind::Mp4 => PlaybackKind::Mp4,
                 delivery::PlaybackKind::Preview => PlaybackKind::Preview,
@@ -280,6 +301,98 @@ pub async fn playback(
                 .and_then(|v| u32::try_from(v).ok()),
         }),
     )))
+}
+
+const HLS_CONTENT_TYPE: &str = "application/vnd.apple.mpegurl";
+
+fn playlist_response(playlist: String) -> Response {
+    no_store((
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, HLS_CONTENT_TYPE)],
+        playlist,
+    ))
+}
+
+/// Resolves the link and requires that this viewer may watch: `404` when hidden, `401` when a
+/// login is needed.
+async fn admitted(
+    state: &AppState,
+    session: &MaybeSession,
+    slug: &str,
+) -> Result<Resolved, ApiError> {
+    let resolved = resolve(state, session, slug).await?;
+    match resolved.decision {
+        Decision::Hidden => Err(AppError::NotFound.into()),
+        Decision::LoginRequired => {
+            Err(AppError::Unauthorized("sign in to watch this recording".to_string()).into())
+        }
+        Decision::Allow => Ok(resolved),
+    }
+}
+
+fn internal(error: delivery::DeliveryError) -> ApiError {
+    tracing::error!(%error, "hls: could not serve a playlist");
+    ApiError::from(AppError::Internal("playback unavailable".to_string()))
+}
+
+/// The master playlist of the recording's adaptive ladder. It names each rung relatively, so
+/// the player asks this API for each rung's playlist next.
+#[utoipa::path(
+    get,
+    path = "/api/v1/s/{slug}/hls/master.m3u8",
+    tag = "watch",
+    params(("slug" = String, Path, description = "The link's slug")),
+    responses(
+        (status = 200, description = "An HLS master playlist", content_type = "application/vnd.apple.mpegurl", body = String),
+        (status = 401, description = "Sign in to watch this link", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such live link, not for this viewer, or no ladder yet", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+#[tracing::instrument(skip_all)]
+pub async fn hls_master(
+    State(state): State<AppState>,
+    session: MaybeSession,
+    Path(slug): Path<String>,
+) -> Result<Response, ApiError> {
+    let resolved = admitted(&state, &session, &slug).await?;
+    let playlist = state
+        .delivery
+        .hls_master(resolved.workspace_id, resolved.recording_id)
+        .await
+        .map_err(internal)?
+        .ok_or(AppError::NotFound)?;
+    Ok(playlist_response(playlist))
+}
+
+/// One rung's playlist, its init and media segments signed for 15 minutes.
+#[utoipa::path(
+    get,
+    path = "/api/v1/s/{slug}/hls/{rung}/index.m3u8",
+    tag = "watch",
+    params(
+        ("slug" = String, Path, description = "The link's slug"),
+        ("rung" = String, Path, description = "`360p`, `720p` or `1080p`"),
+    ),
+    responses(
+        (status = 200, description = "An HLS media playlist with signed segment URLs", content_type = "application/vnd.apple.mpegurl", body = String),
+        (status = 401, description = "Sign in to watch this link", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such live link, not for this viewer, or no such rung", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+#[tracing::instrument(skip_all)]
+pub async fn hls_rung(
+    State(state): State<AppState>,
+    session: MaybeSession,
+    Path((slug, rung)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
+    let resolved = admitted(&state, &session, &slug).await?;
+    let playlist = state
+        .delivery
+        .hls_rung(resolved.workspace_id, resolved.recording_id, &rung)
+        .await
+        .map_err(internal)?
+        .ok_or(AppError::NotFound)?;
+    Ok(playlist_response(playlist))
 }
 
 /// Live status of the recording behind a share link, for a viewer the link admits: the watch
@@ -397,7 +510,7 @@ mod tests {
     use axum::http::{Method, StatusCode};
     use sqlx::PgPool;
 
-    use crate::routes::testkit::{call, caller, link, recording, renditions, source_only};
+    use crate::routes::testkit::{call, caller, ladder, link, recording, renditions, source_only};
 
     fn watch_uri(slug: &str) -> String {
         format!("/api/v1/s/{slug}")
@@ -413,6 +526,96 @@ mod tests {
         let id = recording(pool, &owner, "ready").await;
         renditions(pool, &owner, id).await;
         (owner, id)
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_built_ladder_is_offered_and_its_segments_are_signed(pool: PgPool) {
+        let (owner, id) = ready(&pool).await;
+        let (slug, _) = link(&pool, &owner, id, "link").await;
+        let hls = format!("/api/v1/s/{slug}/hls");
+
+        // No ladder yet: nothing offered, and the playlists are 404.
+        let before = call(&pool, None, Method::GET, &playback_uri(&slug), None).await;
+        assert_eq!(before.body["hls_url"], serde_json::Value::Null);
+        let none = call(
+            &pool,
+            None,
+            Method::GET,
+            &format!("{hls}/master.m3u8"),
+            None,
+        )
+        .await;
+        assert_eq!(none.status, StatusCode::NOT_FOUND);
+
+        ladder(&pool, owner.workspace_id, id).await;
+        let play = call(&pool, None, Method::GET, &playback_uri(&slug), None).await;
+        assert_eq!(play.body["hls_url"], format!("{hls}/master.m3u8"));
+
+        let master = call(
+            &pool,
+            None,
+            Method::GET,
+            &format!("{hls}/master.m3u8"),
+            None,
+        )
+        .await;
+        assert_eq!(master.status, StatusCode::OK);
+        assert_eq!(
+            master.content_type.as_deref(),
+            Some("application/vnd.apple.mpegurl")
+        );
+        assert!(
+            master.text.contains("\n720p/index.m3u8\n"),
+            "{}",
+            master.text
+        );
+
+        let rung = call(
+            &pool,
+            None,
+            Method::GET,
+            &format!("{hls}/720p/index.m3u8"),
+            None,
+        )
+        .await;
+        assert_eq!(rung.status, StatusCode::OK, "{}", rung.text);
+        assert!(rung.text.contains("URI=\"http"), "{}", rung.text);
+        assert!(rung.text.contains("X-Amz-Signature="), "{}", rung.text);
+        assert!(!rung.text.contains("\nseg_0000.m4s"), "{}", rung.text);
+        assert_eq!(rung.cache_control.as_deref(), Some("no-store"));
+
+        // A rung that isn't in the ladder, or isn't a rung at all.
+        for bad in ["480p", "..", "master"] {
+            let reply = call(
+                &pool,
+                None,
+                Method::GET,
+                &format!("{hls}/{bad}/index.m3u8"),
+                None,
+            )
+            .await;
+            assert_eq!(reply.status, StatusCode::NOT_FOUND, "{bad}");
+        }
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_private_links_ladder_is_404_to_everyone_but_the_owner(pool: PgPool) {
+        let (owner, id) = ready(&pool).await;
+        ladder(&pool, owner.workspace_id, id).await;
+        let (slug, _) = link(&pool, &owner, id, "private").await;
+        let hls = format!("/api/v1/s/{slug}/hls");
+        for uri in [
+            format!("{hls}/master.m3u8"),
+            format!("{hls}/720p/index.m3u8"),
+        ] {
+            let anon = call(&pool, None, Method::GET, &uri, None).await;
+            assert_eq!(anon.status, StatusCode::NOT_FOUND, "{uri}");
+            let other = caller(&pool).await;
+            let stranger = call(&pool, Some(&other), Method::GET, &uri, None).await;
+            assert_eq!(stranger.status, StatusCode::NOT_FOUND, "{uri}");
+            let own = call(&pool, Some(&owner), Method::GET, &uri, None).await;
+            assert_eq!(own.status, StatusCode::OK, "{uri}");
+        }
     }
 
     #[sqlx::test(migrations = "../../migrations")]

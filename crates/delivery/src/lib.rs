@@ -4,6 +4,7 @@
 //! Stateless; the caller has already decided the viewer may watch (`sharing::decide`).
 
 mod filename;
+mod hls;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -162,6 +163,93 @@ impl DeliveryService {
             urls.insert(recording_id, url);
         }
         Ok(urls)
+    }
+
+    /// Whether the recording's HLS ladder exists yet (it is built after the first view).
+    #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
+    pub async fn has_ladder(
+        &self,
+        workspace_id: WorkspaceId,
+        recording_id: RecordingId,
+    ) -> Result<bool, DeliveryError> {
+        Ok(self
+            .renditions
+            .hls_prefix(workspace_id, recording_id)
+            .await?
+            .is_some())
+    }
+
+    /// The master playlist, as stored: it names each rung relatively. `None` before the ladder
+    /// exists.
+    #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
+    pub async fn hls_master(
+        &self,
+        workspace_id: WorkspaceId,
+        recording_id: RecordingId,
+    ) -> Result<Option<String>, DeliveryError> {
+        let Some(prefix) = self
+            .renditions
+            .hls_prefix(workspace_id, recording_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        self.read_playlist(&format!("{prefix}/master.m3u8")).await
+    }
+
+    /// One rung's playlist with every segment (and the init segment) signed for 15 minutes.
+    /// `None` for an unknown rung or before the ladder exists.
+    #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
+    pub async fn hls_rung(
+        &self,
+        workspace_id: WorkspaceId,
+        recording_id: RecordingId,
+        rung: &str,
+    ) -> Result<Option<String>, DeliveryError> {
+        if !hls::RUNGS.contains(&rung) {
+            return Ok(None);
+        }
+        let Some(prefix) = self
+            .renditions
+            .hls_prefix(workspace_id, recording_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(playlist) = self
+            .read_playlist(&format!("{prefix}/{rung}/index.m3u8"))
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(files) = hls::referenced_files(&playlist) else {
+            tracing::error!("hls: a stored playlist references a path");
+            return Ok(None);
+        };
+        let mut urls = std::collections::HashMap::new();
+        for file in files {
+            if let std::collections::hash_map::Entry::Vacant(entry) = urls.entry(file) {
+                let key = format!("{prefix}/{rung}/{}", entry.key());
+                let url = self.store.presign_get(&key, GRANT_TTL).await?.to_string();
+                entry.insert(url);
+            }
+        }
+        Ok(Some(hls::rewrite(&playlist, &urls)))
+    }
+
+    /// A playlist is small; anything past 1 MiB is not one.
+    async fn read_playlist(&self, key: &str) -> Result<Option<String>, DeliveryError> {
+        use tokio::io::AsyncReadExt;
+        let Some(reader) = self.store.get(key).await? else {
+            return Ok(None);
+        };
+        let mut bytes = Vec::new();
+        reader
+            .take(1024 * 1024)
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|error| StorageError::Request(error.to_string()))?;
+        Ok(String::from_utf8(bytes).ok())
     }
 
     /// Just the poster URL (a watch page for a recording that is still processing has none yet).

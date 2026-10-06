@@ -161,6 +161,18 @@ pub fn table() -> Vec<Route> {
         ),
         Route::new(
             Method::GET,
+            "/api/v1/s/{slug}/hls/master.m3u8",
+            Viewer,
+            watch::hls_master,
+        ),
+        Route::new(
+            Method::GET,
+            "/api/v1/s/{slug}/hls/{rung}/index.m3u8",
+            Viewer,
+            watch::hls_rung,
+        ),
+        Route::new(
+            Method::GET,
             "/api/v1/recordings",
             Workspace,
             recordings::list_recordings,

@@ -4,6 +4,7 @@ import {
   ElementRef,
   DestroyRef,
   OnInit,
+  effect,
   inject,
   signal,
   viewChild,
@@ -14,6 +15,7 @@ import { Subscription } from 'rxjs';
 import { STATUS_STREAM } from '../../core/status-stream.service';
 import { PlaybackData, WatchApi, WatchData, WatchHttpError } from '../../core/watch-api.service';
 import { formatDuration } from '../recorder/format';
+import { QualityLevel, VideoPlayer } from './hls-player';
 import { PLAYBACK_SPEEDS, keyAction, seekTarget } from './player-keys';
 
 /** How soon a recording that is still processing is checked again (docs/design.md §10 Watch). */
@@ -139,7 +141,6 @@ type View =
             controls
             playsinline
             preload="auto"
-            [src]="page.playback.url"
             [attr.poster]="page.playback.poster_url"
             (loadeddata)="onFirstFrame()"
             (loadedmetadata)="onMetadata()"
@@ -158,6 +159,28 @@ type View =
                 }
               </select>
             </label>
+            @if (levels().length > 1) {
+              <label>
+                <span i18n>Quality</span>
+                <select
+                  data-testid="watch-quality"
+                  [attr.data-current-height]="currentHeight()"
+                  (change)="setQuality($any($event.target).value)"
+                >
+                  <option value="-1" [selected]="quality() === -1" i18n>
+                    Auto
+                    @if (quality() === -1 && currentHeight()) {
+                      ({{ currentHeight() }}p)
+                    }
+                  </option>
+                  @for (level of levels(); track level.index) {
+                    <option [value]="level.index" [selected]="quality() === level.index">
+                      {{ level.height }}p
+                    </option>
+                  }
+                </select>
+              </label>
+            }
             <button type="button" data-testid="watch-fullscreen" (click)="toggleFullscreen()" i18n>
               Fullscreen
             </button>
@@ -190,6 +213,12 @@ export class WatchPage implements OnInit {
   /** Milliseconds from opening the page to the first decoded frame (`loadeddata`). */
   protected readonly firstFrameMs = signal<number | null>(null);
   protected readonly downloadError = signal(false);
+  /** The ladder's rungs when the page plays adaptively; empty for a plain MP4. */
+  protected readonly levels = signal<QualityLevel[]>([]);
+  /** The chosen rung's index, or -1 for Auto. */
+  protected readonly quality = signal(-1);
+  /** The height of the rung on screen. */
+  protected readonly currentHeight = signal<number | null>(null);
 
   private readonly video = viewChild<ElementRef<HTMLVideoElement>>('video');
   private readonly player = viewChild<ElementRef<HTMLElement>>('player');
@@ -205,12 +234,64 @@ export class WatchPage implements OnInit {
   /** Where the video was when it was switched to the MP4. */
   private resume: { at: number; play: boolean } | null = null;
 
+  private videoPlayer: VideoPlayer | null = null;
+  /** The grant the video element is currently set up for. */
+  private mounted: PlaybackData | null = null;
+
   protected current() {
     return this.view();
   }
 
   constructor() {
-    this.destroyRef.onDestroy(() => this.stopPolling());
+    this.destroyRef.onDestroy(() => {
+      this.stopPolling();
+      this.videoPlayer?.destroy();
+    });
+    // Hands the video element its source whenever the page has a new grant to play.
+    effect(() => {
+      const view = this.view();
+      const video = this.video()?.nativeElement;
+      if (view.kind !== 'ready' || !video || this.mounted === view.playback) {
+        return;
+      }
+      this.mount(video, view.playback);
+    });
+  }
+
+  private mount(video: HTMLVideoElement, playback: PlaybackData): void {
+    this.mounted = playback;
+    this.videoPlayer?.destroy();
+    this.videoPlayer = null;
+    this.levels.set([]);
+    this.quality.set(-1);
+    this.currentHeight.set(null);
+    void VideoPlayer.start(
+      video,
+      { hlsUrl: playback.hls_url, url: playback.url },
+      {
+        levels: (levels) => this.levels.set(levels),
+        switched: (height) => this.currentHeight.set(height),
+        fellBack: () => {
+          this.levels.set([]);
+          this.currentHeight.set(null);
+        },
+      },
+    ).then((player) => {
+      if (this.mounted === playback) {
+        this.videoPlayer = player;
+      } else {
+        player.destroy();
+      }
+    });
+  }
+
+  protected setQuality(raw: string): void {
+    const index = Number(raw);
+    if (!Number.isInteger(index)) {
+      return;
+    }
+    this.quality.set(index);
+    this.videoPlayer?.setLevel(index);
   }
 
   ngOnInit(): void {

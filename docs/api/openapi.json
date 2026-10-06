@@ -1349,6 +1349,119 @@
         }
       }
     },
+    "/api/v1/s/{slug}/hls/master.m3u8": {
+      "get": {
+        "tags": [
+          "watch"
+        ],
+        "summary": "The master playlist of the recording's adaptive ladder. It names each rung relatively, so\nthe player asks this API for each rung's playlist next.",
+        "operationId": "hls_master",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "description": "The link's slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "An HLS master playlist",
+            "content": {
+              "application/vnd.apple.mpegurl": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in to watch this link",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such live link, not for this viewer, or no ladder yet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/s/{slug}/hls/{rung}/index.m3u8": {
+      "get": {
+        "tags": [
+          "watch"
+        ],
+        "summary": "One rung's playlist, its init and media segments signed for 15 minutes.",
+        "operationId": "hls_rung",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "description": "The link's slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rung",
+            "in": "path",
+            "description": "`360p`, `720p` or `1080p`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "An HLS media playlist with signed segment URLs",
+            "content": {
+              "application/vnd.apple.mpegurl": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in to watch this link",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such live link, not for this viewer, or no such rung",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/s/{slug}/playback": {
       "get": {
         "tags": [
@@ -2249,6 +2362,13 @@
             "format": "int64",
             "description": "Seconds the URLs stay valid (900).",
             "minimum": 0
+          },
+          "hls_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The adaptive (HLS) master playlist, once the recording's ladder is built: same-origin,\nwith signed segments behind it. Absent before that (the first view asks for the ladder),\nwhen `url` is the one to play."
           },
           "kind": {
             "$ref": "#/components/schemas/PlaybackKind"

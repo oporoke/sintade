@@ -18,7 +18,10 @@ use crate::routes::takes::{
     __path_ack_chunk, __path_finalize_take, __path_presign_chunks, __path_take_status,
 };
 use crate::routes::verify_email::__path_verify_email;
-use crate::routes::watch::{__path_download, __path_events, __path_playback, __path_watch};
+use crate::routes::watch::{
+    __path_download, __path_events, __path_hls_master, __path_hls_rung, __path_playback,
+    __path_watch,
+};
 
 /// The API contract. `api openapi` prints it; `just openapi` writes it to
 /// `docs/api/openapi.json` and generates `web/src/app/api/schema.ts` from it.
@@ -49,6 +52,8 @@ use crate::routes::watch::{__path_download, __path_events, __path_playback, __pa
         revoke_link,
         watch,
         playback,
+        hls_master,
+        hls_rung,
         events,
         recording_events,
         download,

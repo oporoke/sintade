@@ -101,6 +101,29 @@ impl RenditionReader {
         }))
     }
 
+    /// The storage prefix of the recording's HLS ladder (the master playlist is `master.m3u8`
+    /// under it), once the ladder is built; `None` before that.
+    #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
+    pub async fn hls_prefix(
+        &self,
+        workspace_id: WorkspaceId,
+        recording_id: RecordingId,
+    ) -> Result<Option<String>, sqlx::Error> {
+        let key = sqlx::query_scalar!(
+            r#"
+            SELECT storage_key FROM renditions
+            WHERE workspace_id = $1 AND recording_id = $2
+              AND kind = 'hls' AND variant = 'master'
+            ORDER BY created_at DESC LIMIT 1
+            "#,
+            workspace_id.into_uuid(),
+            recording_id.into_uuid(),
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(key.and_then(|key| key.strip_suffix("/master.m3u8").map(str::to_string)))
+    }
+
     /// Which renditions the recording has, as `(kind, variant)`: what live status reports.
     #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
     pub async fn available(

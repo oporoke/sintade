@@ -890,7 +890,9 @@ async fn viewer_routes_hide_private_links_from_other_tenants(pool: PgPool) {
     let app = app(&pool);
     let alice = tenant(&pool, "a").await;
     let bob = tenant(&pool, "b").await;
-    let (_, link_id) = link_in(&pool, alice.workspace_id).await;
+    let (recording_id, link_id) = link_in(&pool, alice.workspace_id).await;
+    // The playlist routes need a ladder to let even the owner through.
+    crate::routes::testkit::ladder(&pool, alice.workspace_id, recording_id).await;
     let slug = sqlx::query_scalar!(
         "UPDATE share_links SET visibility = 'private' WHERE id = $1 RETURNING slug",
         link_id.into_uuid()
@@ -909,7 +911,12 @@ async fn viewer_routes_hide_private_links_from_other_tenants(pool: PgPool) {
         let request = || {
             Request::builder()
                 .method(route.method.clone())
-                .uri(route.path.replace("{slug}", &slug))
+                .uri(
+                    route
+                        .path
+                        .replace("{slug}", &slug)
+                        .replace("{rung}", "720p"),
+                )
                 .body(Body::empty())
                 .expect("valid request")
         };

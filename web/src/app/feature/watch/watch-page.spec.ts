@@ -1,10 +1,38 @@
-import { TestBed } from '@angular/core/testing';
+import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
 
 import { Subject } from 'rxjs';
 
 import { RecordingStatus, STATUS_STREAM } from '../../core/status-stream.service';
 import { PlaybackData, WatchApi, WatchData, WatchHttpError } from '../../core/watch-api.service';
+import { vi } from 'vitest';
+
+const hlsFake = vi.hoisted(() => {
+  const instances: {
+    handlers: Map<string, (event: string, data: unknown) => void>;
+    nextLevel: number;
+  }[] = [];
+  class FakeHls {
+    static Events = { MANIFEST_PARSED: 'manifest', LEVEL_SWITCHED: 'switched', ERROR: 'error' };
+    static ErrorTypes = { NETWORK_ERROR: 'network', MEDIA_ERROR: 'media' };
+    static isSupported = () => true;
+    handlers = new Map<string, (event: string, data: unknown) => void>();
+    levels = [{ height: 360 }, { height: 720 }];
+    nextLevel = -1;
+    loadSource = vi.fn();
+    attachMedia = vi.fn();
+    destroy = vi.fn();
+    constructor() {
+      instances.push(this);
+    }
+    on(event: string, handler: (event: string, data: unknown) => void) {
+      this.handlers.set(event, handler);
+    }
+  }
+  return { instances, FakeHls };
+});
+vi.mock('hls.js', () => ({ default: hlsFake.FakeHls }));
+
 import { STATUS_POLL_MAX_MS, STATUS_POLL_MS, WatchPage, pollDelay } from './watch-page';
 
 const READY: WatchData = {
@@ -28,6 +56,8 @@ const PLAYBACK: PlaybackData = {
   duration_ms: 65_000,
 };
 
+let lastFixture: ComponentFixture<WatchPage>;
+
 async function open(api: Partial<WatchApi>) {
   TestBed.configureTestingModule({
     imports: [WatchPage],
@@ -41,6 +71,7 @@ async function open(api: Partial<WatchApi>) {
     ],
   });
   const fixture = TestBed.createComponent(WatchPage);
+  lastFixture = fixture;
   fixture.detectChanges();
   await fixture.whenStable();
   await new Promise((resolve) => setTimeout(resolve));
@@ -51,6 +82,37 @@ async function open(api: Partial<WatchApi>) {
 const q = (root: HTMLElement, id: string) => root.querySelector(`[data-testid="${id}"]`);
 
 describe('WatchPage', () => {
+  it('plays the ladder when there is one and lets the viewer pick a quality', async () => {
+    const watch = vi.fn().mockResolvedValue(READY);
+    const playback = vi
+      .fn()
+      .mockResolvedValue({ ...PLAYBACK, hls_url: '/api/v1/s/abcdefghijkl/hls/master.m3u8' });
+    hlsFake.instances.length = 0;
+    const root = await open({ watch, playback });
+    // hls.js is loaded lazily: let the import settle.
+    await vi.waitFor(() => expect(hlsFake.instances).toHaveLength(1));
+    const [instance] = hlsFake.instances;
+    expect(q(root, 'watch-quality')).toBeNull();
+    expect((q(root, 'watch-video') as HTMLVideoElement).getAttribute('src')).toBeNull();
+
+    instance.handlers.get('manifest')?.('manifest', {
+      levels: [{ height: 360 }, { height: 720 }],
+    });
+    instance.handlers.get('switched')?.('switched', { level: 1 });
+    lastFixture.detectChanges();
+    const select = q(root, 'watch-quality') as HTMLSelectElement;
+    expect(
+      Array.from(select.options).map((o) => o.textContent?.replace(/\s+/g, ' ').trim()),
+    ).toEqual(['Auto (720p)', '360p', '720p']);
+
+    select.value = '0';
+    select.dispatchEvent(new Event('change'));
+    expect(instance.nextLevel).toBe(0);
+    select.value = '-1';
+    select.dispatchEvent(new Event('change'));
+    expect(instance.nextLevel).toBe(-1);
+  });
+
   it('plays a ready recording with its poster and offers speeds', async () => {
     const watch = vi.fn().mockResolvedValue(READY);
     const playback = vi.fn().mockResolvedValue(PLAYBACK);

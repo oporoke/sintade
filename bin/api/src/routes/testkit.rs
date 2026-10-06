@@ -131,6 +131,9 @@ pub struct Reply {
     pub status: StatusCode,
     pub body: Value,
     pub cache_control: Option<String>,
+    pub content_type: Option<String>,
+    /// The body as text, for responses that aren't JSON (a playlist).
+    pub text: String,
 }
 
 /// One request through the whole router. `caller: None` is an anonymous visitor.
@@ -178,6 +181,11 @@ pub async fn call(
         .get("cache-control")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("body");
@@ -185,7 +193,82 @@ pub async fn call(
         status,
         body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         cache_control,
+        content_type,
+        text: String::from_utf8_lossy(&bytes).into_owned(),
     }
+}
+
+/// A built HLS ladder (a 360p and a 720p rung, one segment each) for a recording (given a take if
+/// it has none): the playlists go to the real test bucket and the renditions point at them.
+/// Returns the storage prefix.
+pub async fn ladder(pool: &PgPool, workspace_id: WorkspaceId, recording: RecordingId) -> String {
+    let store = crate::app::tests::test_store();
+    let prefix = format!("test/{workspace_id}/rec/{recording}/hls");
+    let dir = std::env::temp_dir().join(format!("ladder-{recording}"));
+    std::fs::create_dir_all(&dir).expect("scratch");
+    let put = async |name: &str, text: &str| {
+        let file = dir.join("f");
+        std::fs::write(&file, text).expect("file");
+        store
+            .put_file(
+                &format!("{prefix}/{name}"),
+                &file,
+                "application/octet-stream",
+            )
+            .await
+            .expect("put");
+    };
+    put(
+        "master.m3u8",
+        "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=640x360\n360p/index.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=2,RESOLUTION=1280x720\n720p/index.m3u8\n",
+    )
+    .await;
+    for rung in ["360p", "720p"] {
+        put(
+            &format!("{rung}/index.m3u8"),
+            "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:4.0,\nseg_0000.m4s\n#EXT-X-ENDLIST\n",
+        )
+        .await;
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    let existing = sqlx::query_scalar!(
+        "SELECT id FROM takes WHERE recording_id = $1",
+        recording.into_uuid()
+    )
+    .fetch_optional(pool)
+    .await
+    .expect("take lookup");
+    let take = match existing {
+        Some(take) => take,
+        None => {
+            let take = uuid::Uuid::now_v7();
+            sqlx::query!(
+                "INSERT INTO takes (id, workspace_id, recording_id, mime_type, has_system_audio,
+                                    has_mic, has_camera, finalized_at)
+                 VALUES ($1, $2, $3, 'video/webm', false, true, false, now())",
+                take,
+                workspace_id.into_uuid(),
+                recording.into_uuid(),
+            )
+            .execute(pool)
+            .await
+            .expect("take");
+            take
+        }
+    };
+    sqlx::query!(
+        "INSERT INTO renditions (id, workspace_id, recording_id, take_id, kind, variant, storage_key)
+         VALUES ($1, $2, $3, $4, 'hls', 'master', $5)",
+        uuid::Uuid::now_v7(),
+        workspace_id.into_uuid(),
+        recording.into_uuid(),
+        take,
+        format!("{prefix}/master.m3u8"),
+    )
+    .execute(pool)
+    .await
+    .expect("hls rendition");
+    prefix
 }
 
 /// Creates a link on `recording` as `owner` and returns its slug.
