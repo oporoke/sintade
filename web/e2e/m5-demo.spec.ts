@@ -80,8 +80,10 @@ test('record → stop → MP4 ready → email', async ({ page, request, browserN
   const renditions = psql(
     `SELECT kind, variant, size_bytes FROM renditions WHERE recording_id = '${recordingId}' ORDER BY kind`,
   ).split('\n');
-  expect(renditions.map((row) => row.split('|').slice(0, 2).join('/'))).toEqual([
+  // (The original is kept as the `source` rendition since Day 59's preview.)
+  expect(renditions.map((row) => row.split('|').slice(0, 2).join('/')).sort()).toEqual([
     'mp4/default',
+    'source/default',
     'thumbnail/poster',
   ]);
 

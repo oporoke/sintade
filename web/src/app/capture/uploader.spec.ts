@@ -228,6 +228,19 @@ describe('Uploader', () => {
     expect(api.calls.filter((call) => call.startsWith('put'))).toEqual(['put 0']);
   });
 
+  it('sends nothing more once cancelled (a discarded take)', async () => {
+    const { store, api, uploader } = setup();
+    await fill(store, [0, 1]);
+    uploader.enqueue(0);
+    uploader.cancel();
+    uploader.enqueue(1);
+    await uploader.drained();
+    await flush();
+    // (Chunk 0 was already in flight and may finish; nothing queued after, or left queued, is sent.)
+    expect(api.calls.filter((call) => call.startsWith('put 1'))).toEqual([]);
+    expect(uploader.uploaded.has(1)).toBe(false);
+  });
+
   it('retries transient failures with growing, jittered backoff', async () => {
     const { store, api, delays, uploader } = setup();
     await fill(store, [0]);

@@ -19,11 +19,18 @@ import { CapabilityService, SystemAudioSupport } from '../../core/capability.ser
 import {
   AUDIO_MIXER,
   CHUNK_STORE,
+  FREE_PLAN_LIMITS,
+  PLAN_LIMITS,
+  PlanLimits,
   RECORDINGS_API,
   RecordingsApi,
   SOURCE_MANAGER,
   START_TAKE,
+  STORAGE_CHECK,
+  WAKE_LOCK_GUARD,
 } from '../../core/capture.tokens';
+import { StorageStatus } from '../../capture';
+import { LIBRARY_API } from '../../core/library-api.service';
 import { SHARE_API, SharePort } from '../../core/share-api.service';
 import { RecorderPage } from './recorder-page';
 
@@ -48,6 +55,7 @@ function fakeSources() {
     pickDisplay: vi.fn().mockResolvedValue(display),
     openMic: vi.fn().mockResolvedValue(mic),
     stopMic: vi.fn(),
+    applyQuality: vi.fn().mockResolvedValue(undefined),
     stopAll: vi.fn(),
   };
   return manager as unknown as SourceManager & typeof manager;
@@ -58,6 +66,9 @@ function fakeMixer(micLevel = 0.4) {
     mix: vi.fn().mockResolvedValue({ kind: 'audio' }),
     levels$: () => of({ mic: micLevel, display: 0, mix: micLevel }),
     close: vi.fn().mockResolvedValue(undefined),
+    isMuted: vi.fn().mockReturnValue(false),
+    setMuted: vi.fn(),
+    setVolume: vi.fn(),
   };
   return mixer as unknown as AudioMixer & typeof mixer;
 }
@@ -69,6 +80,7 @@ async function setup(support: SystemAudioSupport, sources = fakeSources(), mixer
       { provide: CapabilityService, useValue: capabilities(support) },
       { provide: SOURCE_MANAGER, useValue: sources },
       { provide: AUDIO_MIXER, useValue: mixer },
+      { provide: PLAN_LIMITS, useValue: signal(planLimits) },
     ],
   });
   const fixture = TestBed.createComponent(RecorderPage);
@@ -86,6 +98,9 @@ async function setup(support: SystemAudioSupport, sources = fakeSources(), mixer
   return { fixture, element, sources, mixer, q, settle };
 }
 
+let planLimits: PlanLimits = FREE_PLAN_LIMITS;
+let storageResult: StorageStatus = { level: 'unknown' };
+
 const SUPPORTED: SystemAudioSupport = { supported: true, note: null };
 
 function capabilities(support: SystemAudioSupport, getDisplayMedia = true) {
@@ -102,6 +117,86 @@ function capabilities(support: SystemAudioSupport, getDisplayMedia = true) {
 
 describe('RecorderPage', () => {
   beforeEach(() => localStorage.clear());
+
+  it('offers 4K only on a plan that allows it; a free user cannot pick it', async () => {
+    const free = await setup(SUPPORTED);
+    const four = free
+      .q<HTMLSelectElement>('recorder-resolution')!
+      .querySelector<HTMLOptionElement>('option[value="2160"]')!;
+    expect(four.disabled).toBe(true);
+    expect(four.textContent).toContain('not on your plan');
+    const select = free.q<HTMLSelectElement>('recorder-resolution')!;
+    expect(select.value).toBe('1080');
+    TestBed.resetTestingModule();
+
+    planLimits = { maxResolution: 2160, maxDurationMs: 3_600_000 };
+    try {
+      const paid = await setup(SUPPORTED);
+      const option = paid
+        .q<HTMLSelectElement>('recorder-resolution')!
+        .querySelector<HTMLOptionElement>('option[value="2160"]')!;
+      expect(option.disabled).toBe(false);
+    } finally {
+      planLimits = FREE_PLAN_LIMITS;
+    }
+  });
+
+  it('drags a crop on the preview and passes it, and the cursor choice, to the take', async () => {
+    const { q, sources, settle, fixture } = await setup(SUPPORTED);
+    q<HTMLButtonElement>('recorder-choose-screen')!.click();
+    await settle();
+    const pad = q<HTMLElement>('recorder-crop-pad')!;
+    pad.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200 }) as DOMRect;
+    const fire = (type: string, x: number, y: number) =>
+      pad.dispatchEvent(new PointerEvent(type, { clientX: x, clientY: y, pointerId: 1 }));
+    fire('pointerdown', 200, 0);
+    fire('pointermove', 400, 200);
+    fire('pointerup', 400, 200);
+    await settle();
+    const box = q<HTMLElement>('recorder-crop-box')!;
+    expect(box.style.left).toBe('50%');
+    expect(box.style.width).toBe('50%');
+    expect(box.style.height).toBe('100%');
+
+    q<HTMLButtonElement>('recorder-crop-clear')!.click();
+    await settle();
+    expect(q('recorder-crop-box')).toBeNull();
+
+    const cursor = q<HTMLInputElement>('recorder-cursor')!;
+    cursor.checked = false;
+    cursor.dispatchEvent(new Event('change'));
+    q<HTMLButtonElement>('recorder-choose-screen')!.click();
+    await settle();
+    expect(sources.pickDisplay).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cursor: 'never' }),
+    );
+    void fixture;
+  });
+
+  it('asks the browser for the chosen frame rate and passes the mic processing toggles', async () => {
+    const { q, sources, settle } = await setup(SUPPORTED);
+    const fps = q<HTMLSelectElement>('recorder-fps')!;
+    fps.value = '60';
+    fps.dispatchEvent(new Event('change'));
+    await settle();
+    q<HTMLButtonElement>('recorder-choose-screen')!.click();
+    await settle();
+    expect(sources.pickDisplay).toHaveBeenCalledWith(expect.objectContaining({ frameRate: 60 }));
+
+    const noise = q<HTMLInputElement>('recorder-noise-suppression')!;
+    expect(noise.checked).toBe(true);
+    noise.checked = false;
+    noise.dispatchEvent(new Event('change'));
+    await settle();
+    const mic = q<HTMLSelectElement>('recorder-mic-select')!;
+    mic.value = 'mic-b';
+    mic.dispatchEvent(new Event('change'));
+    await settle();
+    expect(sources.openMic).toHaveBeenLastCalledWith(
+      'mic-b',
+      expect.objectContaining({ noiseSuppression: false, echoCancellation: true }),
+    );
+  });
 
   it('disables system audio with the reason where it is unsupported', async () => {
     const { q } = await setup({
@@ -127,7 +222,12 @@ describe('RecorderPage', () => {
     q<HTMLButtonElement>('recorder-choose-screen')?.click();
     await settle();
 
-    expect(sources.pickDisplay).toHaveBeenCalledWith({ systemAudio: true });
+    expect(sources.pickDisplay).toHaveBeenCalledWith({
+      systemAudio: true,
+      frameRate: 30,
+      height: 1080,
+      cursor: 'always',
+    });
     expect(q('recorder-screen-preview')).not.toBeNull();
     expect(q('recorder-screen-info')?.textContent).toContain('1920×1080');
   });
@@ -147,7 +247,7 @@ describe('RecorderPage', () => {
     }
     await settle();
 
-    expect(sources.openMic).toHaveBeenCalledWith('mic-b');
+    expect(sources.openMic).toHaveBeenCalledWith('mic-b', expect.any(Object));
     expect(q('recorder-mic-info')?.textContent).toContain('Mic B');
     expect(localStorage.getItem('sintade.recorder.mic')).toBe('mic-b');
   });
@@ -243,7 +343,7 @@ describe('RecorderPage before mic permission (Firefox)', () => {
     }
     await settle();
 
-    expect(sources.openMic).toHaveBeenCalledWith(undefined);
+    expect(sources.openMic).toHaveBeenCalledWith(undefined, expect.any(Object));
     expect(q('recorder-mic-info')?.textContent).toContain('Fake Mic');
     expect(localStorage.getItem('sintade.recorder.mic')).toBe('real-mic-id');
   });
@@ -298,6 +398,13 @@ describe('RecorderPage control bar', () => {
 
   async function recording(api: RecordingsApi = offlineApi(), share: SharePort = fakeShare()) {
     const take = fakeSession();
+    const mixer = fakeMixer();
+    const library = { trash: vi.fn().mockResolvedValue(undefined) };
+    const wake = {
+      acquire: vi.fn().mockResolvedValue(undefined),
+      release: vi.fn().mockResolvedValue(undefined),
+    };
+    const storageCheck = vi.fn(async () => storageResult);
     const startTake = vi.fn().mockResolvedValue(take.session);
     const store = {
       getMeta: vi.fn().mockResolvedValue(null),
@@ -310,7 +417,11 @@ describe('RecorderPage control bar', () => {
       providers: [
         { provide: CapabilityService, useValue: capabilities(SUPPORTED) },
         { provide: SOURCE_MANAGER, useValue: fakeSources() },
-        { provide: AUDIO_MIXER, useValue: fakeMixer() },
+        { provide: AUDIO_MIXER, useValue: mixer },
+        { provide: PLAN_LIMITS, useValue: signal(planLimits) },
+        { provide: LIBRARY_API, useValue: library },
+        { provide: WAKE_LOCK_GUARD, useValue: wake },
+        { provide: STORAGE_CHECK, useValue: storageCheck },
         { provide: CHUNK_STORE, useValue: Promise.resolve(store) },
         { provide: START_TAKE, useValue: startTake },
         { provide: RECORDINGS_API, useValue: api },
@@ -334,7 +445,7 @@ describe('RecorderPage control bar', () => {
     await settle();
     q<HTMLButtonElement>('recorder-start')?.click();
     await settle(3000); // the 3-2-1
-    return { ...take, startTake, store, fixture, q, settle };
+    return { ...take, startTake, store, library, mixer, wake, storageCheck, fixture, q, settle };
   }
 
   it('starts the take after the countdown and moves focus to Pause', async () => {
@@ -398,6 +509,144 @@ describe('RecorderPage control bar', () => {
       expect(q('recorder-limit-notice')?.textContent).toContain('up to 10 min');
     });
 
+    it('warns 30 seconds before the automatic stop, in steps', async () => {
+      const { q, elapsed, settle } = await recording(onlineApi());
+      elapsed.next(560_000);
+      await settle();
+      expect(q('recorder-limit-warning')).toBeNull();
+      elapsed.next(575_000); // 24 s left before the 1 s margin -> 25
+      await settle();
+      expect(q('recorder-limit-warning')?.textContent).toContain('in 25 s');
+      elapsed.next(591_500); // 7.5 s left -> 8
+      await settle();
+      expect(q('recorder-limit-warning')?.textContent).toContain('in 8 s');
+    });
+
+    it('keeps the screen awake while recording and lets go when the take ends', async () => {
+      const { q, wake, settle } = await recording(onlineApi());
+      expect(wake.acquire).toHaveBeenCalledTimes(1);
+      expect(wake.release).not.toHaveBeenCalled();
+      q<HTMLButtonElement>('recorder-stop')?.click();
+      await settle();
+      expect(wake.release).toHaveBeenCalled();
+    });
+
+    it('warns before the browser is out of room: at 80 % of the quota used, and re-checks while recording', async () => {
+      storageResult = {
+        level: 'low',
+        usedFraction: 0.85,
+        projectedFraction: 0.9,
+        freeBytes: 300_000_000,
+      };
+      try {
+        const { q, storageCheck, settle } = await recording(onlineApi());
+        expect(q('recorder-storage-warning')?.textContent).toContain('85% of the browser');
+        expect(q('recorder-storage-warning')?.textContent).toContain('300 MB');
+        const before = storageCheck.mock.calls.length;
+        await settle(15_000);
+        expect(storageCheck.mock.calls.length).toBeGreaterThan(before);
+      } finally {
+        storageResult = { level: 'unknown' };
+      }
+    });
+
+    it('shows no storage warning when there is room', async () => {
+      storageResult = { level: 'ok', usedFraction: 0.1 };
+      try {
+        const { q } = await recording(onlineApi());
+        expect(q('recorder-storage-warning')).toBeNull();
+      } finally {
+        storageResult = { level: 'unknown' };
+      }
+    });
+
+    it('asks the browser to confirm before the tab closes mid-take, not otherwise', async () => {
+      const { fixture, q, settle } = await recording(onlineApi());
+      const during = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(during);
+      expect(during.defaultPrevented).toBe(true);
+      q<HTMLButtonElement>('recorder-discard')?.click();
+      await settle();
+      q<HTMLButtonElement>('recorder-confirm-yes')?.click();
+      await settle();
+      const after = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(after);
+      expect(after.defaultPrevented).toBe(false);
+      void fixture;
+    });
+
+    it('discarding deletes the take on the device, trashes the server copy and finalizes nothing', async () => {
+      const api = onlineApi();
+      const { q, session, store, library, settle } = await recording(api);
+      q<HTMLButtonElement>('recorder-discard')?.click();
+      await settle();
+      expect(q('recorder-confirm')).not.toBeNull();
+      q<HTMLButtonElement>('recorder-confirm-yes')?.click();
+      await settle();
+      expect(session.stop).toHaveBeenCalled();
+      expect(store.deleteTake).toHaveBeenCalledWith(SERVER_TAKE);
+      expect(library.trash).toHaveBeenCalledWith('rec-1');
+      expect(api.finalize).not.toHaveBeenCalled();
+      expect(q('recorder-controls')).toBeNull();
+      expect(q('recorder-start')).not.toBeNull();
+    });
+
+    it('keeps recording when the discard is not confirmed', async () => {
+      const { q, session, settle } = await recording(onlineApi());
+      q<HTMLButtonElement>('recorder-discard')?.click();
+      await settle();
+      q<HTMLButtonElement>('recorder-confirm-no')?.click();
+      await settle();
+      expect(session.stop).not.toHaveBeenCalled();
+      expect(q('recorder-status')?.textContent?.trim()).toBe('Recording');
+    });
+
+    it('restart discards the take and starts a new one after the countdown', async () => {
+      const api = onlineApi();
+      const { q, startTake, store, settle } = await recording(api);
+      q<HTMLButtonElement>('recorder-restart')?.click();
+      await settle();
+      q<HTMLButtonElement>('recorder-confirm-yes')?.click();
+      await settle(3000);
+      expect(store.deleteTake).toHaveBeenCalledWith(SERVER_TAKE);
+      expect(api.createRecording).toHaveBeenCalledTimes(2);
+      expect(startTake).toHaveBeenCalledTimes(2);
+    });
+
+    it('keyboard shortcuts pause, mute the mic and stop', async () => {
+      const { q, session, mixer, settle } = await recording(onlineApi());
+      const press = (key: string) =>
+        document.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+      press('p');
+      await settle();
+      expect(session.pause).toHaveBeenCalled();
+      press('p');
+      await settle();
+      expect(session.resume).toHaveBeenCalled();
+      press('m');
+      expect(mixer.setMuted).toHaveBeenCalledWith('mic', true);
+      press('r');
+      await settle();
+      expect(q('recorder-confirm')).not.toBeNull();
+      press('Escape');
+      await settle();
+      expect(q('recorder-confirm')).toBeNull();
+      press('s');
+      await settle();
+      expect(session.stop).toHaveBeenCalled();
+    });
+
+    it('ignores shortcuts typed into a form field or with a modifier', async () => {
+      const { session, settle } = await recording(onlineApi());
+      const input = document.createElement('input');
+      document.body.appendChild(input);
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 's', bubbles: true }));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true }));
+      await settle();
+      expect(session.stop).not.toHaveBeenCalled();
+      input.remove();
+    });
+
     it("doesn't record when the plan's recording limit is reached", async () => {
       const api = onlineApi();
       api.createRecording.mockRejectedValue(new UploadHttpError('api', 402, 'limit'));
@@ -412,7 +661,7 @@ describe('RecorderPage control bar', () => {
       const { q, startTake, stored, store, settle } = await recording(api);
       // No mic and no system audio: the video-only format.
       expect(api.createRecording).toHaveBeenCalledWith({
-        mime_type: 'video/webm;codecs=vp9',
+        mime_type: 'video/webm;codecs=h264',
         has_system_audio: false,
         has_mic: false,
         has_camera: false,
@@ -545,7 +794,7 @@ describe('RecorderPage problems and view-only', () => {
 
     q<HTMLButtonElement>('recorder-retry')?.click();
     await settle();
-    expect(sources.openMic).toHaveBeenLastCalledWith('mic-a');
+    expect(sources.openMic).toHaveBeenLastCalledWith('mic-a', expect.any(Object));
     expect(q('recorder-error')).toBeNull();
     expect(q('recorder-mic-info')).not.toBeNull();
   });
@@ -557,6 +806,7 @@ describe('RecorderPage problems and view-only', () => {
         { provide: CapabilityService, useValue: capabilities(SUPPORTED, false) },
         { provide: SOURCE_MANAGER, useValue: fakeSources() },
         { provide: AUDIO_MIXER, useValue: fakeMixer() },
+        { provide: PLAN_LIMITS, useValue: signal(planLimits) },
       ],
     });
     const fixture = TestBed.createComponent(RecorderPage);

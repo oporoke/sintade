@@ -71,6 +71,38 @@ describe('SourceManager', () => {
       });
     });
 
+    it('asks for the preset height as an ideal, so the surface keeps its own size if smaller', async () => {
+      const { devices, manager } = setup();
+      devices.getDisplayMedia.mockResolvedValue(fakeStream('video').stream);
+      await manager.pickDisplay({ systemAudio: false, frameRate: 60, height: 1080 });
+      expect(devices.getDisplayMedia).toHaveBeenCalledWith({
+        video: { frameRate: 60, height: { ideal: 1080 } },
+        audio: false,
+      });
+    });
+
+    it('can hide the cursor', async () => {
+      const { devices, manager } = setup();
+      devices.getDisplayMedia.mockResolvedValue(fakeStream('video').stream);
+      await manager.pickDisplay({ systemAudio: false, cursor: 'never' });
+      expect(devices.getDisplayMedia).toHaveBeenCalledWith({
+        video: { frameRate: 30, cursor: 'never' },
+        audio: false,
+      });
+    });
+
+    it('re-aims the picked display at a preset, and shrugs off a refusal', async () => {
+      const { devices, manager } = setup();
+      const { stream, tracks } = fakeStream('video');
+      const apply = vi.fn().mockRejectedValueOnce(new Error('nope')).mockResolvedValue(undefined);
+      (tracks[0] as unknown as { applyConstraints: unknown }).applyConstraints = apply;
+      devices.getDisplayMedia.mockResolvedValue(stream);
+      await manager.pickDisplay({ systemAudio: false });
+      await expect(manager.applyQuality({ height: 720, fps: 60 })).resolves.toBeUndefined();
+      await manager.applyQuality({ height: 720, fps: 60 });
+      expect(apply).toHaveBeenLastCalledWith({ frameRate: 60, height: { ideal: 720 } });
+    });
+
     it('stops the previous display when a new one is picked', async () => {
       const { devices, manager } = setup();
       const first = fakeStream('video');
@@ -123,6 +155,25 @@ describe('SourceManager', () => {
 
       await expect(manager.openMic()).resolves.toBe(stream);
       expect(devices.getUserMedia).toHaveBeenCalledWith({ audio: true, video: false });
+    });
+
+    it('passes the noise suppression, echo cancellation and auto gain toggles', async () => {
+      const { devices, manager } = setup();
+      devices.getUserMedia.mockResolvedValue(fakeStream('audio').stream);
+      await manager.openMic('usb-mic', {
+        noiseSuppression: false,
+        echoCancellation: true,
+        autoGainControl: false,
+      });
+      expect(devices.getUserMedia).toHaveBeenCalledWith({
+        audio: {
+          deviceId: { exact: 'usb-mic' },
+          noiseSuppression: false,
+          echoCancellation: true,
+          autoGainControl: false,
+        },
+        video: false,
+      });
     });
 
     it('pins a chosen device exactly and replaces the previous mic', async () => {

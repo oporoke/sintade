@@ -1,6 +1,7 @@
 import { Observable, Subject } from 'rxjs';
 
 import { CaptureError, toCaptureError } from './capture-error';
+import { AudioProcessing, QualityPreset } from './quality';
 import { onTrackEnded } from './track-ended';
 
 /** The slice of `MediaDevices` the source manager uses; injectable so tests can fake it. */
@@ -23,6 +24,11 @@ export interface MicDevice {
 export interface DisplayOptions {
   /** Defaults to 30, the design's recording frame rate (§10 Record, step 3). */
   frameRate?: number;
+  /** Ideal capture height; the browser may deliver less (the shared surface's own size). */
+  height?: number;
+  /** Draw the mouse pointer into the capture (default) or leave it out. Chromium honours it;
+   * other browsers ignore the hint. It applies when the screen is picked. */
+  cursor?: 'always' | 'never';
   /** Ask for tab/system audio. Only Chromium-family browsers deliver it (see CapabilityService). */
   systemAudio: boolean;
 }
@@ -98,7 +104,11 @@ export class SourceManager {
     let stream: MediaStream;
     try {
       stream = await devices.getDisplayMedia({
-        video: { frameRate: options.frameRate ?? DEFAULT_FRAME_RATE },
+        video: {
+          frameRate: options.frameRate ?? DEFAULT_FRAME_RATE,
+          ...(options.height ? { height: { ideal: options.height } } : {}),
+          ...(options.cursor ? { cursor: options.cursor } : {}),
+        },
         audio: options.systemAudio,
       });
     } catch (error) {
@@ -120,12 +130,15 @@ export class SourceManager {
   }
 
   /** Opens a microphone: the given device exactly, or the browser default. Replaces any previous. */
-  async openMic(deviceId?: string): Promise<MediaStream> {
+  async openMic(deviceId?: string, processing?: AudioProcessing): Promise<MediaStream> {
     const devices = this.require('getUserMedia');
     let stream: MediaStream;
     try {
       stream = await devices.getUserMedia({
-        audio: deviceId ? { deviceId: { exact: deviceId } } : true,
+        audio:
+          deviceId || processing
+            ? { ...(deviceId ? { deviceId: { exact: deviceId } } : {}), ...processing }
+            : true,
         video: false,
       });
     } catch (error) {
@@ -145,6 +158,22 @@ export class SourceManager {
         deviceId: device.deviceId,
         label: device.label || `Microphone ${index + 1}`,
       }));
+  }
+
+  /**
+   * Re-aims the shared screen's capture at a preset after it was picked. Best effort: the
+   * browser decides what the surface can deliver, and a refusal leaves the old settings.
+   */
+  async applyQuality(preset: QualityPreset): Promise<void> {
+    const [track] = this.display?.getVideoTracks() ?? [];
+    try {
+      await track?.applyConstraints({
+        frameRate: preset.fps,
+        height: { ideal: preset.height },
+      });
+    } catch {
+      // Keep what the browser gave us.
+    }
   }
 
   stopDisplay(): void {

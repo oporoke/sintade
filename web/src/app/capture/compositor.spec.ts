@@ -4,6 +4,8 @@ import {
   CompositorCanvas,
   FrameSource,
   bubbleRect,
+  clampRegion,
+  regionPixels,
   coverSquare,
 } from './compositor';
 
@@ -85,7 +87,6 @@ describe('Compositor', () => {
   it('draws the screen, then the camera clipped to a circle', () => {
     const { calls } = setup();
     expect(calls).toEqual([
-      'fill',
       'draw:screen',
       'save',
       'begin',
@@ -96,6 +97,11 @@ describe('Compositor', () => {
     ]);
   });
 
+  it('clears to black only while the screen is not ready to cover the frame', () => {
+    const { calls } = setup({ screen: false, camera: true });
+    expect(calls[0]).toBe('fill');
+  });
+
   it('clips to a rounded square for the rounded shape', () => {
     const { calls } = setup(undefined, 'rounded');
     expect(calls).toContain('roundRect');
@@ -104,7 +110,7 @@ describe('Compositor', () => {
 
   it('skips sources that are not ready yet', () => {
     const { calls } = setup({ screen: true, camera: false });
-    expect(calls).toEqual(['fill', 'draw:screen']);
+    expect(calls).toEqual(['draw:screen']);
   });
 
   it('follows a moved bubble on the next frame', () => {
@@ -126,7 +132,7 @@ describe('Compositor', () => {
     calls.length = 0;
     compositor.setBubble({ cameraOnly: true });
     compositor.draw();
-    expect(calls).toEqual(['fill', 'draw:camera']);
+    expect(calls).toEqual(['draw:camera']);
   });
 
   it('stops the timer, the track and both sources once', () => {
@@ -140,5 +146,61 @@ describe('Compositor', () => {
     expect(track.stop).toHaveBeenCalledTimes(1);
     expect(screen.stop).toHaveBeenCalledTimes(1);
     expect(camera.stop).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('regions', () => {
+  it('clamps a region inside the frame and keeps it at least 5 % wide', () => {
+    expect(clampRegion({ x: 0.9, y: -1, w: 0.5, h: 0 })).toEqual({ x: 0.5, y: 0, w: 0.5, h: 0.05 });
+  });
+
+  it('turns a region into source pixels and an even output size', () => {
+    expect(regionPixels({ x: 0.5, y: 0.25, w: 0.25, h: 0.5 }, 1921, 1081)).toMatchObject({
+      sx: 960.5,
+      sy: 270.25,
+      outWidth: 480,
+      outHeight: 540,
+    });
+  });
+
+  it('crops: the canvas is the region and the screen is drawn from the region only', () => {
+    const draws: unknown[][] = [];
+    let size: [number, number] = [0, 0];
+    const ctx = {
+      fillStyle: '',
+      fillRect: vi.fn(),
+      drawImage: (...args: unknown[]) => draws.push(args),
+    } as unknown as Canvas2D;
+    const canvas = {
+      width: 0,
+      height: 0,
+      getContext: () => ctx,
+      captureStream: () =>
+        ({ getVideoTracks: () => [{ stop: vi.fn() }] }) as unknown as MediaStream,
+    } as CompositorCanvas;
+    new Compositor({
+      screen: {
+        getVideoTracks: () => [{ getSettings: () => ({ width: 1920, height: 1080 }) }],
+      } as unknown as MediaStream,
+      camera: null,
+      region: { x: 0.5, y: 0, w: 0.5, h: 1 },
+      createCanvas: (w, h) => {
+        size = [w, h];
+        canvas.width = w;
+        canvas.height = h;
+        return canvas;
+      },
+      createSource: () => ({
+        width: 1920,
+        height: 1080,
+        ready: true,
+        image: { id: 'screen' } as unknown as CanvasImageSource,
+        stop: vi.fn(),
+      }),
+      schedule: () => () => undefined,
+    });
+    expect(size).toEqual([960, 1080]);
+    // The right half of the screen fills the whole output frame.
+    expect(draws).toEqual([[{ id: 'screen' }, 960, 0, 960, 1080, 0, 0, 960, 1080]]);
   });
 });

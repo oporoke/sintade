@@ -1,7 +1,7 @@
 import { Observable } from 'rxjs';
 
 import { AudioMixer } from './audio-mixer';
-import { BubbleLayout, Compositor } from './compositor';
+import { BubbleLayout, Compositor, Region } from './compositor';
 import { CaptureError } from './capture-error';
 import {
   ChunkRecorder,
@@ -12,6 +12,7 @@ import {
 } from './chunk-recorder';
 import { ChunkStore, TakeMeta } from './chunk-store';
 import { onTrackEnded } from './track-ended';
+import { QualityPreset, bitsPerSecond } from './quality';
 import { LocksPort, persistTake } from './take-journal';
 
 export interface TakeSessionOptions {
@@ -20,8 +21,12 @@ export interface TakeSessionOptions {
   mixer: AudioMixer;
   /** The webcam; when set, the recorded video is the screen with the camera bubble on top. */
   camera?: MediaStream | null;
+  /** Crop the recording to this part of the screen (fractions); needs the compositor. */
+  region?: Region | null;
+  /** Resolution/frame rate/bitrate; defaults to the recorder's standard 30 fps rate. */
+  quality?: QualityPreset;
   /** Test seam for building the compositor. */
-  createCompositor?: (screen: MediaStream, camera: MediaStream) => Compositor;
+  createCompositor?: (screen: MediaStream, camera: MediaStream | null) => Compositor;
   store: ChunkStore;
   /** The key the chunks are stored under: the server's take id when the take is uploaded. */
   takeId: string;
@@ -58,14 +63,18 @@ export class TakeSession {
     if (!displayVideo || displayVideo.readyState === 'ended') {
       throw new CaptureError('aborted', 'the shared screen is no longer available');
     }
-    // The compositor exists only when a camera is on; otherwise the screen track goes straight
-    // to the recorder (§10 Record).
-    const compositor = options.camera
-      ? (options.createCompositor ?? ((screen, camera) => new Compositor({ screen, camera })))(
-          options.display,
-          options.camera,
-        )
-      : null;
+    // The compositor exists only when a camera is on or the screen is cropped; otherwise the
+    // screen track goes straight to the recorder (§10 Record).
+    const camera = options.camera ?? null;
+    const region = options.region ?? null;
+    const compositor =
+      camera || region
+        ? (
+            options.createCompositor ??
+            ((screen, cam) =>
+              new Compositor({ screen, camera: cam, region, fps: options.quality?.fps }))
+          )(options.display, camera)
+        : null;
     const video = compositor?.track ?? displayVideo;
     const audio = await options.mixer.mix({ mic: options.mic, display: options.display });
     // Chosen after mixing: a video-only take needs a MIME type without an audio codec.
@@ -91,7 +100,9 @@ export class TakeSession {
     recorder.start(stream, {
       mimeType,
       timesliceMs: DEFAULT_TIMESLICE_MS,
-      bitsPerSecond: DEFAULT_VIDEO_BITS_PER_SECOND,
+      bitsPerSecond: options.quality
+        ? bitsPerSecond(options.quality)
+        : DEFAULT_VIDEO_BITS_PER_SECOND,
     });
     const session = new TakeSession(
       options.takeId,
@@ -113,7 +124,7 @@ export class TakeSession {
 
   /** The webcam bubble's layout, or null when there is no camera. */
   get bubble(): BubbleLayout | null {
-    return this.compositor?.bubble ?? null;
+    return this.compositor?.hasCamera ? this.compositor.bubble : null;
   }
 
   /** Moves, resizes or reshapes the bubble (or switches camera-only) while recording. */

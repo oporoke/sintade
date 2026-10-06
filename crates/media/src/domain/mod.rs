@@ -38,6 +38,20 @@ impl Container {
     }
 }
 
+/// The type to tell a viewer's browser about the stored original, so it can say whether it can
+/// play it. A WebM carrying H.264 (what Chrome records when it can; ADR-0028) says so: Firefox
+/// cannot play that, and a plain `video/webm` would promise it can. Everything else stays the
+/// bare container, as before.
+pub fn preview_content_type(mime: &str) -> String {
+    let container = Container::from_mime(mime);
+    let lower = mime.trim().to_ascii_lowercase();
+    if container == Container::Webm && (lower.contains("h264") || lower.contains("avc1")) {
+        mime.trim().to_string()
+    } else {
+        container.content_type().to_string()
+    }
+}
+
 /// Where a recording's default MP4 lives (docs/design.md §8 storage layout).
 pub fn mp4_key(workspace_id: WorkspaceId, recording_id: RecordingId) -> String {
     format!("ws/{workspace_id}/rec/{recording_id}/mp4/default.mp4")
@@ -181,6 +195,25 @@ fn hex_digit(digit: u8) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
+    use super::preview_content_type;
+
+    #[test]
+    fn only_h264_in_webm_names_its_codecs() {
+        assert_eq!(
+            preview_content_type("video/webm;codecs=h264,opus"),
+            "video/webm;codecs=h264,opus"
+        );
+        assert_eq!(
+            preview_content_type("video/webm;codecs=vp9,opus"),
+            "video/webm"
+        );
+        assert_eq!(preview_content_type("video/webm"), "video/webm");
+        assert_eq!(
+            preview_content_type("video/mp4;codecs=avc1,mp4a"),
+            "video/mp4"
+        );
+    }
+
     use super::*;
 
     const HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";

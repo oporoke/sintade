@@ -375,7 +375,12 @@ mod tests {
             .expect("put");
         tokio::fs::remove_file(&path).await.expect("tidy");
 
-        let http = reqwest::Client::new();
+        // No connection reuse: MinIO may close an idle keep-alive connection between requests
+        // (CI saw "connection reset" on the 5th request), which says nothing about privacy.
+        let http = reqwest::Client::builder()
+            .pool_max_idle_per_host(0)
+            .build()
+            .expect("http client");
         let object_url = format!("{endpoint}/{bucket}/{key}");
         // Anonymous read, list, write and delete are all refused.
         for (what, request) in [

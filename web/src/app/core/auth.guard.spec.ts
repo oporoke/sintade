@@ -12,6 +12,7 @@ describe('authGuard', () => {
     user: { id: '1', email: 'a@example.com', display_name: 'A', email_verified: true },
     workspaces: [],
     current_workspace_id: 'w1',
+    entitlements: { max_resolution: 1080, max_duration_ms: 600_000 },
   };
 
   function run(authServiceStub: Partial<AuthService>) {

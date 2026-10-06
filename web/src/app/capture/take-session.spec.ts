@@ -1,5 +1,6 @@
 import { AudioMixer } from './audio-mixer';
-import { Compositor } from './compositor';
+import { Compositor, Region } from './compositor';
+import { QualityPreset } from './quality';
 import { ChunkRecorder, CreateMediaRecorder } from './chunk-recorder';
 import { ChunkStore, TakeMeta } from './chunk-store';
 import { TakeSession } from './take-session';
@@ -58,8 +59,10 @@ function setup(
     close: vi.fn().mockResolvedValue(undefined),
   };
   let recorded: MediaStream | undefined;
-  const create: CreateMediaRecorder = (stream) => {
+  let recorderOptions: MediaRecorderOptions | undefined;
+  const create: CreateMediaRecorder = (stream, recOptions) => {
     recorded = stream;
+    recorderOptions = recOptions;
     return new FakeMediaRecorder(stream) as unknown as MediaRecorder;
   };
   const store = new MemoryStore();
@@ -72,11 +75,14 @@ function setup(
   const compositor = {
     track: compositorTrack,
     stop: vi.fn(),
+    hasCamera: true,
     bubble: { cx: 0.5 },
     setBubble: vi.fn(),
   };
-  const start = (withCamera = false) =>
+  const start = (withCamera = false, quality?: QualityPreset, region?: Region) =>
     TakeSession.start({
+      quality,
+      region,
       camera: withCamera ? ({} as MediaStream) : null,
       createCompositor: () => compositor as unknown as Compositor,
       display,
@@ -97,6 +103,7 @@ function setup(
     });
   return {
     start,
+    recorderOptions: () => recorderOptions,
     compositor,
     compositorTrack,
     mixer,
@@ -144,6 +151,24 @@ describe('TakeSession', () => {
     expect(compositor.stop).toHaveBeenCalled();
   });
 
+  it('crops without a camera by recording the compositor track', async () => {
+    const { start, recorded, compositorTrack } = setup();
+    await start(false, undefined, { x: 0, y: 0, w: 0.5, h: 0.5 });
+    expect(recorded().tracks[0]).toBe(compositorTrack);
+  });
+
+  it('records the screen track untouched with neither camera nor crop', async () => {
+    const { start, recorded, video } = setup();
+    await start();
+    expect(recorded().tracks[0]).toBe(video);
+  });
+
+  it('records at the preset bitrate', async () => {
+    const { start, recorderOptions } = setup();
+    await start(false, { height: 1080, fps: 60 });
+    expect(recorderOptions()?.videoBitsPerSecond).toBe(8_000_000);
+  });
+
   it('records video only when there is no audio to mix', async () => {
     const { start, recorded } = setup({ audio: false });
     await start();
@@ -181,7 +206,7 @@ describe('TakeSession', () => {
   });
 
   it('chooses a MIME type with an audio codec only when the take has audio', async () => {
-    const supported = (type: string) => type.startsWith('video/webm');
+    const supported = (type: string) => type.startsWith('video/webm') && !type.includes('h264');
     const withAudio = await setup({ isTypeSupported: supported }).start();
     expect(withAudio.mimeType).toBe('video/webm;codecs=vp9,opus');
 

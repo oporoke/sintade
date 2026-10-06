@@ -558,6 +558,19 @@ export interface components {
             email: string;
             password: string;
         };
+        /** @description What the current workspace's plan allows, for the recorder to offer only what it can keep. */
+        MeEntitlements: {
+            /**
+             * Format: int32
+             * @description Longest take, in milliseconds.
+             */
+            max_duration_ms: number;
+            /**
+             * Format: int32
+             * @description Tallest recording, in pixels of height (1080 = 1080p).
+             */
+            max_resolution: number;
+        };
         MeResponse: {
             /**
              * Format: uuid
@@ -565,6 +578,7 @@ export interface components {
              *     right entry out of `workspaces` as "current" without guessing.
              */
             current_workspace_id: string;
+            entitlements: components["schemas"]["MeEntitlements"];
             user: components["schemas"]["MeUser"];
             workspaces: components["schemas"]["MeWorkspace"][];
         };

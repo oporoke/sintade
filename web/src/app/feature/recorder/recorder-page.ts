@@ -3,6 +3,7 @@ import {
   Component,
   DestroyRef,
   ElementRef,
+  HostListener,
   Injector,
   afterNextRender,
   computed,
@@ -11,15 +12,29 @@ import {
   viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { Subscription } from 'rxjs';
+import { Subscription, interval } from 'rxjs';
 
 import {
   MicDevice,
   TakeMeta,
   AudioLevels,
+  AudioProcessing,
   AudioSourceName,
   BubbleLayout,
   BubbleShape,
+  DEFAULT_AUDIO_PROCESSING,
+  DEFAULT_QUALITY,
+  FRAME_RATES,
+  FrameRate,
+  QualityPreset,
+  StorageStatus,
+  bitsPerSecond,
+  expectedTakeBytes,
+  Region,
+  clampRegion,
+  RESOLUTIONS,
+  Resolution,
+  clampQuality,
   TakeSession,
   UploadHttpError,
   UploadProgress,
@@ -32,13 +47,17 @@ import { currentBrowser } from '../../core/browser';
 import { SHARE_API, shareUrl } from '../../core/share-api.service';
 import { ShareDialog } from '../share/share-dialog';
 import { CapabilityService } from '../../core/capability.service';
+import { LIBRARY_API } from '../../core/library-api.service';
 import { CreateRecordingResponse } from '../../core/ingest-api.service';
 import {
   AUDIO_MIXER,
   CHUNK_STORE,
+  PLAN_LIMITS,
   RECORDINGS_API,
   SOURCE_MANAGER,
   START_TAKE,
+  STORAGE_CHECK,
+  WAKE_LOCK_GUARD,
 } from '../../core/capture.tokens';
 import { CaptureProblem, CaptureSource, captureHelp } from './capture-help';
 import { Countdown } from './countdown';
@@ -63,6 +82,10 @@ const METER_INTERVAL_MS = 50;
 const TIMER_INTERVAL_MS = 250;
 /** How far inside the plan's take limit the recorder stops (timer ticks every 250 ms). */
 const LIMIT_MARGIN_MS = 1_000;
+/** How often the storage headroom is re-read during a take. */
+const STORAGE_POLL_MS = 15_000;
+/** The "stopping soon" notice starts this long before the automatic stop. */
+const LIMIT_WARNING_MS = 30_000;
 /**
  * Option value for a microphone listed before permission. Firefox then reports devices with an
  * empty `deviceId`, so the only thing we can ask for is "the browser's microphone".
@@ -84,6 +107,28 @@ const ANY_MIC = 'any';
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [Countdown, ShareDialog],
   styles: `
+    .preview {
+      position: relative;
+      width: 480px;
+      max-width: 100%;
+    }
+    .preview video {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+    .crop-pad {
+      position: absolute;
+      inset: 0;
+      touch-action: none;
+      cursor: crosshair;
+    }
+    .crop-box {
+      position: absolute;
+      border: 2px solid currentColor;
+      box-sizing: border-box;
+      pointer-events: none;
+    }
     .bubble-pad {
       position: relative;
       width: 240px;
@@ -127,20 +172,65 @@ const ANY_MIC = 'any';
             Choose screen, window or tab
           </button>
           @if (display(); as display) {
-            <video
-              [srcObject]="display"
-              autoplay
-              muted
-              playsinline
-              width="480"
-              data-testid="recorder-screen-preview"
-              i18n-aria-label
-              aria-label="Preview of what you are sharing"
-            ></video>
+            <div class="preview">
+              <video
+                [srcObject]="display"
+                autoplay
+                muted
+                playsinline
+                width="480"
+                data-testid="recorder-screen-preview"
+                i18n-aria-label
+                aria-label="Preview of what you are sharing"
+              ></video>
+              <div
+                class="crop-pad"
+                data-testid="recorder-crop-pad"
+                (pointerdown)="onCropStart($event)"
+                (pointermove)="onCropMove($event)"
+                (pointerup)="onCropEnd()"
+              >
+                @if (region(); as r) {
+                  <span
+                    class="crop-box"
+                    data-testid="recorder-crop-box"
+                    [style.left.%]="r.x * 100"
+                    [style.top.%]="r.y * 100"
+                    [style.width.%]="r.w * 100"
+                    [style.height.%]="r.h * 100"
+                  ></span>
+                }
+              </div>
+            </div>
             @if (displayInfo(); as info) {
               <p data-testid="recorder-screen-info">{{ info.label }} — {{ info.detail }}</p>
             }
+            <p>
+              <span i18n>Drag on the picture to record only part of the screen.</span>
+              @if (region()) {
+                <button
+                  type="button"
+                  (click)="clearRegion()"
+                  data-testid="recorder-crop-clear"
+                  i18n
+                >
+                  Record the whole screen
+                </button>
+              }
+            </p>
           }
+          <p>
+            <label>
+              <input
+                type="checkbox"
+                [checked]="showCursor()"
+                (change)="onCursorChange($event)"
+                data-testid="recorder-cursor"
+              />
+              <span i18n>Show the mouse pointer</span>
+            </label>
+            <span i18n>(applies the next time you choose a screen)</span>
+          </p>
 
           <p>
             <label>
@@ -158,6 +248,32 @@ const ANY_MIC = 'any';
           <p id="recorder-system-audio-hint" data-testid="recorder-system-audio-hint">
             {{ systemAudioHint() }}
           </p>
+        </section>
+
+        <section aria-labelledby="recorder-quality-heading">
+          <h2 id="recorder-quality-heading" i18n>Quality</h2>
+          <label>
+            <span i18n>Resolution</span>
+            <select (change)="onResolutionChange($event)" data-testid="recorder-resolution">
+              @for (option of resolutionOptions(); track option.height) {
+                <option
+                  [value]="option.height"
+                  [disabled]="!option.allowed"
+                  [selected]="option.height === quality().height"
+                >
+                  {{ option.label }}{{ option.allowed ? '' : upgradeSuffix }}
+                </option>
+              }
+            </select>
+          </label>
+          <label>
+            <span i18n>Frame rate</span>
+            <select (change)="onFrameRateChange($event)" data-testid="recorder-fps">
+              @for (fps of frameRates; track fps) {
+                <option [value]="fps" [selected]="fps === quality().fps">{{ fps }} fps</option>
+              }
+            </select>
+          </label>
         </section>
 
         <section aria-labelledby="recorder-camera-heading">
@@ -198,6 +314,36 @@ const ANY_MIC = 'any';
               }
             </select>
           </label>
+          <fieldset data-testid="recorder-audio-processing">
+            <legend i18n>Microphone processing</legend>
+            <label>
+              <input
+                type="checkbox"
+                [checked]="audioProcessing().noiseSuppression"
+                (change)="onProcessingChange('noiseSuppression', $event)"
+                data-testid="recorder-noise-suppression"
+              />
+              <span i18n>Noise suppression</span>
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                [checked]="audioProcessing().echoCancellation"
+                (change)="onProcessingChange('echoCancellation', $event)"
+                data-testid="recorder-echo-cancellation"
+              />
+              <span i18n>Echo cancellation</span>
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                [checked]="audioProcessing().autoGainControl"
+                (change)="onProcessingChange('autoGainControl', $event)"
+                data-testid="recorder-auto-gain"
+              />
+              <span i18n>Automatic gain</span>
+            </label>
+          </fieldset>
         </section>
       </fieldset>
 
@@ -262,6 +408,10 @@ const ANY_MIC = 'any';
         </fieldset>
       }
 
+      @if (storageMessage(); as message) {
+        <p role="alert" data-testid="recorder-storage-warning">{{ message }}</p>
+      }
+
       @if (phase() === 'setup' || phase() === 'countdown') {
         <button
           type="button"
@@ -313,6 +463,62 @@ const ANY_MIC = 'any';
           >
             Stop recording
           </button>
+          @if (phase() !== 'saving') {
+            @if (confirming(); as action) {
+              <p role="alert" data-testid="recorder-confirm">
+                @if (action === 'restart') {
+                  <span i18n>Throw this recording away and start again?</span>
+                } @else {
+                  <span i18n>Throw this recording away?</span>
+                }
+                <button
+                  type="button"
+                  (click)="confirmDiscard()"
+                  data-testid="recorder-confirm-yes"
+                  i18n
+                >
+                  Yes, discard it
+                </button>
+                <button
+                  type="button"
+                  (click)="confirming.set(null)"
+                  data-testid="recorder-confirm-no"
+                  i18n
+                >
+                  Keep recording
+                </button>
+              </p>
+            } @else {
+              <button
+                type="button"
+                (click)="confirming.set('restart')"
+                data-testid="recorder-restart"
+                i18n
+              >
+                Restart
+              </button>
+              <button
+                type="button"
+                (click)="confirming.set('discard')"
+                data-testid="recorder-discard"
+                i18n
+              >
+                Discard
+              </button>
+            }
+          }
+          @if (limitWarning(); as seconds) {
+            <p role="status" data-testid="recorder-limit-warning">
+              <ng-container i18n>
+                Your plan's time limit is near: this recording stops by itself in
+                {{ seconds }} s.
+              </ng-container>
+            </p>
+          }
+          <p data-testid="recorder-shortcuts" i18n>
+            Shortcuts (when this page is focused): P pause or resume, S stop, M mute the microphone,
+            R restart, D discard.
+          </p>
           @if (phase() === 'saving') {
             <p role="status" i18n>Saving…</p>
           }
@@ -479,6 +685,10 @@ export class RecorderPage {
   private readonly capabilityService = inject(CapabilityService);
   private readonly sources = inject(SOURCE_MANAGER);
   private readonly mixer = inject(AUDIO_MIXER);
+  private readonly planLimits = inject(PLAN_LIMITS);
+  private readonly libraryApi = inject(LIBRARY_API);
+  private readonly wakeLock = inject(WAKE_LOCK_GUARD);
+  private readonly storageCheck = inject(STORAGE_CHECK);
   private readonly chunkStore = inject(CHUNK_STORE);
   private readonly startTake = inject(START_TAKE);
   private readonly recordingsApi = inject(RECORDINGS_API);
@@ -502,6 +712,24 @@ export class RecorderPage {
   protected readonly systemAudioSupport = this.capabilityService.systemAudio;
   protected readonly systemAudio = signal(false);
   protected readonly camera = signal<MediaStream | null>(null);
+  private readonly requestedQuality = signal<QualityPreset>(DEFAULT_QUALITY);
+  /** What is actually recorded: the request, kept within the plan (a free user never gets 4K). */
+  protected readonly quality = computed(() =>
+    clampQuality(this.requestedQuality(), this.planLimits().maxResolution),
+  );
+  protected readonly resolutionOptions = computed(() =>
+    RESOLUTIONS.map((height) => ({
+      height,
+      allowed: height <= this.planLimits().maxResolution,
+      label: height === 2160 ? '4K' : `${height}p`,
+    })),
+  );
+  protected readonly frameRates = FRAME_RATES;
+  protected readonly showCursor = signal(true);
+  protected readonly region = signal<Region | null>(null);
+  private cropAnchor: { x: number; y: number } | null = null;
+  protected readonly upgradeSuffix = $localize` — not on your plan`;
+  protected readonly audioProcessing = signal<AudioProcessing>(DEFAULT_AUDIO_PROCESSING);
   protected readonly bubble = signal<BubbleLayout | null>(null);
   protected readonly display = signal<MediaStream | null>(null);
   protected readonly displayInfo = signal<LiveSource | null>(null);
@@ -559,6 +787,34 @@ export class RecorderPage {
   protected readonly uploadNotice = signal<string | null>(null);
   /** The plan's limits: recording refused (50 reached) or the take stopped at its length cap. */
   protected readonly limitNotice = signal<string | null>(null);
+  protected readonly storage = signal<StorageStatus>({ level: 'unknown' });
+  protected readonly storageMessage = computed(() => {
+    const status = this.storage();
+    if (status.level !== 'low') {
+      return null;
+    }
+    const used = Math.round(status.usedFraction * 100);
+    const freeMb = Math.round(status.freeBytes / 1_000_000);
+    return $localize`This device is short on space for recordings: ${used}:used:% of the browser's storage is used and about ${freeMb}:free: MB is free. Free some space, or a long recording may be cut short.`;
+  });
+  protected readonly confirming = signal<'restart' | 'discard' | null>(null);
+  private readonly planLimitMs = signal<number | null>(null);
+  /** Seconds until the automatic stop, once within the warning window (5 s steps above 10 s). */
+  protected readonly limitWarning = computed(() => {
+    const limit = this.planLimitMs();
+    if (limit === null || !['recording', 'paused'].includes(this.phase())) {
+      return null;
+    }
+    const left = limit - LIMIT_MARGIN_MS - this.elapsedMs();
+    if (left > LIMIT_WARNING_MS || left <= 0) {
+      return null;
+    }
+    const seconds = Math.ceil(left / 1000);
+    return seconds > 10 ? Math.ceil(seconds / 5) * 5 : seconds;
+  });
+  private discarding = false;
+  private currentRecordingId: string | null = null;
+  private currentTakeId: string | null = null;
   protected readonly uploadedHeading = $localize`Recording uploaded`;
   protected readonly savedHeading = $localize`Recording saved`;
   protected readonly anyMic = ANY_MIC;
@@ -588,12 +844,14 @@ export class RecorderPage {
   protected readonly resumeLabel = $localize`Resume`;
 
   constructor() {
+    void this.refreshStorage();
     this.sources.displayEnded$.pipe(takeUntilDestroyed()).subscribe(() => {
       this.display.set(null);
       this.displayInfo.set(null);
     });
     this.destroyRef.onDestroy(() => {
       this.destroyed = true;
+      void this.wakeLock.release();
       // Leaving mid-take still saves it (and the journal would recover it anyway).
       void this.session?.stop().catch(() => undefined);
       this.sessionSubscriptions.forEach((subscription) => subscription.unsubscribe());
@@ -645,6 +903,79 @@ export class RecorderPage {
 
   onSystemAudioChange(event: Event): void {
     this.systemAudio.set((event.target as HTMLInputElement).checked);
+  }
+
+  onResolutionChange(event: Event): void {
+    const height = Number((event.target as HTMLSelectElement).value) as Resolution;
+    this.requestedQuality.update((q) => ({ ...q, height }));
+    void this.sources.applyQuality(this.quality());
+  }
+
+  onFrameRateChange(event: Event): void {
+    const fps = Number((event.target as HTMLSelectElement).value) as FrameRate;
+    this.requestedQuality.update((q) => ({ ...q, fps }));
+    void this.sources.applyQuality(this.quality());
+  }
+
+  /** The browser applies these when the mic opens, so an open mic is reopened with the new set. */
+  async onProcessingChange(name: keyof AudioProcessing, event: Event): Promise<void> {
+    const checked = (event.target as HTMLInputElement).checked;
+    this.audioProcessing.update((all) => ({ ...all, [name]: checked }));
+    const mic = this.selectedMic();
+    if (mic && this.micInfo()) {
+      await this.openSelectedMic(mic);
+    }
+  }
+
+  onCursorChange(event: Event): void {
+    this.showCursor.set((event.target as HTMLInputElement).checked);
+  }
+
+  /** The crop is drawn by dragging on the preview; fractions of the picture, so any size works. */
+  onCropStart(event: PointerEvent): void {
+    const point = this.cropPoint(event);
+    if (!point) {
+      return;
+    }
+    (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
+    this.cropAnchor = point;
+    this.region.set(null);
+  }
+
+  onCropMove(event: PointerEvent): void {
+    const anchor = this.cropAnchor;
+    const point = this.cropPoint(event);
+    if (!anchor || !point) {
+      return;
+    }
+    this.region.set(
+      clampRegion({
+        x: Math.min(anchor.x, point.x),
+        y: Math.min(anchor.y, point.y),
+        w: Math.abs(point.x - anchor.x),
+        h: Math.abs(point.y - anchor.y),
+      }),
+    );
+  }
+
+  onCropEnd(): void {
+    this.cropAnchor = null;
+  }
+
+  clearRegion(): void {
+    this.region.set(null);
+  }
+
+  private cropPoint(event: PointerEvent): { x: number; y: number } | null {
+    const box = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    if (box.width === 0 || box.height === 0) {
+      return null;
+    }
+    const unit = (n: number) => Math.min(Math.max(n, 0), 1);
+    return {
+      x: unit((event.clientX - box.left) / box.width),
+      y: unit((event.clientY - box.top) / box.height),
+    };
   }
 
   async onCameraChange(event: Event): Promise<void> {
@@ -723,6 +1054,9 @@ export class RecorderPage {
     try {
       const stream = await this.sources.pickDisplay({
         systemAudio: this.systemAudio() && this.systemAudioSupport().supported,
+        frameRate: this.quality().fps,
+        height: this.quality().height,
+        cursor: this.showCursor() ? 'always' : 'never',
       });
       this.display.set(stream);
       this.displayInfo.set(describeDisplay(stream));
@@ -748,7 +1082,10 @@ export class RecorderPage {
   /** Opens the chosen mic (also Try again after a mic problem) and starts the device check. */
   private async openSelectedMic(deviceId: string): Promise<void> {
     try {
-      const stream = await this.sources.openMic(deviceId === ANY_MIC ? undefined : deviceId);
+      const stream = await this.sources.openMic(
+        deviceId === ANY_MIC ? undefined : deviceId,
+        this.audioProcessing(),
+      );
       const [track] = stream.getAudioTracks();
       // Pin (and remember) the real device, which is known now that permission was granted.
       const actual = track?.getSettings().deviceId;
@@ -780,6 +1117,7 @@ export class RecorderPage {
     this.uploadNotice.set(null);
     this.upload.set(null);
     this.stopPressedAt = null;
+    void this.refreshStorage();
     this.phase.set('countdown');
     const mic = this.sources.currentMic;
     const hasMic = (mic?.getAudioTracks().length ?? 0) > 0;
@@ -821,6 +1159,8 @@ export class RecorderPage {
       }
       this.limitNotice.set(null);
       const maxDurationMs = recording?.max_duration_ms ?? null;
+      this.planLimitMs.set(maxDurationMs);
+      this.currentRecordingId = recording?.recording_id ?? null;
       const store = await this.chunkStore;
       const takeId = recording?.take_id ?? crypto.randomUUID();
       const session = await this.startTake({
@@ -828,15 +1168,19 @@ export class RecorderPage {
         mic,
         mixer: this.mixer,
         camera: this.sources.currentCamera,
+        quality: this.quality(),
+        region: this.region(),
         store,
         takeId,
         ...(recording ? { serverTakeId: recording.take_id } : {}),
         ...(mimeType ? { mimeType } : {}),
       });
       this.session = session;
+      this.currentTakeId = takeId;
       this.bubble.set(session.bubble);
       this.watchLevelsWhileRecording();
       this.phase.set('recording');
+      void this.wakeLock.acquire();
       this.uploader = recording ? new Uploader({ api: this.recordingsApi, store, takeId }) : null;
       const uploader = this.uploader;
       if (!uploader) {
@@ -868,6 +1212,7 @@ export class RecorderPage {
             void this.stop();
           }
         }),
+        interval(STORAGE_POLL_MS).subscribe(() => void this.refreshStorage()),
         session.state$.subscribe((state) => {
           if (state === 'paused') this.phase.set('paused');
           else if (state === 'recording') this.phase.set('recording');
@@ -878,6 +1223,7 @@ export class RecorderPage {
       session.ended.then(
         (take) => this.finish(take),
         (error: unknown) => {
+          void this.wakeLock.release();
           this.phase.set('setup');
           this.showError(error, 'screen');
         },
@@ -902,6 +1248,110 @@ export class RecorderPage {
     await this.session?.stop().catch((error: unknown) => this.showError(error, 'screen'));
   }
 
+  /** Throws the current take away: nothing is kept on the device and the server copy is trashed. */
+  async confirmDiscard(): Promise<void> {
+    const action = this.confirming();
+    this.confirming.set(null);
+    const session = this.session;
+    if (!action || !session || this.discarding) {
+      return;
+    }
+    this.discarding = true;
+    const recordingId = this.currentRecordingId;
+    const takeId = this.currentTakeId;
+    this.uploader?.cancel();
+    this.uploader = null;
+    try {
+      await session.stop().catch(() => undefined);
+      if (takeId) {
+        const store = await this.chunkStore;
+        await store.deleteTake(takeId).catch(() => undefined);
+      }
+      if (recordingId) {
+        await this.libraryApi.trash(recordingId).catch(() => undefined);
+      }
+    } finally {
+      void this.wakeLock.release();
+      this.sessionSubscriptions.forEach((subscription) => subscription.unsubscribe());
+      this.sessionSubscriptions = [];
+      this.session = null;
+      this.bubble.set(null);
+      this.planLimitMs.set(null);
+      this.currentRecordingId = null;
+      this.currentTakeId = null;
+      this.elapsedMs.set(0);
+      this.discarding = false;
+      this.phase.set('setup');
+    }
+    if (action === 'restart') {
+      await this.start();
+    }
+  }
+
+  /** Recorder shortcuts: plain letters, only while a take is running and nothing is being typed. */
+  @HostListener('document:keydown', ['$event'])
+  onShortcut(event: KeyboardEvent): void {
+    if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) {
+      return;
+    }
+    const target = event.target;
+    if (
+      target instanceof Element &&
+      target.closest('input, select, textarea, [contenteditable=""], [contenteditable="true"]')
+    ) {
+      return;
+    }
+    const phase = this.phase();
+    if (phase !== 'recording' && phase !== 'paused') {
+      return;
+    }
+    switch (event.key.toLowerCase()) {
+      case 'p':
+        this.togglePause();
+        break;
+      case 's':
+        void this.stop();
+        break;
+      case 'm':
+        this.toggleMicMute();
+        break;
+      case 'r':
+        this.confirming.set('restart');
+        break;
+      case 'd':
+        this.confirming.set('discard');
+        break;
+      case 'escape':
+        this.confirming.set(null);
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+  }
+
+  /** Closing the tab mid-take loses the live recording (the saved part is offered for upload next time). */
+  @HostListener('window:beforeunload', ['$event'])
+  onBeforeUnload(event: BeforeUnloadEvent): void {
+    if (['countdown', 'recording', 'paused', 'saving', 'uploading'].includes(this.phase())) {
+      event.preventDefault();
+      event.returnValue = '';
+    }
+  }
+
+  /** How much storage headroom there is for a take of the plan's longest length. */
+  private async refreshStorage(): Promise<void> {
+    const seconds = this.planLimitMs() ?? this.planLimits().maxDurationMs;
+    const expected = expectedTakeBytes(bitsPerSecond(this.quality()), seconds);
+    this.storage.set(await this.storageCheck(expected));
+  }
+
+  private toggleMicMute(): void {
+    const muted = !this.mixer.isMuted('mic');
+    this.mixer.setMuted('mic', muted);
+    this.soundSettings.update((all) => ({ ...all, mic: { ...all.mic, muted } }));
+  }
+
   newRecording(): void {
     this.releaseDownload();
     this.result.set(null);
@@ -916,12 +1366,14 @@ export class RecorderPage {
   }
 
   private async finish(take: TakeMeta): Promise<void> {
-    if (this.destroyed) {
-      return; // Left the page mid-take: it's saved; there's no view to update.
+    if (this.destroyed || this.discarding) {
+      return; // Left the page mid-take (it's saved), or the take was discarded: nothing to show.
     }
     const stoppedAt = this.stopPressedAt ?? performance.now();
     this.session = null;
+    void this.wakeLock.release();
     this.bubble.set(null);
+    this.planLimitMs.set(null);
     this.elapsedMs.set(take.durationMs);
     this.result.set(take);
     const uploader = this.uploader;

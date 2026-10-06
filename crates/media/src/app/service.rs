@@ -9,7 +9,8 @@ use sqlx::PgPool;
 
 use crate::domain::probe::ProbeRejection;
 use crate::domain::{
-    ChunkManifest, Container, ManifestChunk, ManifestError, mp4_key, poster_key, source_key,
+    ChunkManifest, Container, ManifestChunk, ManifestError, mp4_key, poster_key,
+    preview_content_type, source_key,
 };
 use crate::infra;
 use crate::infra::scratch::{ScratchDir, ScratchSpace};
@@ -322,7 +323,7 @@ impl MediaService {
                 "default",
                 &key,
                 i64::try_from(bytes).unwrap_or(i64::MAX),
-                serde_json::json!({ "content_type": container.content_type() }),
+                serde_json::json!({ "content_type": preview_content_type(&job.mime_type) }),
             )
             .await?;
         }
