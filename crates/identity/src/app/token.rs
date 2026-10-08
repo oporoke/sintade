@@ -91,6 +91,15 @@ fn sign(payload: &[u8], secret: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
 }
 
+/// A key for one purpose, derived from the session secret so other features (signed manifests)
+/// never use the secret itself: `HMAC-SHA256(secret, "sintade-key:" + purpose)`.
+pub fn derive_key(secret: &[u8], purpose: &str) -> Vec<u8> {
+    let mut mac = HmacSha256::new_from_slice(secret).expect("hmac-sha256 accepts any key length");
+    mac.update(b"sintade-key:");
+    mac.update(purpose.as_bytes());
+    mac.finalize().into_bytes().to_vec()
+}
+
 /// A random 32-byte token, hex-encoded, for opaque single-use secrets (refresh tokens, email
 /// verification tokens) that are stored server-side only as a SHA-256 hash.
 pub fn generate_random_hex_token() -> String {
@@ -154,6 +163,15 @@ mod tests {
         let claims = verify_access_token(&token, now, SECRET).expect("valid token verifies");
         assert_eq!(claims.user_id, user_id);
         assert_eq!(claims.workspace_id, workspace_id);
+    }
+
+    #[test]
+    fn derived_keys_differ_by_purpose_and_secret() {
+        let a = derive_key(SECRET, "a");
+        assert_eq!(a, derive_key(SECRET, "a"));
+        assert_ne!(a, derive_key(SECRET, "b"));
+        assert_ne!(a, derive_key(b"another-secret-another-secret-32", "a"));
+        assert_ne!(a, SECRET);
     }
 
     #[test]

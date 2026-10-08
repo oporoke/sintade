@@ -423,7 +423,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** One rung's playlist, its init and media segments signed for 15 minutes. */
+        /**
+         * One rung's playlist, its init and media segments signed. Needs the token the master playlist
+         *     put on this URL (`t`); the segments stop working when the token expires (ADR-0033).
+         */
         get: operations["hls_rung"];
         put?: never;
         post?: never;
@@ -2170,7 +2173,10 @@ export interface operations {
     };
     hls_rung: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description The playlist token from the master playlist */
+                t?: string;
+            };
             header?: never;
             path: {
                 /** @description The link's slug */
@@ -2193,6 +2199,15 @@ export interface operations {
             };
             /** @description Sign in to watch this link */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The playlist token is missing, invalid or expired: fetch the master playlist again */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

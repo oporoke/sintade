@@ -1,9 +1,9 @@
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use kernel::{AppError, Permission, RecordingId, WorkspaceId};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sharing::{Decision, ShareLinkView, Viewer, decide};
 use time::format_description::well_known::Rfc3339;
 use utoipa::ToSchema;
@@ -426,7 +426,13 @@ pub async fn sprite_vtt(
     )))
 }
 
-/// One rung's playlist, its init and media segments signed for 15 minutes.
+#[derive(Debug, Deserialize)]
+pub struct RungQuery {
+    t: Option<String>,
+}
+
+/// One rung's playlist, its init and media segments signed. Needs the token the master playlist
+/// put on this URL (`t`); the segments stop working when the token expires (ADR-0033).
 #[utoipa::path(
     get,
     path = "/api/v1/s/{slug}/hls/{rung}/index.m3u8",
@@ -434,10 +440,12 @@ pub async fn sprite_vtt(
     params(
         ("slug" = String, Path, description = "The link's slug"),
         ("rung" = String, Path, description = "`360p`, `720p` or `1080p`"),
+        ("t" = Option<String>, Query, description = "The playlist token from the master playlist"),
     ),
     responses(
         (status = 200, description = "An HLS media playlist with signed segment URLs", content_type = "application/vnd.apple.mpegurl", body = String),
         (status = 401, description = "Sign in to watch this link", body = Problem, content_type = "application/problem+json"),
+        (status = 403, description = "The playlist token is missing, invalid or expired: fetch the master playlist again", body = Problem, content_type = "application/problem+json"),
         (status = 404, description = "No such live link, not for this viewer, or no such rung", body = Problem, content_type = "application/problem+json"),
     )
 )]
@@ -446,15 +454,26 @@ pub async fn hls_rung(
     State(state): State<AppState>,
     session: MaybeSession,
     Path((slug, rung)): Path<(String, String)>,
+    Query(query): Query<RungQuery>,
 ) -> Result<Response, ApiError> {
     let resolved = admitted(&state, &session, &slug).await?;
-    let playlist = state
+    match state
         .delivery
-        .hls_rung(resolved.workspace_id, resolved.recording_id, &rung)
+        .hls_rung(
+            resolved.workspace_id,
+            resolved.recording_id,
+            &rung,
+            query.t.as_deref(),
+        )
         .await
         .map_err(internal)?
-        .ok_or(AppError::NotFound)?;
-    Ok(playlist_response(playlist))
+    {
+        delivery::RungPlaylist::Playlist(playlist) => Ok(playlist_response(playlist)),
+        delivery::RungPlaylist::NotFound => Err(AppError::NotFound.into()),
+        delivery::RungPlaylist::Refused(error) => {
+            Err(AppError::Forbidden(error.to_string()).into())
+        }
+    }
 }
 
 /// Live status of the recording behind a share link, for a viewer the link admits: the watch
@@ -629,16 +648,60 @@ mod tests {
             Some("application/vnd.apple.mpegurl")
         );
         assert!(
-            master.text.contains("\n720p/index.m3u8\n"),
+            master.text.contains("\n720p/index.m3u8?t="),
             "{}",
             master.text
         );
+        let token = master
+            .text
+            .split("?t=")
+            .nth(1)
+            .and_then(|rest| rest.lines().next())
+            .expect("the master names rungs with a token")
+            .to_string();
+        let rung_uri = format!("{hls}/720p/index.m3u8");
+
+        // No token, a forged one, or one minted for another recording: refused.
+        for bad in [
+            rung_uri.clone(),
+            format!("{rung_uri}?t=junk"),
+            format!("{rung_uri}?t="),
+        ] {
+            let refused = call(&pool, None, Method::GET, &bad, None).await;
+            assert_eq!(refused.status, StatusCode::FORBIDDEN, "{bad}");
+        }
+        let (other_owner, other_id) = ready(&pool).await;
+        let (other_slug, _) = link(&pool, &other_owner, other_id, "link").await;
+        ladder(&pool, other_owner.workspace_id, other_id).await;
+        let other_master = call(
+            &pool,
+            None,
+            Method::GET,
+            &format!("/api/v1/s/{other_slug}/hls/master.m3u8"),
+            None,
+        )
+        .await;
+        let other_token = other_master
+            .text
+            .split("?t=")
+            .nth(1)
+            .and_then(|r| r.lines().next())
+            .expect("token");
+        let swapped = call(
+            &pool,
+            None,
+            Method::GET,
+            &format!("{rung_uri}?t={other_token}"),
+            None,
+        )
+        .await;
+        assert_eq!(swapped.status, StatusCode::FORBIDDEN);
 
         let rung = call(
             &pool,
             None,
             Method::GET,
-            &format!("{hls}/720p/index.m3u8"),
+            &format!("{rung_uri}?t={token}"),
             None,
         )
         .await;
@@ -703,18 +766,42 @@ mod tests {
         ladder(&pool, owner.workspace_id, id).await;
         let (slug, _) = link(&pool, &owner, id, "private").await;
         let hls = format!("/api/v1/s/{slug}/hls");
+        let own_master = call(
+            &pool,
+            Some(&owner),
+            Method::GET,
+            &format!("{hls}/master.m3u8"),
+            None,
+        )
+        .await;
+        assert_eq!(own_master.status, StatusCode::OK);
+        let token = own_master
+            .text
+            .split("?t=")
+            .nth(1)
+            .and_then(|rest| rest.lines().next())
+            .expect("token")
+            .to_string();
+        let other = caller(&pool).await;
+        // Even holding a genuine token, a viewer the link doesn't admit gets nothing.
         for uri in [
             format!("{hls}/master.m3u8"),
-            format!("{hls}/720p/index.m3u8"),
+            format!("{hls}/720p/index.m3u8?t={token}"),
         ] {
             let anon = call(&pool, None, Method::GET, &uri, None).await;
             assert_eq!(anon.status, StatusCode::NOT_FOUND, "{uri}");
-            let other = caller(&pool).await;
             let stranger = call(&pool, Some(&other), Method::GET, &uri, None).await;
             assert_eq!(stranger.status, StatusCode::NOT_FOUND, "{uri}");
-            let own = call(&pool, Some(&owner), Method::GET, &uri, None).await;
-            assert_eq!(own.status, StatusCode::OK, "{uri}");
         }
+        let own_rung = call(
+            &pool,
+            Some(&owner),
+            Method::GET,
+            &format!("{hls}/720p/index.m3u8?t={token}"),
+            None,
+        )
+        .await;
+        assert_eq!(own_rung.status, StatusCode::OK, "{}", own_rung.text);
     }
 
     #[sqlx::test(migrations = "../../migrations")]

@@ -5,15 +5,17 @@
 
 mod filename;
 mod hls;
+mod manifest_token;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use kernel::{RecordingId, WorkspaceId};
 use media::RenditionReader;
-use platform::{ObjectStore, StorageError};
+use platform::{Clock, ObjectStore, StorageError};
 
 pub use filename::download_filename;
+pub use manifest_token::{ManifestSigner, TokenError};
 
 /// How long a grant's URLs work (docs/design.md §16: presigned URLs ≤ 15 minutes).
 pub const GRANT_TTL: Duration = Duration::from_secs(15 * 60);
@@ -55,14 +57,38 @@ pub struct DownloadGrant {
     pub expires_in_s: u64,
 }
 
+/// What asking for a rung playlist can give.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RungPlaylist {
+    /// No such rung, or no ladder.
+    NotFound,
+    /// The token is missing, forged, for another recording or expired.
+    Refused(TokenError),
+    Playlist(String),
+}
+
 pub struct DeliveryService {
     store: Arc<dyn ObjectStore>,
     renditions: Arc<RenditionReader>,
+    clock: Arc<dyn Clock>,
+    signer: ManifestSigner,
 }
 
 impl DeliveryService {
-    pub fn new(store: Arc<dyn ObjectStore>, renditions: Arc<RenditionReader>) -> Self {
-        Self { store, renditions }
+    /// `manifest_key` signs the playlist tokens (derive it from the session secret, don't use the
+    /// secret itself).
+    pub fn new(
+        store: Arc<dyn ObjectStore>,
+        renditions: Arc<RenditionReader>,
+        clock: Arc<dyn Clock>,
+        manifest_key: Vec<u8>,
+    ) -> Self {
+        Self {
+            store,
+            renditions,
+            clock,
+            signer: ManifestSigner::new(manifest_key),
+        }
     }
 
     /// Signed URLs for the recording: its MP4 when it exists, otherwise (if `allow_preview`) the
@@ -192,8 +218,8 @@ impl DeliveryService {
             .is_some())
     }
 
-    /// The master playlist, as stored: it names each rung relatively. `None` before the ladder
-    /// exists.
+    /// The master playlist with a token (valid [`GRANT_TTL`]) on each rung it names. `None`
+    /// before the ladder exists.
     #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
     pub async fn hls_master(
         &self,
@@ -207,47 +233,67 @@ impl DeliveryService {
         else {
             return Ok(None);
         };
-        self.read_playlist(&format!("{prefix}/master.m3u8")).await
+        let Some(master) = self.read_playlist(&format!("{prefix}/master.m3u8")).await? else {
+            return Ok(None);
+        };
+        let expires_at = self.clock.now().unix_timestamp() + GRANT_TTL.as_secs() as i64;
+        let token = self.signer.issue(recording_id, expires_at);
+        Ok(Some(hls::tokenize_master(&master, &token)))
     }
 
-    /// One rung's playlist with every segment (and the init segment) signed for 15 minutes.
-    /// `None` for an unknown rung or before the ladder exists.
+    /// One rung's playlist with every segment (and the init segment) signed, but only until
+    /// `token` expires, so no segment URL outlives the master fetch that started the session by
+    /// more than [`GRANT_TTL`].
     #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
     pub async fn hls_rung(
         &self,
         workspace_id: WorkspaceId,
         recording_id: RecordingId,
         rung: &str,
-    ) -> Result<Option<String>, DeliveryError> {
+        token: Option<&str>,
+    ) -> Result<RungPlaylist, DeliveryError> {
         if !hls::RUNGS.contains(&rung) {
-            return Ok(None);
+            return Ok(RungPlaylist::NotFound);
         }
+        let now = self.clock.now().unix_timestamp();
+        let expires_at = match token
+            .ok_or(TokenError::Invalid)
+            .and_then(|token| self.signer.verify(token, recording_id, now))
+        {
+            Ok(expires_at) => expires_at,
+            Err(error) => return Ok(RungPlaylist::Refused(error)),
+        };
+        let ttl = Duration::from_secs(
+            u64::try_from(expires_at - now)
+                .unwrap_or(1)
+                .clamp(1, GRANT_TTL.as_secs()),
+        );
         let Some(prefix) = self
             .renditions
             .hls_prefix(workspace_id, recording_id)
             .await?
         else {
-            return Ok(None);
+            return Ok(RungPlaylist::NotFound);
         };
         let Some(playlist) = self
             .read_playlist(&format!("{prefix}/{rung}/index.m3u8"))
             .await?
         else {
-            return Ok(None);
+            return Ok(RungPlaylist::NotFound);
         };
         let Some(files) = hls::referenced_files(&playlist) else {
             tracing::error!("hls: a stored playlist references a path");
-            return Ok(None);
+            return Ok(RungPlaylist::NotFound);
         };
         let mut urls = std::collections::HashMap::new();
         for file in files {
             if let std::collections::hash_map::Entry::Vacant(entry) = urls.entry(file) {
                 let key = format!("{prefix}/{rung}/{}", entry.key());
-                let url = self.store.presign_get(&key, GRANT_TTL).await?.to_string();
+                let url = self.store.presign_get(&key, ttl).await?.to_string();
                 entry.insert(url);
             }
         }
-        Ok(Some(hls::rewrite(&playlist, &urls)))
+        Ok(RungPlaylist::Playlist(hls::rewrite(&playlist, &urls)))
     }
 
     /// The scrub sprite's `sprite.vtt` with each sheet signed for 15 minutes; `None` until the
@@ -398,7 +444,12 @@ mod tests {
     }
 
     fn service(pool: PgPool) -> DeliveryService {
-        DeliveryService::new(store(), Arc::new(RenditionReader::new(pool)))
+        DeliveryService::new(
+            store(),
+            Arc::new(RenditionReader::new(pool)),
+            Arc::new(platform::SystemClock),
+            b"test-manifest-key-test-manifest!".to_vec(),
+        )
     }
 
     #[sqlx::test(migrations = "../../migrations")]
@@ -641,6 +692,141 @@ mod tests {
                 .await
                 .expect("grant")
                 .is_none()
+        );
+    }
+
+    async fn put(store: &Arc<dyn ObjectStore>, key: &str, bytes: &[u8]) {
+        let dir = std::env::temp_dir().join(format!("delivery-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let file = dir.join("f");
+        std::fs::write(&file, bytes).expect("file");
+        store
+            .put_file(key, &file, "application/octet-stream")
+            .await
+            .expect("put");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Day 86 Check: "segment URLs expire; no hotlinking". Against the real bucket: a rung
+    /// playlist is only served with a genuine, unexpired token; its segments are signed only until
+    /// that token expires; and the bare object URL (the hotlink) is refused.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn segment_urls_expire_with_the_token_and_the_bare_url_is_refused(pool: PgPool) {
+        let (workspace, recording) = seed(&pool, true).await;
+        let store = store();
+        let prefix = format!("test/{workspace}/rec/{recording}/hls");
+        put(
+            &store,
+            &format!("{prefix}/master.m3u8"),
+            b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n720p/index.m3u8\n",
+        )
+        .await;
+        put(
+            &store,
+            &format!("{prefix}/720p/index.m3u8"),
+            b"#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:4.0,\nseg_0000.m4s\n#EXT-X-ENDLIST\n",
+        )
+        .await;
+        put(&store, &format!("{prefix}/720p/init.mp4"), b"init").await;
+        put(&store, &format!("{prefix}/720p/seg_0000.m4s"), b"segment").await;
+        let take = sqlx::query_scalar!(
+            "SELECT id FROM takes WHERE recording_id = $1",
+            recording.into_uuid()
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("take");
+        sqlx::query!(
+            "INSERT INTO renditions (id, workspace_id, recording_id, take_id, kind, variant, storage_key)
+             VALUES ($1, $2, $3, $4, 'hls', 'master', $5)",
+            uuid::Uuid::now_v7(),
+            workspace.into_uuid(),
+            recording.into_uuid(),
+            take,
+            format!("{prefix}/master.m3u8"),
+        )
+        .execute(&pool)
+        .await
+        .expect("master rendition");
+        let service = DeliveryService::new(
+            store,
+            Arc::new(RenditionReader::new(pool)),
+            Arc::new(platform::SystemClock),
+            b"test-manifest-key-test-manifest!".to_vec(),
+        );
+
+        // The master hands out a token; without one, or with a forged one, there is no rung.
+        let master = service
+            .hls_master(workspace, recording)
+            .await
+            .expect("master")
+            .expect("ladder");
+        assert!(master.contains("720p/index.m3u8?t="), "{master}");
+        for token in [None, Some("junk")] {
+            assert_eq!(
+                service
+                    .hls_rung(workspace, recording, "720p", token)
+                    .await
+                    .expect("rung"),
+                RungPlaylist::Refused(TokenError::Invalid)
+            );
+        }
+
+        // A token with two seconds left signs segments for two seconds.
+        let now = platform::SystemClock.now().unix_timestamp();
+        let short = service.signer.issue(recording, now + 2);
+        let RungPlaylist::Playlist(playlist) = service
+            .hls_rung(workspace, recording, "720p", Some(&short))
+            .await
+            .expect("rung")
+        else {
+            panic!("a genuine token gets the playlist");
+        };
+        let segment = playlist
+            .lines()
+            .find(|line| line.contains("seg_0000.m4s"))
+            .expect("segment line")
+            .to_string();
+        let http = reqwest::Client::new();
+        let fetched = http.get(&segment).send().await.expect("get");
+        assert_eq!(fetched.status().as_u16(), 200);
+        assert_eq!(fetched.bytes().await.expect("body").as_ref(), b"segment");
+
+        // The bare object URL, the way a hotlink would name it, is refused.
+        let bare = segment.split('?').next().expect("url").to_string();
+        assert_eq!(
+            http.get(&bare).send().await.expect("get").status().as_u16(),
+            403
+        );
+        // Tampering with the signed URL (another object, same signature) is refused too.
+        let other = segment.replace("seg_0000.m4s", "init.mp4");
+        assert_eq!(
+            http.get(&other)
+                .send()
+                .await
+                .expect("get")
+                .status()
+                .as_u16(),
+            403
+        );
+
+        // Once the token has expired, so has every URL it signed, and the token itself.
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        assert_eq!(
+            http.get(&segment)
+                .send()
+                .await
+                .expect("get")
+                .status()
+                .as_u16(),
+            403
+        );
+        assert_eq!(
+            service
+                .hls_rung(workspace, recording, "720p", Some(&short))
+                .await
+                .expect("rung"),
+            RungPlaylist::Refused(TokenError::Expired)
         );
     }
 }

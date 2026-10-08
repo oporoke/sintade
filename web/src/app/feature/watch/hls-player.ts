@@ -126,13 +126,18 @@ export class VideoPlayer {
         this.events.switched(level.height);
       }
     });
+    hls.on(Hls.Events.FRAG_LOADED, () => {
+      // Playback is healthy again: a later expiry may re-read the playlists once more.
+      this.retried = false;
+    });
     hls.on(Hls.Events.ERROR, (_event, data) => {
       if (!data.fatal) {
         return;
       }
       const at = this.video.currentTime;
       if (data.type === Hls.ErrorTypes.NETWORK_ERROR && !this.retried) {
-        // Segment URLs are signed for 15 minutes: read the playlists again for fresh ones.
+        // Segment URLs expire with the playlist token (15 minutes): read the master again for a
+        // fresh token and fresh segment URLs.
         this.retried = true;
         hls.loadSource(hlsUrl);
         hls.startLoad(at);

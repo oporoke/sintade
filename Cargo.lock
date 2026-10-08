@@ -885,9 +885,13 @@ dependencies = [
 name = "delivery"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
+ "hmac 0.13.0",
  "kernel",
  "media",
  "platform",
+ "reqwest",
+ "sha2 0.11.0",
  "sqlx",
  "thiserror",
  "tokio",

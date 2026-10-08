@@ -1540,7 +1540,7 @@
         "tags": [
           "watch"
         ],
-        "summary": "One rung's playlist, its init and media segments signed for 15 minutes.",
+        "summary": "One rung's playlist, its init and media segments signed. Needs the token the master playlist\nput on this URL (`t`); the segments stop working when the token expires (ADR-0033).",
         "operationId": "hls_rung",
         "parameters": [
           {
@@ -1560,6 +1560,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "t",
+            "in": "query",
+            "description": "The playlist token from the master playlist",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -1575,6 +1584,16 @@
           },
           "401": {
             "description": "Sign in to watch this link",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The playlist token is missing, invalid or expired: fetch the master playlist again",
             "content": {
               "application/problem+json": {
                 "schema": {

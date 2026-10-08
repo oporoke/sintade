@@ -15,6 +15,21 @@ pub(crate) fn is_plain_file(file: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
 }
 
+/// The master playlist with the token on each rung playlist it names (`360p/index.m3u8` becomes
+/// `360p/index.m3u8?t=<token>`; the player resolves it against the master's own URL).
+pub fn tokenize_master(master: &str, token: &str) -> String {
+    let mut out = String::with_capacity(master.len() + 128);
+    for line in master.lines() {
+        if !line.starts_with('#') && line.ends_with("/index.m3u8") {
+            out.push_str(&format!("{line}?t={token}"));
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    out
+}
+
 /// The file names a rung playlist references, in order: the `#EXT-X-MAP` init segment and every
 /// media segment line. `None` if any is not a plain file name.
 pub fn referenced_files(playlist: &str) -> Option<Vec<String>> {
@@ -79,6 +94,15 @@ mod tests {
     use super::*;
 
     const RUNG: &str = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:4.0,\nseg_0000.m4s\n#EXTINF:1.5,\nseg_0001.m4s\n#EXT-X-ENDLIST\n";
+
+    #[test]
+    fn the_master_names_each_rung_with_the_token() {
+        let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n360p/index.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=2\n720p/index.m3u8\n";
+        assert_eq!(
+            tokenize_master(master, "T"),
+            "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n360p/index.m3u8?t=T\n#EXT-X-STREAM-INF:BANDWIDTH=2\n720p/index.m3u8?t=T\n"
+        );
+    }
 
     #[test]
     fn it_lists_the_init_and_every_segment() {

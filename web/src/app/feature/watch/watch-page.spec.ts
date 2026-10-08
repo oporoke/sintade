@@ -13,7 +13,12 @@ const hlsFake = vi.hoisted(() => {
     nextLevel: number;
   }[] = [];
   class FakeHls {
-    static Events = { MANIFEST_PARSED: 'manifest', LEVEL_SWITCHED: 'switched', ERROR: 'error' };
+    static Events = {
+      MANIFEST_PARSED: 'manifest',
+      LEVEL_SWITCHED: 'switched',
+      ERROR: 'error',
+      FRAG_LOADED: 'frag',
+    };
     static ErrorTypes = { NETWORK_ERROR: 'network', MEDIA_ERROR: 'media' };
     static isSupported = () => true;
     handlers = new Map<string, (event: string, data: unknown) => void>();

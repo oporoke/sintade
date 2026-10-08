@@ -12,6 +12,7 @@ const hls = vi.hoisted(() => {
       MANIFEST_PARSED: 'manifest',
       LEVEL_SWITCHED: 'switched',
       ERROR: 'error',
+      FRAG_LOADED: 'frag',
     };
     static ErrorTypes = { NETWORK_ERROR: 'network', MEDIA_ERROR: 'media' };
     static isSupported = () => state.supported;
@@ -139,6 +140,21 @@ describe('VideoPlayer', () => {
     expect(instance.destroy).toHaveBeenCalled();
     expect(element.getAttribute('src')).toBe(SOURCE.url);
     expect(seen.fellBack).toHaveBeenCalled();
+  });
+
+  it('re-reads the playlists again after a long pause once playback has recovered', async () => {
+    const element = video();
+    const seen = events();
+    await VideoPlayer.start(element, SOURCE, seen);
+    const [instance] = hls.state.instances;
+    const fatal = { fatal: true, type: 'network' };
+    instance.emit('error', fatal);
+    expect(instance.loadSource).toHaveBeenCalledTimes(2);
+    // A fragment loads with the fresh URLs, then the next expiry is handled the same way.
+    instance.emit('frag', {});
+    instance.emit('error', fatal);
+    expect(instance.loadSource).toHaveBeenCalledTimes(3);
+    expect(seen.fellBack).not.toHaveBeenCalled();
   });
 
   it('recovers a media error once and ignores non-fatal ones', async () => {

@@ -71,6 +71,8 @@ pub fn build_router(
             delivery: Arc::new(delivery::DeliveryService::new(
                 store,
                 Arc::new(media::RenditionReader::new(pool.clone())),
+                clock.clone(),
+                identity.derive_key("hls-manifest-v1"),
             )),
             sharing: Arc::new(sharing::SharingService::new(
                 pool.clone(),

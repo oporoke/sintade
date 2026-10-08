@@ -15,6 +15,11 @@ pub struct IdentityService {
 }
 
 impl IdentityService {
+    /// A key for `purpose`, derived from the session secret (not the secret itself).
+    pub fn derive_key(&self, purpose: &str) -> Vec<u8> {
+        super::token::derive_key(&self.session_secret, purpose)
+    }
+
     pub fn new(
         pool: PgPool,
         queue: JobQueue,

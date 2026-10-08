@@ -533,6 +533,8 @@ fn app(pool: &PgPool) -> Router {
             delivery: Arc::new(delivery::DeliveryService::new(
                 test_store(),
                 Arc::new(media::RenditionReader::new(pool.clone())),
+                test_clock(),
+                b"test-manifest-key-test-manifest!".to_vec(),
             )),
             sharing: Arc::new(sharing::SharingService::new(
                 pool.clone(),
