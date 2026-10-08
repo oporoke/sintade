@@ -710,7 +710,7 @@ CREATE TABLE outbox_events (
 | `totp_secrets` | `user_id`, `secret_enc`, `recovery_codes_hash[]` | Secret encrypted with app key |
 | `workspace_invites` | `workspace_id`, `email`, `role`, `token_hash`, `expires_at` |  |
 | `folders` | `workspace_id`, `parent_id`, `name` | Adjacency list; max depth 5 |
-| `edits` | `recording_id`, `edl jsonb`, `version` | EDL = list of kept `[start_ms, end_ms]` ranges |
+| `edits` | `recording_id`, `edl jsonb`, `version`, `source_duration_ms`, `created_by` | EDL = list of kept `[start_ms, end_ms]` ranges (ADR-0035) |
 | `comments` | `recording_id`, `author_id`, `parent_id`, `at_ms`, `body`, `deleted_at` | Index (`recording_id`, `at_ms`) |
 | `reactions` | `recording_id`, `user_id`, `emoji`, `at_ms` |  |
 | `views` | `recording_id`, `viewer_id?`, `anon_id?`, `started_at`, `watched_ms`, `max_position_ms` | Partition by month when large |
@@ -1108,7 +1108,7 @@ Rules: one row = one mergeable unit of work. `In progress` must name the branch 
 | MVP | Backups + production VPS deploy | 19 | In progress | Day 68 (`feat/day-068-backups`): Postgres WAL archiving + nightly base backups (PITR, 14 days), off-site mirror of backups and the media bucket to a versioned store, `deploy/backup/`, runbooks (`docs/runbooks/`), restore drill passing (`restore-drill.sh`, in CI); **no staging restore yet** (no staging). Day 69 (`feat/day-069-production`): production compose (Caddy TLS, nginx web, API, worker, Postgres with archiving, MinIO), `deploy.sh`, `deploy-production` job behind an approval, `api migrate`, Sentry, `OpsWatchdog` alerts, host runbooks (ADR-0023); proven locally by `just prod-smoke`; **no production host exists yet** |
 | V1 | Webcam bubble, quality presets, shortcuts, meters | 1, 2 | Done (locally) | M9, Days 71–78: compositor with draggable bubble and camera-only (ADR-0024), per-source volume/mute and meters, presets capped by the plan and mic processing toggles (ADR-0025), region crop and pointer option, restart/discard and shortcuts (ADR-0026), wake lock, storage warning and unload guard (ADR-0027), H.264 recording for CPU (ADR-0028). Demo `docs/demos/M09-capture-upgrades.md`; 1080p60 CPU budget awaits the owner |
 | V1 | HLS ladder, sprites, SSE status, full player | 5, 6 | In progress | M10: ladder, sprite and preview (Days 79–81), SSE status (Day 82, ADR-0029), adaptive player with quality selector and MP4 fallback (Day 83, ADR-0030), hover sprite, resume and shortcuts (Day 84, ADR-0031), chapters (Day 85, ADR-0032), signed manifest tokens (Day 86, ADR-0033), playback-path cache and 200-viewer load test (Day 87, ADR-0034); captions to come |
-| V1 | Trim/cut editor + EDL rendering | 7 | Not started |  |
+| V1 | Trim/cut editor + EDL rendering | 7 | In progress | M11: `edits` table and the validated EDL type (Day 89, ADR-0035) |
 | V1 | Whisper transcription + transcript search | 8, 11 | Not started |  |
 | V1 | Workspaces, roles, invites, folders, trash restore | 11, 13 | Not started |  |
 | V1 | Password/expiry/invite links, oEmbed, Open Graph | 9 | Not started |  |

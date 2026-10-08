@@ -1,5 +1,6 @@
 //! Media's pure rules: the chunk manifest a take is processed from. No I/O here.
 
+pub mod edl;
 pub mod hls;
 pub mod probe;
 pub mod sprite;
