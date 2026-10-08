@@ -92,8 +92,10 @@ pub fn preview_args(mp4: &Path, output: &Path, duration_ms: u32) -> Vec<OsString
             "-dn",
             "-vf",
             &filter,
+            // `passthrough` keeps every frame at its own time; Ubuntu's FFmpeg 6.1 drops most of
+            // them under `vfr`, which left CI with 4 frames instead of 8.
             "-fps_mode",
-            "vfr",
+            "passthrough",
             "-frames:v",
             &PREVIEW_FRAMES.to_string(),
             "-c:v",
