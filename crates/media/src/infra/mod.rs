@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod edits_schema;
 mod golden_pipeline;
 mod probe_fixtures;
 mod repo;

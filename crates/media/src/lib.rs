@@ -14,6 +14,9 @@ pub use app::{
     RetryService, SourceKey, SpriteError, SpriteOutcome, TakeFinalizedData, TakeFinalizedMessage,
     TranscodeError, TranscodeReport, transcode_file,
 };
+pub use domain::edl::{
+    Edl, EdlError, EdlJsonError, EdlRanges, KeptRange, MAX_RANGES, MIN_RANGE_MS,
+};
 pub use domain::probe::SourceInfo;
 pub use domain::transcode::Mp4Plan;
 pub use domain::{ChunkManifest, Container, ManifestChunk, ManifestError};
