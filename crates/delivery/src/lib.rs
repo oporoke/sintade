@@ -3,6 +3,7 @@
 //! Playback grants: short-lived signed URLs for a recording's renditions (docs/design.md §5).
 //! Stateless; the caller has already decided the viewer may watch (`sharing::decide`).
 
+mod cache;
 mod filename;
 mod hls;
 mod manifest_token;
@@ -10,6 +11,7 @@ mod manifest_token;
 use std::sync::Arc;
 use std::time::Duration;
 
+use cache::TtlCache;
 use kernel::{RecordingId, WorkspaceId};
 use media::RenditionReader;
 use platform::{Clock, ObjectStore, StorageError};
@@ -72,6 +74,10 @@ pub struct DeliveryService {
     renditions: Arc<RenditionReader>,
     clock: Arc<dyn Clock>,
     signer: ManifestSigner,
+    /// Where a recording's ladder lives (ADR-0034). Keyed by workspace as well as recording.
+    prefixes: TtlCache<(WorkspaceId, RecordingId), String>,
+    /// Stored playlists by storage key (workspace-scoped by their path).
+    playlists: TtlCache<String, String>,
 }
 
 impl DeliveryService {
@@ -88,6 +94,8 @@ impl DeliveryService {
             renditions,
             clock,
             signer: ManifestSigner::new(manifest_key),
+            prefixes: TtlCache::new(cache::TTL_S, cache::CAPACITY),
+            playlists: TtlCache::new(cache::TTL_S, cache::CAPACITY),
         }
     }
 
@@ -198,11 +206,7 @@ impl DeliveryService {
         workspace_id: WorkspaceId,
         recording_id: RecordingId,
     ) -> Result<bool, DeliveryError> {
-        Ok(self
-            .renditions
-            .hls_prefix(workspace_id, recording_id)
-            .await?
-            .is_some())
+        Ok(self.hls_prefix(workspace_id, recording_id).await?.is_some())
     }
 
     /// Whether the recording's scrub sprite exists yet.
@@ -226,11 +230,7 @@ impl DeliveryService {
         workspace_id: WorkspaceId,
         recording_id: RecordingId,
     ) -> Result<Option<String>, DeliveryError> {
-        let Some(prefix) = self
-            .renditions
-            .hls_prefix(workspace_id, recording_id)
-            .await?
-        else {
+        let Some(prefix) = self.hls_prefix(workspace_id, recording_id).await? else {
             return Ok(None);
         };
         let Some(master) = self.read_playlist(&format!("{prefix}/master.m3u8")).await? else {
@@ -268,11 +268,7 @@ impl DeliveryService {
                 .unwrap_or(1)
                 .clamp(1, GRANT_TTL.as_secs()),
         );
-        let Some(prefix) = self
-            .renditions
-            .hls_prefix(workspace_id, recording_id)
-            .await?
-        else {
+        let Some(prefix) = self.hls_prefix(workspace_id, recording_id).await? else {
             return Ok(RungPlaylist::NotFound);
         };
         let Some(playlist) = self
@@ -333,9 +329,36 @@ impl DeliveryService {
         Ok(Some(hls::rewrite_sprite(&vtt, &urls)))
     }
 
-    /// A playlist is small; anything past 1 MiB is not one.
+    /// The ladder's storage prefix, from memory for [`cache::TTL_S`]. Only a found prefix is
+    /// remembered: a recording whose ladder is not built yet is asked about again every time.
+    async fn hls_prefix(
+        &self,
+        workspace_id: WorkspaceId,
+        recording_id: RecordingId,
+    ) -> Result<Option<String>, DeliveryError> {
+        let key = (workspace_id, recording_id);
+        let now = self.clock.now().unix_timestamp();
+        if let Some(prefix) = self.prefixes.get(&key, now) {
+            return Ok(Some(prefix));
+        }
+        let prefix = self
+            .renditions
+            .hls_prefix(workspace_id, recording_id)
+            .await?;
+        if let Some(prefix) = &prefix {
+            self.prefixes.insert(key, prefix.clone(), now);
+        }
+        Ok(prefix)
+    }
+
+    /// A playlist is small; anything past 1 MiB is not one. Found playlists are remembered for
+    /// [`cache::TTL_S`]; their signed URLs are made per request, never cached.
     async fn read_playlist(&self, key: &str) -> Result<Option<String>, DeliveryError> {
         use tokio::io::AsyncReadExt;
+        let now = self.clock.now().unix_timestamp();
+        if let Some(text) = self.playlists.get(&key.to_string(), now) {
+            return Ok(Some(text));
+        }
         let Some(reader) = self.store.get(key).await? else {
             return Ok(None);
         };
@@ -345,7 +368,11 @@ impl DeliveryService {
             .read_to_end(&mut bytes)
             .await
             .map_err(|error| StorageError::Request(error.to_string()))?;
-        Ok(String::from_utf8(bytes).ok())
+        let text = String::from_utf8(bytes).ok();
+        if let Some(text) = &text {
+            self.playlists.insert(key.to_string(), text.clone(), now);
+        }
+        Ok(text)
     }
 
     /// Just the poster URL (a watch page for a recording that is still processing has none yet).
@@ -707,33 +734,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Day 86 Check: "segment URLs expire; no hotlinking". Against the real bucket: a rung
-    /// playlist is only served with a genuine, unexpired token; its segments are signed only until
-    /// that token expires; and the bare object URL (the hotlink) is refused.
-    #[sqlx::test(migrations = "../../migrations")]
-    async fn segment_urls_expire_with_the_token_and_the_bare_url_is_refused(pool: PgPool) {
-        let (workspace, recording) = seed(&pool, true).await;
-        let store = store();
+    /// A one-rung ladder (`720p`, one segment) in the bucket, with its master registered.
+    /// Returns the storage prefix.
+    async fn seed_ladder(
+        pool: &PgPool,
+        store: &Arc<dyn ObjectStore>,
+        workspace: WorkspaceId,
+        recording: RecordingId,
+    ) -> String {
         let prefix = format!("test/{workspace}/rec/{recording}/hls");
         put(
-            &store,
+            store,
             &format!("{prefix}/master.m3u8"),
             b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n720p/index.m3u8\n",
         )
         .await;
         put(
-            &store,
+            store,
             &format!("{prefix}/720p/index.m3u8"),
             b"#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:4.0,\nseg_0000.m4s\n#EXT-X-ENDLIST\n",
         )
         .await;
-        put(&store, &format!("{prefix}/720p/init.mp4"), b"init").await;
-        put(&store, &format!("{prefix}/720p/seg_0000.m4s"), b"segment").await;
+        put(store, &format!("{prefix}/720p/init.mp4"), b"init").await;
+        put(store, &format!("{prefix}/720p/seg_0000.m4s"), b"segment").await;
         let take = sqlx::query_scalar!(
             "SELECT id FROM takes WHERE recording_id = $1",
             recording.into_uuid()
         )
-        .fetch_one(&pool)
+        .fetch_one(pool)
         .await
         .expect("take");
         sqlx::query!(
@@ -745,9 +773,20 @@ mod tests {
             take,
             format!("{prefix}/master.m3u8"),
         )
-        .execute(&pool)
+        .execute(pool)
         .await
         .expect("master rendition");
+        prefix
+    }
+
+    /// Day 86 Check: "segment URLs expire; no hotlinking". Against the real bucket: a rung
+    /// playlist is only served with a genuine, unexpired token; its segments are signed only until
+    /// that token expires; and the bare object URL (the hotlink) is refused.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn segment_urls_expire_with_the_token_and_the_bare_url_is_refused(pool: PgPool) {
+        let (workspace, recording) = seed(&pool, true).await;
+        let store = store();
+        seed_ladder(&pool, &store, workspace, recording).await;
         let service = DeliveryService::new(
             store,
             Arc::new(RenditionReader::new(pool)),
@@ -827,6 +866,148 @@ mod tests {
                 .await
                 .expect("rung"),
             RungPlaylist::Refused(TokenError::Expired)
+        );
+    }
+
+    fn cached_service(pool: PgPool, store: Arc<dyn ObjectStore>) -> DeliveryService {
+        DeliveryService::new(
+            store,
+            Arc::new(RenditionReader::new(pool)),
+            Arc::new(platform::SystemClock),
+            b"test-manifest-key-test-manifest!".to_vec(),
+        )
+    }
+
+    /// A repeat view is served from memory (ADR-0034): with the ladder gone from the bucket and
+    /// the database, the master and the rung still come back, with a fresh token each time.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_repeat_view_is_served_from_memory_with_a_fresh_token(pool: PgPool) {
+        let (workspace, recording) = seed(&pool, true).await;
+        let store = store();
+        let prefix = seed_ladder(&pool, &store, workspace, recording).await;
+        let service = cached_service(pool.clone(), store.clone());
+
+        let first = service
+            .hls_master(workspace, recording)
+            .await
+            .expect("master")
+            .expect("ladder");
+        let token = first
+            .split("?t=")
+            .nth(1)
+            .and_then(|rest| rest.lines().next())
+            .expect("token")
+            .to_string();
+        assert!(matches!(
+            service
+                .hls_rung(workspace, recording, "720p", Some(&token))
+                .await
+                .expect("rung"),
+            RungPlaylist::Playlist(_)
+        ));
+        store.delete_prefix(&prefix).await.expect("delete");
+        sqlx::query!("DELETE FROM renditions WHERE kind = 'hls'")
+            .execute(&pool)
+            .await
+            .expect("delete rendition");
+
+        let second = service
+            .hls_master(workspace, recording)
+            .await
+            .expect("master")
+            .expect("still served");
+        assert!(second.contains("720p/index.m3u8?t="), "{second}");
+        assert!(
+            service
+                .has_ladder(workspace, recording)
+                .await
+                .expect("ladder")
+        );
+        // The token is verified, not remembered: a rung still needs a genuine one.
+        let now = platform::SystemClock.now().unix_timestamp();
+        let fresh = service.signer.issue(recording, now + 60);
+        for token in [Some(token.as_str()), Some(fresh.as_str())] {
+            assert!(matches!(
+                service
+                    .hls_rung(workspace, recording, "720p", token)
+                    .await
+                    .expect("rung"),
+                RungPlaylist::Playlist(_)
+            ));
+        }
+        assert_eq!(
+            service
+                .hls_rung(workspace, recording, "720p", None)
+                .await
+                .expect("rung"),
+            RungPlaylist::Refused(TokenError::Invalid)
+        );
+    }
+
+    /// The cache is keyed by workspace: another workspace asking for the same recording id is
+    /// never handed the cached ladder.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn another_workspace_never_gets_a_cached_ladder(pool: PgPool) {
+        let (workspace, recording) = seed(&pool, true).await;
+        let store = store();
+        seed_ladder(&pool, &store, workspace, recording).await;
+        let service = cached_service(pool, store);
+        assert!(
+            service
+                .hls_master(workspace, recording)
+                .await
+                .expect("master")
+                .is_some()
+        );
+        let stranger = WorkspaceId::new_v7();
+        assert!(
+            !service
+                .has_ladder(stranger, recording)
+                .await
+                .expect("ladder")
+        );
+        assert!(
+            service
+                .hls_master(stranger, recording)
+                .await
+                .expect("master")
+                .is_none()
+        );
+    }
+
+    /// Only what was found is remembered: asking before the ladder exists must not hide it once
+    /// it is built.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_missing_ladder_is_not_remembered(pool: PgPool) {
+        let (workspace, recording) = seed(&pool, true).await;
+        let store = store();
+        let service = cached_service(pool.clone(), store.clone());
+        assert!(
+            !service
+                .has_ladder(workspace, recording)
+                .await
+                .expect("ladder")
+        );
+        assert!(
+            service
+                .hls_master(workspace, recording)
+                .await
+                .expect("master")
+                .is_none()
+        );
+        seed_ladder(&pool, &store, workspace, recording).await;
+        assert!(
+            service
+                .has_ladder(workspace, recording)
+                .await
+                .expect("ladder")
+        );
+        assert!(
+            service
+                .hls_master(workspace, recording)
+                .await
+                .expect("master")
+                .is_some()
         );
     }
 }

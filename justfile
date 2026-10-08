@@ -33,6 +33,16 @@ perf-long minutes="30":
     cargo build -q -p worker
     /usr/bin/time -v taskset -c 0-3 target/debug/worker transcode target/fixtures/vp9_opus_{{minutes}}min_1080p.webm target/fixtures/out_{{minutes}}min.mp4
 
+# Day 87: records the one recording the load test watches (needs `just worker` running; Chromium).
+# Writes target/load/slug.
+load-prepare:
+    cd web && LOAD=1 npx playwright test e2e/load-prepare.spec.ts --project=chromium
+
+# Day 87: 200 concurrent viewers on the playback path (k6 from its Docker image, host network).
+# Needs `just api` (or any API on :8080), MinIO, and `just load-prepare` done first.
+load-playback vus="200" hold="45s":
+    docker run --rm -i --network host -v {{justfile_directory()}}/load:/load:ro -e SLUG="$(cat target/load/slug)" -e VUS={{vus}} -e HOLD={{hold}} grafana/k6:1.3.0 run /load/playback.js
+
 # M5 demo: records 15 s, waits for the worker's MP4 and the "ready" email. Needs `just api`-less
 # setup (Playwright starts the API) but `just worker` running. Films into web/demo-output/m5/
 demo-m5 *args:
