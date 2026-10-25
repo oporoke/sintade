@@ -41,6 +41,31 @@ describe('ChaptersDialog', () => {
     expect(q(root, 'chapters-saved')).not.toBeNull();
   });
 
+  it('offers nothing to type into until the chapters have loaded', async () => {
+    // `showModal()` shows the dialog before Angular renders "Loading…": a textarea already in
+    // the DOM could be typed into, then reset by the load, and an empty list saved.
+    let resolve: (chapters: never[]) => void = () => undefined;
+    const get = vi.fn().mockImplementation(() => new Promise((done) => (resolve = done)));
+    TestBed.configureTestingModule({
+      imports: [ChaptersDialog],
+      providers: [{ provide: ChaptersApi, useValue: { get, put: vi.fn() } }],
+    });
+    const fixture = TestBed.createComponent(ChaptersDialog);
+    fixture.detectChanges();
+    const root = fixture.nativeElement as HTMLElement;
+    expect(q(root, 'chapters-text')).toBeNull();
+
+    const opened = fixture.componentInstance.open('rec-1');
+    resolve([]);
+    await opened;
+    fixture.detectChanges();
+    expect(q(root, 'chapters-text')).not.toBeNull();
+
+    (q(root, 'chapters-close') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    expect(q(root, 'chapters-text')).toBeNull();
+  });
+
   it('names a bad line and does not call the API', async () => {
     const put = vi.fn();
     const { fixture, root } = await open({ get: vi.fn().mockResolvedValue([]), put });
