@@ -125,6 +125,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn jobs_on_the_same_take_get_their_own_dirs() {
+        // `BuildHls` and `GenerateSprite` for one take run at the same time; neither may
+        // wipe, or remove, the other's files.
+        let space = ScratchSpace::new(temp_root());
+        let take = TakeId::new_v7();
+        let hls = space.create(take, "hls").await.expect("create");
+        tokio::fs::write(hls.file("default.mp4"), b"bytes")
+            .await
+            .expect("write");
+        let sprite = space.create(take, "sprite").await.expect("create");
+        assert_ne!(hls.path(), sprite.path());
+        assert!(hls.file("default.mp4").exists());
+        sprite.remove().await.expect("remove");
+        assert!(hls.file("default.mp4").exists());
+        hls.remove().await.expect("remove");
+        tokio::fs::remove_dir_all(space.root()).await.expect("tidy");
+    }
+
+    #[tokio::test]
     async fn dropping_a_job_dir_removes_it() {
         let space = ScratchSpace::new(temp_root());
         let dir = space.create(TakeId::new_v7()).await.expect("create");
