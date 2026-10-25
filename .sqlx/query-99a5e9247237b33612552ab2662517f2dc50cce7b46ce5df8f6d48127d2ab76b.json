@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE edits SET status = 'rendering', failure = NULL\n        WHERE id = $1 AND workspace_id = $2 AND status <> 'rendered'\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "99a5e9247237b33612552ab2662517f2dc50cce7b46ce5df8f6d48127d2ab76b"
+}

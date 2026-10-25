@@ -97,6 +97,14 @@ pub async fn renditions(pool: &PgPool, caller: &Caller, recording: RecordingId) 
         .await
         .expect("rendition");
     }
+    // Processing records the MP4's length; the test recording is 12 s long.
+    sqlx::query!(
+        r#"UPDATE renditions SET meta = '{"duration_ms": 12000}' WHERE recording_id = $1 AND kind = 'mp4'"#,
+        recording.into_uuid(),
+    )
+    .execute(pool)
+    .await
+    .expect("mp4 length");
 }
 
 /// Only the original (`source.webm`) of a recording, as it is while the MP4 is being made.

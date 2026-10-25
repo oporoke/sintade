@@ -1,3 +1,4 @@
+mod edit;
 mod hls;
 mod retry;
 mod service;
@@ -5,6 +6,10 @@ mod sprite;
 pub(crate) mod transcode;
 
 mod reader;
+pub use edit::{
+    EditService, RENDER_EDIT, RenderEdit, RenderEditError, RenderOutcome, SubmitEditError,
+    SubmittedEdit,
+};
 pub use hls::{BuildHlsError, HlsError};
 pub use reader::{PlaybackKeys, RenditionReader, RequestLadderError, SourceKey};
 pub use retry::{RetryError, RetryService};

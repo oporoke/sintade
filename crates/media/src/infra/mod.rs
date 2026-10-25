@@ -1,3 +1,4 @@
+mod edits;
 #[cfg(test)]
 mod edits_schema;
 mod golden_pipeline;
@@ -7,4 +8,5 @@ pub mod scratch;
 pub mod source;
 pub mod tools;
 
+pub use edits::*;
 pub use repo::*;

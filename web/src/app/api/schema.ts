@@ -263,6 +263,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/recordings/{recording_id}/edits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Saves an edit of the recording and queues its render (owner or admin). The original is never
+         *     changed; the edited MP4 is made as a new version.
+         */
+        post: operations["post_edit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/recordings/{recording_id}/events": {
         parameters: {
             query?: never;
@@ -665,6 +685,45 @@ export interface components {
             filename: string;
             /** @description A signed URL that saves the MP4; open it (the browser downloads it). */
             url: string;
+        };
+        EditAccepted: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: int32
+             * @description How long the edited recording will be.
+             */
+            kept_ms: number;
+            /**
+             * Format: int32
+             * @description The length of the original the ranges were checked against.
+             */
+            source_duration_ms: number;
+            /** @description `queued`: the render has been scheduled. */
+            status: string;
+            /**
+             * Format: int32
+             * @description 1 for the recording's first saved edit, then counting up.
+             */
+            version: number;
+        };
+        EditBody: {
+            /**
+             * @description The ranges of the original to keep, as `[start_ms, end_ms]` pairs in any order. They must
+             *     not overlap, each is at least 100 ms, none ends after the recording, and there are at most
+             *     100. Everything not listed is cut. Touching ranges are joined.
+             * @example [
+             *       [
+             *         0,
+             *         12000
+             *       ],
+             *       [
+             *         15000,
+             *         60000
+             *       ]
+             *     ]
+             */
+            ranges: number[][];
         };
         FinalizeBody: {
             /**
@@ -1672,6 +1731,78 @@ export interface operations {
             };
             /** @description The MP4 isn't ready yet */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    post_edit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The recording */
+                recording_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EditBody"];
+            };
+        };
+        responses: {
+            /** @description Saved; the render is queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EditAccepted"];
+                };
+            };
+            /** @description No valid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Missing CSRF token, or not the owner and not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such recording in the caller's workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The recording has no MP4 yet (still processing, or failed) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Overlapping, too short, past-the-end, empty or too many ranges, or ranges that keep everything */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

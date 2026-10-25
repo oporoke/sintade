@@ -6,6 +6,7 @@ use crate::routes::auth::{
     __path_register, __path_reset_password,
 };
 use crate::routes::chapters::{__path_get_chapters, __path_put_chapters};
+use crate::routes::edits::__path_post_edit;
 use crate::routes::events::__path_recording_events;
 use crate::routes::links::{
     __path_create_link, __path_list_links, __path_revoke_link, __path_update_link,
@@ -47,6 +48,7 @@ use crate::routes::watch::{
         rename_recording,
         get_chapters,
         put_chapters,
+        post_edit,
         trash_recording,
         retry_recording,
         create_link,

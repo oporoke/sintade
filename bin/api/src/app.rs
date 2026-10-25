@@ -8,7 +8,7 @@ use axum::middleware;
 use identity::IdentityService;
 use ingest::IngestService;
 use kernel::AppError;
-use media::RetryService;
+use media::{EditService, RetryService};
 use platform::{Clock, RateLimiter};
 use sqlx::PgPool;
 use tenancy::TenancyService;
@@ -32,6 +32,7 @@ pub struct AppState {
     pub tenancy: Arc<TenancyService>,
     pub ingest: Arc<IngestService>,
     pub retry: Arc<RetryService>,
+    pub edits: Arc<EditService>,
     pub sharing: Arc<sharing::SharingService>,
     pub catalog: Arc<catalog::CatalogService>,
     pub recordings: Arc<catalog::RecordingManager>,
@@ -58,6 +59,7 @@ pub fn build_router(
         AppState {
             billing: Arc::new(billing::BillingService::new()),
             ingest,
+            edits: Arc::new(EditService::new(pool.clone())),
             retry: Arc::new(RetryService::new(
                 pool.clone(),
                 Arc::new(catalog::CatalogService::new()),

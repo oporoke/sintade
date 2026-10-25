@@ -8,11 +8,12 @@ mod infra;
 mod testing;
 
 pub use app::{
-    BUILD_HLS, BuildHls, BuildHlsError, EnqueueError, GENERATE_SPRITE, GenerateSprite,
+    BUILD_HLS, BuildHls, BuildHlsError, EditService, EnqueueError, GENERATE_SPRITE, GenerateSprite,
     GenerateSpriteError, HlsError, HlsOutcome, MediaService, PROCESS_TAKE, PlaybackKeys,
-    ProcessError, ProcessOutcome, ProcessTake, RenditionReader, RequestLadderError, RetryError,
-    RetryService, SourceKey, SpriteError, SpriteOutcome, TakeFinalizedData, TakeFinalizedMessage,
-    TranscodeError, TranscodeReport, transcode_file,
+    ProcessError, ProcessOutcome, ProcessTake, RENDER_EDIT, RenderEdit, RenderEditError,
+    RenderOutcome, RenditionReader, RequestLadderError, RetryError, RetryService, SourceKey,
+    SpriteError, SpriteOutcome, SubmitEditError, SubmittedEdit, TakeFinalizedData,
+    TakeFinalizedMessage, TranscodeError, TranscodeReport, transcode_file,
 };
 pub use domain::edl::{
     Edl, EdlError, EdlJsonError, EdlRanges, KeptRange, MAX_RANGES, MIN_RANGE_MS,

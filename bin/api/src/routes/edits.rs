@@ -1,0 +1,228 @@
+use axum::Json;
+use axum::extract::{Path, State};
+use axum::http::{HeaderMap, StatusCode};
+use kernel::{AppError, Permission, RecordingId};
+use media::SubmitEditError;
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+
+use super::recordings::require_owner_or_admin;
+use crate::app::AppState;
+use crate::csrf::verify_csrf;
+use crate::error::{ApiError, Problem};
+use crate::workspace_context::WorkspaceContext;
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EditBody {
+    /// The ranges of the original to keep, as `[start_ms, end_ms]` pairs in any order. They must
+    /// not overlap, each is at least 100 ms, none ends after the recording, and there are at most
+    /// 100. Everything not listed is cut. Touching ranges are joined.
+    #[schema(example = json!([[0, 12000], [15000, 60000]]))]
+    pub ranges: Vec<[u32; 2]>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct EditAccepted {
+    pub id: uuid::Uuid,
+    /// 1 for the recording's first saved edit, then counting up.
+    pub version: u32,
+    /// How long the edited recording will be.
+    pub kept_ms: u32,
+    /// The length of the original the ranges were checked against.
+    pub source_duration_ms: u32,
+    /// `queued`: the render has been scheduled.
+    pub status: String,
+}
+
+/// Saves an edit of the recording and queues its render (owner or admin). The original is never
+/// changed; the edited MP4 is made as a new version.
+#[utoipa::path(
+    post,
+    path = "/api/v1/recordings/{recording_id}/edits",
+    tag = "recordings",
+    params(("recording_id" = uuid::Uuid, Path, description = "The recording")),
+    request_body = EditBody,
+    responses(
+        (status = 202, description = "Saved; the render is queued", body = EditAccepted),
+        (status = 401, description = "No valid session", body = Problem, content_type = "application/problem+json"),
+        (status = 403, description = "Missing CSRF token, or not the owner and not an admin", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such recording in the caller's workspace", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "The recording has no MP4 yet (still processing, or failed)", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "Overlapping, too short, past-the-end, empty or too many ranges, or ranges that keep everything", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+#[tracing::instrument(skip_all, fields(workspace_id = %ctx.workspace_id))]
+pub async fn post_edit(
+    State(state): State<AppState>,
+    ctx: WorkspaceContext,
+    headers: HeaderMap,
+    Path(recording_id): Path<RecordingId>,
+    Json(body): Json<EditBody>,
+) -> Result<(StatusCode, Json<EditAccepted>), ApiError> {
+    verify_csrf(&headers)?;
+    ctx.require(Permission::EditRecording)?;
+    require_owner_or_admin(&state, &ctx, recording_id).await?;
+    let submitted = state
+        .edits
+        .submit(ctx.workspace_id, recording_id, ctx.user_id, &body.ranges)
+        .await
+        .map_err(|error| match error {
+            SubmitEditError::NotFound => ApiError::from(AppError::NotFound),
+            SubmitEditError::NotReady => ApiError::from(AppError::Conflict(error.to_string())),
+            SubmitEditError::Invalid(_) | SubmitEditError::NoChange => {
+                ApiError::from(AppError::Validation(error.to_string()))
+            }
+            other => {
+                tracing::error!(error = %other, "submit edit failed");
+                ApiError::from(AppError::Internal("could not save the edit".to_string()))
+            }
+        })?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(EditAccepted {
+            id: submitted.edit_id,
+            version: submitted.version,
+            kept_ms: submitted.kept_ms,
+            source_duration_ms: submitted.source_duration_ms,
+            status: "queued".to_string(),
+        }),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{Method, StatusCode};
+    use serde_json::json;
+    use sqlx::PgPool;
+
+    use crate::routes::testkit::{call, caller, recording, renditions};
+
+    fn uri(id: kernel::RecordingId) -> String {
+        format!("/api/v1/recordings/{id}/edits")
+    }
+
+    async fn queued(pool: &PgPool) -> Vec<serde_json::Value> {
+        sqlx::query_scalar!(r#"SELECT payload FROM jobs WHERE kind = 'RenderEdit' ORDER BY id"#)
+            .fetch_all(pool)
+            .await
+            .expect("jobs")
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn the_owner_saves_edits_that_queue_a_render_and_count_up(pool: PgPool) {
+        let owner = caller(&pool).await;
+        let id = recording(&pool, &owner, "ready").await;
+        renditions(&pool, &owner, id).await;
+
+        // A trim and a cut, given out of order: 3 s + 5 s kept of 12 s.
+        let first = call(
+            &pool,
+            Some(&owner),
+            Method::POST,
+            &uri(id),
+            Some(json!({"ranges": [[6000, 11000], [1000, 4000]]})),
+        )
+        .await;
+        assert_eq!(first.status, StatusCode::ACCEPTED, "{}", first.body);
+        assert_eq!(first.body["version"], 1);
+        assert_eq!(first.body["kept_ms"], 8000);
+        assert_eq!(first.body["source_duration_ms"], 12000);
+        assert_eq!(first.body["status"], "queued");
+
+        let second = call(
+            &pool,
+            Some(&owner),
+            Method::POST,
+            &uri(id),
+            Some(json!({"ranges": [[0, 2000]]})),
+        )
+        .await;
+        assert_eq!(second.body["version"], 2);
+        let jobs = queued(&pool).await;
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(jobs[0]["edit_id"], first.body["id"]);
+        let stored = sqlx::query_scalar!(
+            "SELECT edl FROM edits WHERE recording_id = $1 AND version = 1",
+            id.into_uuid()
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("edl");
+        assert_eq!(stored, json!([[1000, 4000], [6000, 11000]]));
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn bad_ranges_are_422_and_save_nothing(pool: PgPool) {
+        let owner = caller(&pool).await;
+        let id = recording(&pool, &owner, "ready").await;
+        renditions(&pool, &owner, id).await;
+        for bad in [
+            json!({"ranges": []}),
+            json!({"ranges": [[0, 3000], [2000, 5000]]}),
+            json!({"ranges": [[5000, 5000]]}),
+            json!({"ranges": [[6000, 5000]]}),
+            json!({"ranges": [[0, 50]]}),
+            json!({"ranges": [[0, 12_001]]}),
+            // Keeping everything changes nothing.
+            json!({"ranges": [[0, 12_000]]}),
+        ] {
+            let reply = call(
+                &pool,
+                Some(&owner),
+                Method::POST,
+                &uri(id),
+                Some(bad.clone()),
+            )
+            .await;
+            assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+        }
+        // Not the shape: rejected before it gets that far.
+        for malformed in [
+            json!({}),
+            json!({"ranges": [[1, 2, 3]]}),
+            json!({"ranges": [[-1, 5]]}),
+        ] {
+            let reply = call(
+                &pool,
+                Some(&owner),
+                Method::POST,
+                &uri(id),
+                Some(malformed.clone()),
+            )
+            .await;
+            assert!(reply.status.is_client_error(), "{malformed}");
+        }
+        assert!(queued(&pool).await.is_empty());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_recording_without_an_mp4_is_409(pool: PgPool) {
+        let owner = caller(&pool).await;
+        let id = recording(&pool, &owner, "processing").await;
+        let reply = call(
+            &pool,
+            Some(&owner),
+            Method::POST,
+            &uri(id),
+            Some(json!({"ranges": [[0, 2000]]})),
+        )
+        .await;
+        assert_eq!(reply.status, StatusCode::CONFLICT);
+        assert!(queued(&pool).await.is_empty());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn only_the_owner_and_admins_of_the_workspace_can_edit(pool: PgPool) {
+        let owner = caller(&pool).await;
+        let id = recording(&pool, &owner, "ready").await;
+        renditions(&pool, &owner, id).await;
+        let body = Some(json!({"ranges": [[0, 2000]]}));
+        let other = caller(&pool).await;
+        let stranger = call(&pool, Some(&other), Method::POST, &uri(id), body.clone()).await;
+        assert_eq!(stranger.status, StatusCode::NOT_FOUND);
+        let anon = call(&pool, None, Method::POST, &uri(id), body).await;
+        assert_eq!(anon.status, StatusCode::UNAUTHORIZED);
+        assert!(queued(&pool).await.is_empty());
+    }
+}

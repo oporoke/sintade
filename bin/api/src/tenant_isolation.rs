@@ -178,6 +178,20 @@ fn tenant_table() -> Vec<(Method, &'static str, Probe)> {
             }),
         ),
         (
+            Method::POST,
+            "/api/v1/recordings/{recording_id}/edits",
+            Probe::Owned(|pool, workspace_id| {
+                Box::pin(async move {
+                    let recording_id = ready_recording_in(&pool, workspace_id).await;
+                    json_request(
+                        Method::POST,
+                        &format!("/api/v1/recordings/{recording_id}/edits"),
+                        r#"{"ranges":[[0,1000]]}"#,
+                    )
+                })
+            }),
+        ),
+        (
             Method::GET,
             "/api/v1/recordings",
             Probe::Listing {
@@ -520,6 +534,7 @@ fn app(pool: &PgPool) -> Router {
             identity: test_identity(pool.clone()),
             tenancy: test_tenancy(pool.clone()),
             ingest: test_ingest(pool.clone()),
+            edits: Arc::new(media::EditService::new(pool.clone())),
             retry: Arc::new(media::RetryService::new(
                 pool.clone(),
                 Arc::new(catalog::CatalogService::new()),
