@@ -182,7 +182,7 @@ fn tenant_table() -> Vec<(Method, &'static str, Probe)> {
             "/api/v1/recordings/{recording_id}/edits",
             Probe::Owned(|pool, workspace_id| {
                 Box::pin(async move {
-                    let recording_id = ready_recording_in(&pool, workspace_id).await;
+                    let recording_id = editable_recording_in(&pool, workspace_id).await;
                     json_request(
                         Method::POST,
                         &format!("/api/v1/recordings/{recording_id}/edits"),
@@ -413,6 +413,20 @@ async fn downloadable_recording_in(
     .execute(pool)
     .await
     .expect("rendition");
+    recording_id
+}
+
+/// A `ready` recording in `workspace_id` whose MP4 has a measured length (12 s), so an edit of it
+/// can be checked and saved.
+async fn editable_recording_in(pool: &PgPool, workspace_id: WorkspaceId) -> kernel::RecordingId {
+    let recording_id = downloadable_recording_in(pool, workspace_id).await;
+    sqlx::query!(
+        r#"UPDATE renditions SET meta = '{"duration_ms": 12000}' WHERE recording_id = $1 AND kind = 'mp4'"#,
+        recording_id.into_uuid(),
+    )
+    .execute(pool)
+    .await
+    .expect("mp4 length");
     recording_id
 }
 
