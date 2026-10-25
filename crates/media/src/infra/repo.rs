@@ -201,3 +201,97 @@ pub async fn requeue_latest_job(
     .await?;
     Ok(take.map(TakeId::from_uuid))
 }
+
+/// The MP4 viewers are given for a take: the original's, or the applied edit's (ADR-0038).
+pub struct CurrentMp4 {
+    pub key: String,
+    /// What processing (or the render) measured.
+    pub duration_ms: Option<u32>,
+}
+
+pub async fn current_mp4(
+    executor: impl PgExecutor<'_>,
+    workspace_id: WorkspaceId,
+    recording_id: RecordingId,
+    take_id: TakeId,
+) -> Result<Option<CurrentMp4>, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"
+        SELECT storage_key, (meta ->> 'duration_ms')::int AS duration_ms
+        FROM renditions
+        WHERE workspace_id = $1 AND recording_id = $2 AND take_id = $3
+          AND kind = 'mp4' AND variant = 'default'
+        "#,
+        workspace_id.into_uuid(),
+        recording_id.into_uuid(),
+        take_id.into_uuid(),
+    )
+    .fetch_optional(executor)
+    .await?;
+    Ok(row.map(|row| CurrentMp4 {
+        key: row.storage_key,
+        duration_ms: row.duration_ms.and_then(|ms| u32::try_from(ms).ok()),
+    }))
+}
+
+/// Whether the take has an HLS ladder (it is built after the first view).
+pub async fn has_ladder(
+    executor: impl PgExecutor<'_>,
+    workspace_id: WorkspaceId,
+    recording_id: RecordingId,
+    take_id: TakeId,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"
+        SELECT EXISTS (
+            SELECT 1 FROM renditions
+            WHERE workspace_id = $1 AND recording_id = $2 AND take_id = $3
+              AND kind = 'hls' AND variant = 'master'
+        ) AS "built!"
+        "#,
+        workspace_id.into_uuid(),
+        recording_id.into_uuid(),
+        take_id.into_uuid(),
+    )
+    .fetch_one(executor)
+    .await
+}
+
+/// Forgets the take's ladder, sprite and preview rows: what an applied edit replaces wholesale,
+/// since the new version may have fewer rungs or sprite sheets than the old one.
+pub async fn delete_derived_renditions(
+    conn: &mut PgConnection,
+    workspace_id: WorkspaceId,
+    recording_id: RecordingId,
+    take_id: TakeId,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"
+        DELETE FROM renditions
+        WHERE workspace_id = $1 AND recording_id = $2 AND take_id = $3
+          AND kind IN ('hls', 'sprite', 'preview')
+        "#,
+        workspace_id.into_uuid(),
+        recording_id.into_uuid(),
+        take_id.into_uuid(),
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Serialises, until the transaction ends, everything that decides which version of a recording
+/// is shown: an edit starting, being applied or given up on, and a ladder or sprite being
+/// recorded (ADR-0038).
+pub async fn lock_versions(
+    conn: &mut PgConnection,
+    recording_id: RecordingId,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "SELECT pg_advisory_xact_lock(hashtextextended('media.versions:' || $1::uuid::text, 0))",
+        recording_id.into_uuid(),
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}

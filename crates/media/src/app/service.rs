@@ -5,12 +5,12 @@ use catalog::{CatalogService, Measured};
 use kernel::{RecordingId, TakeId, WorkspaceId};
 use platform::{Clock, JobQueue, JobQueueError, ObjectStore, Outbox, OutboxError, StorageError};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 use crate::domain::probe::ProbeRejection;
 use crate::domain::{
-    ChunkManifest, Container, ManifestChunk, ManifestError, hls_prefix, img_prefix, mp4_key,
-    poster_key, preview_content_type, source_key,
+    ChunkManifest, Container, ManifestChunk, ManifestError, base_of_mp4, hls_prefix_in,
+    img_prefix_in, mp4_key, poster_key, preview_content_type, source_key,
 };
 use crate::infra;
 use crate::infra::scratch::{ScratchDir, ScratchSpace};
@@ -78,6 +78,8 @@ pub struct GenerateSprite {
 pub enum SpriteOutcome {
     /// The sheets, the VTT and the preview are stored and recorded.
     Built { tiles: u32, sheets: usize },
+    /// An edit replaced the MP4 it was sampled from meanwhile: nothing recorded (ADR-0038).
+    Superseded,
     /// No such take in this workspace.
     NotFound,
 }
@@ -87,6 +89,8 @@ pub enum SpriteOutcome {
 pub enum HlsOutcome {
     /// The ladder is stored and recorded.
     Built { rungs: usize },
+    /// An edit replaced the MP4 it was cut from meanwhile: nothing recorded (ADR-0038).
+    Superseded,
     /// No such take in this workspace.
     NotFound,
 }
@@ -346,19 +350,72 @@ impl MediaService {
         job: &infra::MediaJobRow,
         scratch: &ScratchDir,
     ) -> Result<HlsOutcome, BuildHlsError> {
+        // The ladder is cut from the MP4 viewers get, the original's or an applied edit's, and
+        // stored beside it (ADR-0038).
+        let Some(current) =
+            infra::current_mp4(&self.pool, job.workspace_id, job.recording_id, job.take_id)
+                .await?
+        else {
+            return Err(BuildHlsError::NotReady);
+        };
+        let Some(base) = base_of_mp4(&current.key).map(str::to_string) else {
+            return Err(BuildHlsError::NotReady);
+        };
         let mp4 = scratch.file("default.mp4");
-        let key = mp4_key(job.workspace_id, job.recording_id);
-        if download_file(self.store.as_ref(), &key, &mp4)
+        if download_file(self.store.as_ref(), &current.key, &mp4)
             .await?
             .is_none()
         {
             return Err(BuildHlsError::NotReady);
         }
         let out = scratch.file("hls");
-        let expected_ms = u32::try_from(job.duration_ms).unwrap_or(0);
+        let expected_ms = current
+            .duration_ms
+            .unwrap_or_else(|| u32::try_from(job.duration_ms).unwrap_or(0));
         let ladder = super::hls::build_ladder(&self.tools, &mp4, &out, expected_ms).await?;
+        let rows = self.store_ladder(&hls_prefix_in(&base), &ladder).await?;
+        tracing::info!(rungs = ladder.rungs.len(), base = %base, "HLS ladder stored");
 
-        let prefix = hls_prefix(job.workspace_id, job.recording_id);
+        let mut tx = self.pool.begin().await?;
+        if !still_current(&mut tx, job, &current.key).await? {
+            tracing::info!("an edit replaced the MP4 meanwhile; the ladder is not recorded");
+            return Ok(HlsOutcome::Superseded);
+        }
+        record_renditions(
+            &mut tx,
+            job.workspace_id,
+            job.recording_id,
+            job.take_id,
+            &rows,
+        )
+        .await?;
+        self.outbox
+            .push(
+                &mut tx,
+                &RenditionReady {
+                    recording_id: job.recording_id,
+                    take_id: job.take_id,
+                    workspace_id: job.workspace_id,
+                    kind: "hls".to_string(),
+                    variants: rung_names(&ladder),
+                },
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(HlsOutcome::Built {
+            rungs: ladder.rungs.len(),
+        })
+    }
+
+    /// Stores a ladder under `prefix`, each rung's playlist after its segments and the master
+    /// last, so no playlist ever lists an object that isn't there. Returns the rows that describe
+    /// it, the master last.
+    pub(super) async fn store_ladder(
+        &self,
+        prefix: &str,
+        ladder: &super::hls::Ladder,
+    ) -> Result<Vec<StoredRendition>, StorageError> {
+        let mut rows = Vec::new();
         for rung in &ladder.rungs {
             let name = rung.built.rung.name;
             let files = std::iter::once("init.mp4".to_string())
@@ -373,27 +430,12 @@ impl MediaService {
                     )
                     .await?;
             }
-        }
-        let master_key = format!("{prefix}/master.m3u8");
-        let master_bytes = self
-            .store
-            .put_file(&master_key, &ladder.master, hls_content_type("master.m3u8"))
-            .await?;
-        tracing::info!(rungs = ladder.rungs.len(), key = %master_key, "HLS ladder stored");
-
-        let mut tx = self.pool.begin().await?;
-        for rung in &ladder.rungs {
-            let name = rung.built.rung.name;
-            infra::upsert_rendition(
-                &mut tx,
-                job.workspace_id,
-                job.recording_id,
-                job.take_id,
-                "hls",
-                name,
-                &format!("{prefix}/{name}/index.m3u8"),
-                i64::try_from(rung.bytes).unwrap_or(i64::MAX),
-                serde_json::json!({
+            rows.push(StoredRendition {
+                kind: "hls",
+                variant: name.to_string(),
+                key: format!("{prefix}/{name}/index.m3u8"),
+                bytes: rung.bytes,
+                meta: serde_json::json!({
                     "width": rung.built.width,
                     "height": rung.built.height,
                     "segments": rung.segments.len(),
@@ -401,43 +443,21 @@ impl MediaService {
                     "average_bps": rung.built.average_bps,
                     "peak_bps": rung.built.peak_bps,
                 }),
-            )
-            .await?;
+            });
         }
-        infra::upsert_rendition(
-            &mut tx,
-            job.workspace_id,
-            job.recording_id,
-            job.take_id,
-            "hls",
-            "master",
-            &master_key,
-            i64::try_from(master_bytes).unwrap_or(i64::MAX),
-            serde_json::json!({
-                "rungs": ladder.rungs.iter().map(|rung| rung.built.rung.name).collect::<Vec<_>>(),
-            }),
-        )
-        .await?;
-        self.outbox
-            .push(
-                &mut tx,
-                &RenditionReady {
-                    recording_id: job.recording_id,
-                    take_id: job.take_id,
-                    workspace_id: job.workspace_id,
-                    kind: "hls".to_string(),
-                    variants: ladder
-                        .rungs
-                        .iter()
-                        .map(|rung| rung.built.rung.name.to_string())
-                        .collect(),
-                },
-            )
+        let master_key = format!("{prefix}/master.m3u8");
+        let master_bytes = self
+            .store
+            .put_file(&master_key, &ladder.master, hls_content_type("master.m3u8"))
             .await?;
-        tx.commit().await?;
-        Ok(HlsOutcome::Built {
-            rungs: ladder.rungs.len(),
-        })
+        rows.push(StoredRendition {
+            kind: "hls",
+            variant: "master".to_string(),
+            key: master_key,
+            bytes: master_bytes,
+            meta: serde_json::json!({ "rungs": rung_names(ladder) }),
+        });
+        Ok(rows)
     }
 
     /// `GenerateSprite` (docs/design.md §10 Process step 6): samples the recording's stored MP4
@@ -464,84 +484,42 @@ impl MediaService {
         job: &infra::MediaJobRow,
         scratch: &ScratchDir,
     ) -> Result<SpriteOutcome, GenerateSpriteError> {
+        // Sampled from the MP4 viewers get and stored beside it (ADR-0038).
+        let Some(current) =
+            infra::current_mp4(&self.pool, job.workspace_id, job.recording_id, job.take_id)
+                .await?
+        else {
+            return Err(GenerateSpriteError::NotReady);
+        };
+        let Some(base) = base_of_mp4(&current.key).map(str::to_string) else {
+            return Err(GenerateSpriteError::NotReady);
+        };
         let mp4 = scratch.file("default.mp4");
-        let key = mp4_key(job.workspace_id, job.recording_id);
-        if download_file(self.store.as_ref(), &key, &mp4)
+        if download_file(self.store.as_ref(), &current.key, &mp4)
             .await?
             .is_none()
         {
             return Err(GenerateSpriteError::NotReady);
         }
         let out = scratch.file("img");
-        let declared_ms = u32::try_from(job.duration_ms).unwrap_or(0);
+        let declared_ms = current
+            .duration_ms
+            .unwrap_or_else(|| u32::try_from(job.duration_ms).unwrap_or(0));
         let set = super::sprite::build_sprite(&self.tools, &mp4, &out, declared_ms).await?;
-
-        let prefix = img_prefix(job.workspace_id, job.recording_id);
-        let mut sheet_rows = Vec::new();
-        for (index, sheet) in set.sheets.iter().enumerate() {
-            let key = format!(
-                "{prefix}/{}",
-                crate::domain::sprite::sheet_name(index as u32)
-            );
-            let bytes = self.store.put_file(&key, sheet, "image/jpeg").await?;
-            sheet_rows.push((index, key, bytes));
-        }
-        let preview_key = format!("{prefix}/preview.webp");
-        let preview_bytes = self
-            .store
-            .put_file(&preview_key, &set.preview, "image/webp")
-            .await?;
-        let vtt_key = format!("{prefix}/sprite.vtt");
-        let vtt_bytes = self.store.put_file(&vtt_key, &set.vtt, "text/vtt").await?;
-        tracing::info!(tiles = set.tiles, sheets = set.sheets.len(), key = %vtt_key, "sprite stored");
+        let rows = self.store_sprite(&img_prefix_in(&base), &set).await?;
+        tracing::info!(tiles = set.tiles, sheets = set.sheets.len(), base = %base, "sprite stored");
 
         let mut tx = self.pool.begin().await?;
-        for (index, key, bytes) in &sheet_rows {
-            infra::upsert_rendition(
-                &mut tx,
-                job.workspace_id,
-                job.recording_id,
-                job.take_id,
-                "sprite",
-                &index.to_string(),
-                key,
-                i64::try_from(*bytes).unwrap_or(i64::MAX),
-                serde_json::json!({}),
-            )
-            .await?;
+        if !still_current(&mut tx, job, &current.key).await? {
+            tracing::info!("an edit replaced the MP4 meanwhile; the sprite is not recorded");
+            return Ok(SpriteOutcome::Superseded);
         }
-        infra::upsert_rendition(
+        record_renditions(
             &mut tx,
             job.workspace_id,
             job.recording_id,
             job.take_id,
-            "sprite",
-            "vtt",
-            &vtt_key,
-            i64::try_from(vtt_bytes).unwrap_or(i64::MAX),
-            serde_json::json!({
-                "interval_ms": set.interval_s * 1000,
-                "tiles": set.tiles,
-                "sheets": set.sheets.len(),
-                "tile_width": crate::domain::sprite::TILE_WIDTH,
-                "tile_height": set.tile_height,
-            }),
-        )
-        .await?;
-        infra::upsert_rendition(
-            &mut tx,
-            job.workspace_id,
-            job.recording_id,
-            job.take_id,
-            "preview",
-            "default",
-            &preview_key,
-            i64::try_from(preview_bytes).unwrap_or(i64::MAX),
-            serde_json::json!({
-                "width": crate::domain::sprite::PREVIEW_WIDTH,
-                "height": set.preview_height,
-                "frames": crate::domain::sprite::PREVIEW_FRAMES,
-            }),
+            &rows,
         )
         .await?;
         for kind in ["sprite", "preview"] {
@@ -563,6 +541,62 @@ impl MediaService {
             tiles: set.tiles,
             sheets: set.sheets.len(),
         })
+    }
+
+    /// Stores sprite sheets, the preview and `sprite.vtt` under `prefix` (the VTT last, so it
+    /// never names a sheet that isn't there). Returns the rows that describe them.
+    pub(super) async fn store_sprite(
+        &self,
+        prefix: &str,
+        set: &super::sprite::SpriteSet,
+    ) -> Result<Vec<StoredRendition>, StorageError> {
+        let mut rows = Vec::new();
+        for (index, sheet) in set.sheets.iter().enumerate() {
+            let key = format!(
+                "{prefix}/{}",
+                crate::domain::sprite::sheet_name(index as u32)
+            );
+            let bytes = self.store.put_file(&key, sheet, "image/jpeg").await?;
+            rows.push(StoredRendition {
+                kind: "sprite",
+                variant: index.to_string(),
+                key,
+                bytes,
+                meta: serde_json::json!({}),
+            });
+        }
+        let preview_key = format!("{prefix}/preview.webp");
+        let preview_bytes = self
+            .store
+            .put_file(&preview_key, &set.preview, "image/webp")
+            .await?;
+        let vtt_key = format!("{prefix}/sprite.vtt");
+        let vtt_bytes = self.store.put_file(&vtt_key, &set.vtt, "text/vtt").await?;
+        rows.push(StoredRendition {
+            kind: "sprite",
+            variant: "vtt".to_string(),
+            key: vtt_key,
+            bytes: vtt_bytes,
+            meta: serde_json::json!({
+                "interval_ms": set.interval_s * 1000,
+                "tiles": set.tiles,
+                "sheets": set.sheets.len(),
+                "tile_width": crate::domain::sprite::TILE_WIDTH,
+                "tile_height": set.tile_height,
+            }),
+        });
+        rows.push(StoredRendition {
+            kind: "preview",
+            variant: "default".to_string(),
+            key: preview_key,
+            bytes: preview_bytes,
+            meta: serde_json::json!({
+                "width": crate::domain::sprite::PREVIEW_WIDTH,
+                "height": set.preview_height,
+                "frames": crate::domain::sprite::PREVIEW_FRAMES,
+            }),
+        });
+        Ok(rows)
     }
 
     async fn run_in_scratch(&self, job: &infra::MediaJobRow) -> Result<Produced, StepError> {
@@ -803,6 +837,64 @@ struct Produced {
     mp4_key: String,
     poster: PosterReport,
     poster_key: String,
+}
+
+/// A stored file's rendition row, recorded once everything it belongs with is stored.
+pub(super) struct StoredRendition {
+    pub kind: &'static str,
+    pub variant: String,
+    pub key: String,
+    pub bytes: u64,
+    pub meta: serde_json::Value,
+}
+
+/// Records `rows` for the take, replacing what the same kind and variant pointed at.
+pub(super) async fn record_renditions(
+    conn: &mut PgConnection,
+    workspace_id: WorkspaceId,
+    recording_id: RecordingId,
+    take_id: TakeId,
+    rows: &[StoredRendition],
+) -> Result<(), sqlx::Error> {
+    for row in rows {
+        infra::upsert_rendition(
+            conn,
+            workspace_id,
+            recording_id,
+            take_id,
+            row.kind,
+            &row.variant,
+            &row.key,
+            i64::try_from(row.bytes).unwrap_or(i64::MAX),
+            row.meta.clone(),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Takes the versions lock and tells whether `key` is still the MP4 viewers get: a ladder or a
+/// sprite made from an MP4 an edit replaced meanwhile must not be recorded (ADR-0038).
+async fn still_current(
+    conn: &mut PgConnection,
+    job: &infra::MediaJobRow,
+    key: &str,
+) -> Result<bool, sqlx::Error> {
+    infra::lock_versions(conn, job.recording_id).await?;
+    Ok(
+        infra::current_mp4(&mut *conn, job.workspace_id, job.recording_id, job.take_id)
+            .await?
+            .is_some_and(|current| current.key == key),
+    )
+}
+
+/// A ladder's rung names, lowest first.
+fn rung_names(ladder: &super::hls::Ladder) -> Vec<String> {
+    ladder
+        .rungs
+        .iter()
+        .map(|rung| rung.built.rung.name.to_string())
+        .collect()
 }
 
 /// What the creator is told when processing gave up after its retries.
@@ -1973,8 +2065,8 @@ mod tests {
         kernel::UserId::from_uuid(owner)
     }
 
-    /// The Check: a rendered edit is as long as the ranges it keeps. Two ranges of a processed
-    /// 10 s recording (with audio) come out as a 6 s MP4, stored under `edits/1/`.
+    /// Day 90's Check: a rendered edit is as long as the ranges it keeps. Two ranges of a
+    /// processed 10 s recording (with audio) come out as a 6 s MP4, stored under `edits/1/`.
     #[sqlx::test(migrations = "../../migrations")]
     async fn a_rendered_edit_is_as_long_as_the_kept_ranges(pool: PgPool) {
         if !crate::testing::ffmpeg_available().await {
@@ -2010,8 +2102,9 @@ mod tests {
             edit_id: submitted.edit_id,
             workspace_id: seeded.workspace,
         };
-        let RenderOutcome::Rendered { duration_ms, bytes } =
-            media.render_edit(request, false).await.expect("render")
+        let RenderOutcome::Applied {
+            duration_ms, bytes, ..
+        } = media.render_edit(request, false).await.expect("render")
         else {
             panic!("the edit renders");
         };
@@ -2020,7 +2113,7 @@ mod tests {
             "{duration_ms} ms for 6000 kept"
         );
         let key = format!(
-            "ws/{}/rec/{}/edits/1/default.mp4",
+            "ws/{}/rec/{}/edits/1/mp4/default.mp4",
             seeded.workspace, seeded.recording
         );
         assert_eq!(store.bytes(&key).map(|b| b.len() as u64), Some(bytes));
@@ -2032,7 +2125,7 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("edit");
-        assert_eq!(row.status, "rendered");
+        assert_eq!(row.status, "applied");
         assert_eq!(row.output_key.as_deref(), Some(key.as_str()));
         assert_eq!(row.output_duration_ms, Some(duration_ms as i32));
         // The original and its MP4 are untouched.
@@ -2048,7 +2141,7 @@ mod tests {
         // A duplicate job renders nothing.
         assert_eq!(
             media.render_edit(request, false).await.expect("again"),
-            RenderOutcome::AlreadyRendered
+            RenderOutcome::AlreadyFinished
         );
     }
 
@@ -2136,5 +2229,241 @@ mod tests {
             .await
             .expect("second");
         assert_eq!((first.version, second.version), (1, 2));
+    }
+
+    // ---- Day 91: edit versioning --------------------------------------------------------------
+
+    /// The recording's renditions as `(kind, variant, storage_key)`, sorted.
+    async fn renditions_of(pool: &PgPool, seeded: &Seeded) -> Vec<(String, String, String)> {
+        let mut rows: Vec<(String, String, String)> = sqlx::query!(
+            r#"SELECT kind::text AS "kind!", variant, storage_key FROM renditions
+               WHERE recording_id = $1"#,
+            seeded.recording.into_uuid()
+        )
+        .fetch_all(pool)
+        .await
+        .expect("renditions")
+        .into_iter()
+        .map(|row| (row.kind, row.variant, row.storage_key))
+        .collect();
+        rows.sort();
+        rows
+    }
+
+    async fn edit_status(pool: &PgPool, id: uuid::Uuid) -> String {
+        sqlx::query_scalar!("SELECT status FROM edits WHERE id = $1", id)
+            .fetch_one(pool)
+            .await
+            .expect("edit")
+    }
+
+    async fn processed(pool: &PgPool) -> (Seeded, MediaService, Arc<MemoryStore>, kernel::UserId) {
+        let seeded = seed(pool).await;
+        let (media, store) = service_with(pool);
+        enqueue_fixture(&media, &store, &seeded, "real_chrome_vp9_opus_10s.webm").await;
+        assert_eq!(run(&media, &seeded).await, ProcessOutcome::Ran);
+        let user = owner_of(pool, &seeded).await;
+        (seeded, media, store, user)
+    }
+
+    /// Day 91's Check, success: only once the edit's MP4, poster, sprite, preview and ladder are
+    /// all stored do the recording's renditions point at them; the recording is `ready` again
+    /// with the edit's length, and the original's files are still there.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn an_applied_edit_replaces_every_rendition_viewers_get(pool: PgPool) {
+        if !crate::testing::ffmpeg_available().await {
+            return;
+        }
+        let (seeded, media, store, user) = processed(&pool).await;
+        // The recording was watched: it has a ladder and a sprite.
+        media.build_hls(hls_request(&seeded)).await.expect("ladder");
+        media
+            .generate_sprite(sprite_request(&seeded))
+            .await
+            .expect("sprite");
+        let before = renditions_of(&pool, &seeded).await;
+        let submitted = EditService::new(pool.clone())
+            .submit(
+                seeded.workspace,
+                seeded.recording,
+                user,
+                &[[1_000, 4_000], [6_000, 9_000]],
+            )
+            .await
+            .expect("submit");
+
+        let outcome = media
+            .render_edit(
+                RenderEdit {
+                    edit_id: submitted.edit_id,
+                    workspace_id: seeded.workspace,
+                },
+                false,
+            )
+            .await
+            .expect("render");
+        let RenderOutcome::Applied {
+            duration_ms, rungs, ..
+        } = outcome
+        else {
+            panic!("applied: {outcome:?}");
+        };
+        assert!(rungs >= 1, "the ladder is rebuilt");
+
+        let base = format!(
+            "ws/{}/rec/{}/edits/1",
+            seeded.workspace, seeded.recording
+        );
+        let after = renditions_of(&pool, &seeded).await;
+        for (kind, variant, key) in &after {
+            if kind == "source" {
+                assert!(key.contains("/takes/"), "the original source stays: {key}");
+            } else {
+                assert!(key.starts_with(&format!("{base}/")), "{kind}/{variant} -> {key}");
+                assert!(store.bytes(key).is_some(), "{key} is stored");
+            }
+        }
+        let kinds = |rows: &[(String, String, String)]| {
+            let mut kinds: Vec<String> = rows.iter().map(|row| row.0.clone()).collect();
+            kinds.dedup();
+            kinds
+        };
+        assert_eq!(kinds(&after), kinds(&before), "every kind is replaced, none lost");
+        let (state, duration, ..) = recording_row(&pool, &seeded).await;
+        assert_eq!(state, "ready");
+        assert_eq!(duration, Some(duration_ms as i32));
+        assert_eq!(edit_status(&pool, submitted.edit_id).await, "applied");
+        // The original is never touched: every edit is cut from its MP4.
+        for (_, _, key) in &before {
+            assert!(store.bytes(key).is_some(), "{key} is still stored");
+        }
+        // Live status wakes; the "ready" email is not sent again.
+        let applied = events(&pool, "EditApplied").await;
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0]["data"]["version"], 1);
+        assert_eq!(events(&pool, "RecordingReady").await.len(), 1);
+    }
+
+    /// Day 91's Check, failure: an edit that fails keeps the recording `processing` with the old
+    /// renditions while it is retried, and on its last attempt gives up, leaving the recording
+    /// `ready` with exactly what it had and nothing of the edit stored.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_failed_edit_leaves_the_old_version_in_place(pool: PgPool) {
+        if !crate::testing::ffmpeg_available().await {
+            return;
+        }
+        let (seeded, media, store, user) = processed(&pool).await;
+        let before = renditions_of(&pool, &seeded).await;
+        let measured = recording_row(&pool, &seeded).await;
+        let submitted = EditService::new(pool.clone())
+            .submit(seeded.workspace, seeded.recording, user, &[[1_000, 4_000]])
+            .await
+            .expect("submit");
+        // The MP4 every edit is cut from has gone missing: rendering fails.
+        let original = format!(
+            "ws/{}/rec/{}/mp4/default.mp4",
+            seeded.workspace, seeded.recording
+        );
+        let kept = store.bytes(&original).expect("original mp4");
+        store.remove(&original);
+        let request = RenderEdit {
+            edit_id: submitted.edit_id,
+            workspace_id: seeded.workspace,
+        };
+
+        assert!(media.render_edit(request, false).await.is_err());
+        assert_eq!(recording_row(&pool, &seeded).await.0, "processing");
+        assert_eq!(renditions_of(&pool, &seeded).await, before);
+        assert_eq!(edit_status(&pool, submitted.edit_id).await, "rendering");
+
+        assert!(media.render_edit(request, true).await.is_err());
+        assert_eq!(recording_row(&pool, &seeded).await, measured);
+        assert_eq!(renditions_of(&pool, &seeded).await, before);
+        assert_eq!(edit_status(&pool, submitted.edit_id).await, "failed");
+        let base = format!(
+            "ws/{}/rec/{}/edits/1/",
+            seeded.workspace, seeded.recording
+        );
+        assert_eq!(store.keys_under(&base), Vec::<String>::new());
+        assert!(events(&pool, "EditApplied").await.is_empty());
+        // A duplicate job after giving up does nothing.
+        store.insert(&original, kept);
+        assert_eq!(
+            media.render_edit(request, false).await.expect("dup"),
+            RenderOutcome::AlreadyFinished
+        );
+    }
+
+    /// An older edit that runs after a newer one was applied is superseded, never shown. The
+    /// ladder a later first view asks for is cut from the applied edit's MP4, and a further edit
+    /// is still checked against the original's length, not the edit's.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn the_newest_applied_edit_wins_and_later_edits_use_original_time(pool: PgPool) {
+        if !crate::testing::ffmpeg_available().await {
+            return;
+        }
+        let (seeded, media, _store, user) = processed(&pool).await;
+        let edits = EditService::new(pool.clone());
+        let older = edits
+            .submit(seeded.workspace, seeded.recording, user, &[[1_000, 4_000]])
+            .await
+            .expect("v1");
+        let newer = edits
+            .submit(seeded.workspace, seeded.recording, user, &[[0, 8_000]])
+            .await
+            .expect("v2");
+        let request = |id| RenderEdit {
+            edit_id: id,
+            workspace_id: seeded.workspace,
+        };
+
+        let outcome = media
+            .render_edit(request(newer.edit_id), false)
+            .await
+            .expect("v2 renders");
+        assert!(
+            matches!(outcome, RenderOutcome::Applied { rungs: 0, .. }),
+            "{outcome:?}"
+        );
+        // v1 is still queued, so the recording waits for it.
+        assert_eq!(recording_row(&pool, &seeded).await.0, "processing");
+        assert_eq!(
+            media
+                .render_edit(request(older.edit_id), false)
+                .await
+                .expect("v1"),
+            RenderOutcome::Superseded
+        );
+        assert_eq!(edit_status(&pool, older.edit_id).await, "superseded");
+        assert_eq!(recording_row(&pool, &seeded).await.0, "ready");
+        let v2 = format!(
+            "ws/{}/rec/{}/edits/2/",
+            seeded.workspace, seeded.recording
+        );
+        let mp4 = renditions_of(&pool, &seeded)
+            .await
+            .into_iter()
+            .find(|(kind, ..)| kind == "mp4")
+            .expect("mp4");
+        assert!(mp4.2.starts_with(&v2), "{}", mp4.2);
+
+        // No ladder before the edit, so none was rebuilt; the first view's comes from v2.
+        assert!(matches!(
+            media.build_hls(hls_request(&seeded)).await.expect("ladder"),
+            HlsOutcome::Built { .. }
+        ));
+        let master = renditions_of(&pool, &seeded)
+            .await
+            .into_iter()
+            .find(|(kind, variant, _)| kind == "hls" && variant == "master")
+            .expect("master");
+        assert_eq!(master.2, format!("{v2}hls/master.m3u8"));
+
+        // 9.5 s fits the 10 s original though the recording now plays 8 s.
+        let third = edits
+            .submit(seeded.workspace, seeded.recording, user, &[[0, 9_500]])
+            .await
+            .expect("v3 is checked against the original");
+        assert_eq!(third.source_duration_ms, older.source_duration_ms);
     }
 }

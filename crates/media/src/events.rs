@@ -82,3 +82,29 @@ impl DomainEvent for RenditionReady {
         self.workspace_id
     }
 }
+
+/// An edit is now the version viewers get: the recording's renditions were replaced by the
+/// edit's and it is `ready` again (ADR-0038). Live status wakes on it. Written in the same
+/// transaction as the rendition rows and the state change.
+#[derive(Debug, Clone, Serialize)]
+pub struct EditApplied {
+    pub recording_id: RecordingId,
+    pub take_id: TakeId,
+    #[serde(skip)]
+    pub workspace_id: WorkspaceId,
+    pub edit_id: uuid::Uuid,
+    pub version: u32,
+    pub duration_ms: u32,
+}
+
+impl DomainEvent for EditApplied {
+    const EVENT_TYPE: &'static str = "EditApplied";
+
+    fn aggregate_id(&self) -> uuid::Uuid {
+        self.recording_id.into_uuid()
+    }
+
+    fn workspace_id(&self) -> WorkspaceId {
+        self.workspace_id
+    }
+}

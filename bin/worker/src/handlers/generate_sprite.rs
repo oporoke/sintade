@@ -28,6 +28,10 @@ impl JobHandler for GenerateSpriteHandler {
                 tracing::info!(job_id = %ctx.job_id, tiles, sheets, "GenerateSprite done");
                 Ok(())
             }
+            Ok(SpriteOutcome::Superseded) => {
+                tracing::info!(job_id = %ctx.job_id, "GenerateSprite: an edit replaced the MP4 meanwhile");
+                Ok(())
+            }
             Ok(SpriteOutcome::NotFound) => {
                 tracing::info!(job_id = %ctx.job_id, "GenerateSprite had nothing to do");
                 Ok(())

@@ -6,15 +6,6 @@ use std::path::Path;
 
 use super::edl::Edl;
 
-/// Where an edit's rendered MP4 lives (docs/design.md §8 storage layout: `edits/{version}/`).
-pub fn edit_mp4_key(
-    workspace_id: kernel::WorkspaceId,
-    recording_id: kernel::RecordingId,
-    version: u32,
-) -> String {
-    format!("ws/{workspace_id}/rec/{recording_id}/edits/{version}/default.mp4")
-}
-
 /// Seconds with millisecond precision, the way `trim` reads them.
 fn seconds(ms: u32) -> String {
     format!("{}.{:03}", ms / 1000, ms % 1000)
@@ -151,11 +142,23 @@ mod tests {
     }
 
     #[test]
-    fn the_rendered_file_lives_under_the_versioned_edits_prefix() {
+    fn each_version_plays_from_its_own_base() {
+        use crate::domain::{
+            base_of_mp4, edit_base, hls_prefix_in, img_prefix_in, mp4_key, mp4_key_in,
+            poster_key_in, recording_base,
+        };
         let (w, r) = (kernel::WorkspaceId::new_v7(), kernel::RecordingId::new_v7());
-        assert_eq!(
-            edit_mp4_key(w, r, 3),
-            format!("ws/{w}/rec/{r}/edits/3/default.mp4")
-        );
+        let base = edit_base(w, r, 3);
+        assert_eq!(base, format!("ws/{w}/rec/{r}/edits/3"));
+        assert_eq!(mp4_key_in(&base), format!("ws/{w}/rec/{r}/edits/3/mp4/default.mp4"));
+        assert_eq!(hls_prefix_in(&base), format!("ws/{w}/rec/{r}/edits/3/hls"));
+        assert_eq!(img_prefix_in(&base), format!("ws/{w}/rec/{r}/edits/3/img"));
+        assert_eq!(poster_key_in(&base), format!("ws/{w}/rec/{r}/edits/3/img/poster.jpg"));
+        // The original keeps the layout it always had.
+        assert_eq!(mp4_key(w, r), format!("ws/{w}/rec/{r}/mp4/default.mp4"));
+        // Either MP4 leads back to its base; nothing else does.
+        assert_eq!(base_of_mp4(&mp4_key_in(&base)), Some(base.as_str()));
+        assert_eq!(base_of_mp4(&mp4_key(w, r)), Some(recording_base(w, r).as_str()));
+        assert_eq!(base_of_mp4(&format!("{base}/img/poster.jpg")), None);
     }
 }

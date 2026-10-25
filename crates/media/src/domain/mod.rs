@@ -56,26 +56,53 @@ pub fn preview_content_type(mime: &str) -> String {
     }
 }
 
-/// Where a recording's default MP4 lives (docs/design.md §8 storage layout).
+/// Everything one version of a recording is played from shares a base (ADR-0038): the original's
+/// is the recording's own prefix, an edit's is `edits/{version}` under it. Under a base the MP4 is
+/// `mp4/default.mp4`, the ladder `hls/`, and the poster, sprite and preview `img/`
+/// (docs/design.md §8 storage layout).
+pub fn recording_base(workspace_id: WorkspaceId, recording_id: RecordingId) -> String {
+    format!("ws/{workspace_id}/rec/{recording_id}")
+}
+
+/// The base of an edit's version (see [`recording_base`]).
+pub fn edit_base(workspace_id: WorkspaceId, recording_id: RecordingId, version: u32) -> String {
+    format!("{}/edits/{version}", recording_base(workspace_id, recording_id))
+}
+
+/// The base a version's MP4 key sits under; `None` for a key that isn't a version's MP4.
+pub fn base_of_mp4(key: &str) -> Option<&str> {
+    key.strip_suffix("/mp4/default.mp4")
+}
+
+/// A version's fast-start MP4.
+pub fn mp4_key_in(base: &str) -> String {
+    format!("{base}/mp4/default.mp4")
+}
+
+/// A version's HLS ladder: the master playlist is `master.m3u8` here and each rung a directory.
+pub fn hls_prefix_in(base: &str) -> String {
+    format!("{base}/hls")
+}
+
+/// A version's scrub sprite, `sprite.vtt` and animated preview. The VTT names its sheets relative
+/// to itself, so they share this prefix.
+pub fn img_prefix_in(base: &str) -> String {
+    format!("{base}/img")
+}
+
+/// A version's poster.
+pub fn poster_key_in(base: &str) -> String {
+    format!("{base}/img/poster.jpg")
+}
+
+/// Where the original's default MP4 lives. Every edit is cut from this one (ADR-0036).
 pub fn mp4_key(workspace_id: WorkspaceId, recording_id: RecordingId) -> String {
-    format!("ws/{workspace_id}/rec/{recording_id}/mp4/default.mp4")
+    mp4_key_in(&recording_base(workspace_id, recording_id))
 }
 
-/// Where a recording's HLS ladder lives: the master playlist is `master.m3u8` here and each rung
-/// is a directory (docs/design.md §8 storage layout).
-pub fn hls_prefix(workspace_id: WorkspaceId, recording_id: RecordingId) -> String {
-    format!("ws/{workspace_id}/rec/{recording_id}/hls")
-}
-
-/// Where a recording's scrub sprite, `sprite.vtt` and animated preview live (docs/design.md §8
-/// storage layout). The VTT names its sheets relative to itself, so they share this prefix.
-pub fn img_prefix(workspace_id: WorkspaceId, recording_id: RecordingId) -> String {
-    format!("ws/{workspace_id}/rec/{recording_id}/img")
-}
-
-/// Where a recording's poster lives (docs/design.md §8 storage layout).
+/// Where the original's poster lives.
 pub fn poster_key(workspace_id: WorkspaceId, recording_id: RecordingId) -> String {
-    format!("ws/{workspace_id}/rec/{recording_id}/img/poster.jpg")
+    poster_key_in(&recording_base(workspace_id, recording_id))
 }
 
 /// Where a take's concatenated original lives (docs/design.md §8 storage layout).

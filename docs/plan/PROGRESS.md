@@ -2,7 +2,7 @@
 
 ## Current day
 
-**Day 91** — Edit versioning: new renditions, HLS rebuild, `ready → processing → ready` (Check: old version replaced only after success). *Owner actions still open:* production host and the launch (`docs/launch/go-no-go.md`)
+**Day 91** — Edit versioning: new renditions, HLS rebuild, `ready → processing → ready` (Check: old version replaced only after success). **In progress** on `feat/day-091-edit-versioning`: built, waiting for the user's manual test run (`cargo sqlx prepare`, tests, end-to-end steps). *Owner actions still open:* production host and the launch (`docs/launch/go-no-go.md`)
 
 ## Current milestone
 
@@ -122,6 +122,10 @@ M11 — Editor (Days 89–97) (V1)
 
 ## Deferred items
 
+- (Day 91) Delete superseded and replaced edit versions' files after a grace period longer than the 30 s playback cache and the 15 min signed URLs; count edit versions in storage use for billing
+- (Day 91) Invalidate delivery's ladder-prefix cache on `EditApplied` (today a viewer may get the old ladder for up to 30 s after a swap; it still plays)
+- (Day 91) A status-stream event for `ready → processing` when an edit starts (the owner knows; viewers' pages only see the return to `ready`)
+- (Day 91, CI) Diagnose the `player-resume` e2e failures from the worker log CI now keeps (failed 2 of the 3 runs on 2026-10-25)
 - (Day 90) Drop the `vite` override in `web/package.json` once `@angular/build` depends on `vite >= 8.3.3` (it pins 8.3.0 up to 22.2.4); clear the two moderate `@vitest/mocker` advisories in `web/`
 - (Day 90) Remove the `RUSTSEC-2026-0387` ignore from `.cargo/audit.toml` once an `aws-sigv4` release depends on `crypto-bigint >= 0.7.6` (ADR-0037)
 - (Day 90) Flaky tests seen in CI: `player-resume` e2e (hover tile not visible in time) and `delivery` `segment_urls_expire_with_the_token_and_the_bare_url_is_refused` (MinIO connection error); make them deterministic

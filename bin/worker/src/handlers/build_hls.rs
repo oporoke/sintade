@@ -27,6 +27,10 @@ impl JobHandler for BuildHlsHandler {
                 tracing::info!(job_id = %ctx.job_id, rungs, "BuildHls done");
                 Ok(())
             }
+            Ok(HlsOutcome::Superseded) => {
+                tracing::info!(job_id = %ctx.job_id, "BuildHls: an edit replaced the MP4 meanwhile");
+                Ok(())
+            }
             Ok(HlsOutcome::NotFound) => {
                 tracing::info!(job_id = %ctx.job_id, "BuildHls had nothing to do");
                 Ok(())

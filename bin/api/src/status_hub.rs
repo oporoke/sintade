@@ -1,8 +1,8 @@
 //! The SSE hub (docs/design.md §5: "listens on Postgres `NOTIFY` and pushes processing status to
 //! connected clients"). One task per API process listens on the outbox channel and turns the
 //! events that change what a recording looks like (`RecordingReady`, `ProcessingFailed`,
-//! `RenditionReady`) into a [`Change`]; every open status stream wakes on the ones for its
-//! recording and re-reads the recording's status. A `NOTIFY` carries only the event type, so the
+//! `RenditionReady`, `EditApplied`) into a [`Change`]; every open status stream wakes on the ones
+//! for its recording and re-reads the recording's status. A `NOTIFY` carries only the event type, so the
 //! hub reads the new `outbox_events` rows itself, by id, and also on a timer: a notification
 //! lost to a reconnect costs at most [`CATCH_UP`] of delay, never a missed change.
 
@@ -21,7 +21,12 @@ pub struct Change {
 }
 
 /// Event types that change a recording's status.
-const STATUS_EVENTS: [&str; 3] = ["RecordingReady", "ProcessingFailed", "RenditionReady"];
+const STATUS_EVENTS: [&str; 4] = [
+    "RecordingReady",
+    "ProcessingFailed",
+    "RenditionReady",
+    "EditApplied",
+];
 /// Re-read the outbox at least this often, notified or not.
 const CATCH_UP: Duration = Duration::from_secs(5);
 const RECONNECT_AFTER: Duration = Duration::from_secs(2);

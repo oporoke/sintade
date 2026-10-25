@@ -92,6 +92,20 @@ impl MemoryStore {
     pub fn remove(&self, key: &str) {
         self.objects.lock().expect("lock").remove(key);
     }
+
+    /// The stored keys under `prefix`, sorted.
+    pub fn keys_under(&self, prefix: &str) -> Vec<String> {
+        let mut keys: Vec<String> = self
+            .objects
+            .lock()
+            .expect("lock")
+            .keys()
+            .filter(|key| key.starts_with(prefix))
+            .cloned()
+            .collect();
+        keys.sort();
+        keys
+    }
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
