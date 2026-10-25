@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM renditions\n        WHERE workspace_id = $1 AND recording_id = $2 AND take_id = $3\n          AND kind IN ('hls', 'sprite', 'preview')\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "500779cb0430e03602021b76c13f7c943406290d5d6116950734bb7d503948a4"
+}

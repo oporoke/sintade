@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT storage_key, (meta ->> 'duration_ms')::int AS duration_ms\n        FROM renditions\n        WHERE workspace_id = $1 AND recording_id = $2 AND take_id = $3\n          AND kind = 'mp4' AND variant = 'default'\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "storage_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "renditions",
+            "name": "storage_key"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "duration_ms",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "1f02aceb0f160cfa1d0922e7fe7a247b7d3612e76e8c292328e4546600cfd617"
+}

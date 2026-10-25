@@ -353,8 +353,7 @@ impl MediaService {
         // The ladder is cut from the MP4 viewers get, the original's or an applied edit's, and
         // stored beside it (ADR-0038).
         let Some(current) =
-            infra::current_mp4(&self.pool, job.workspace_id, job.recording_id, job.take_id)
-                .await?
+            infra::current_mp4(&self.pool, job.workspace_id, job.recording_id, job.take_id).await?
         else {
             return Err(BuildHlsError::NotReady);
         };
@@ -486,8 +485,7 @@ impl MediaService {
     ) -> Result<SpriteOutcome, GenerateSpriteError> {
         // Sampled from the MP4 viewers get and stored beside it (ADR-0038).
         let Some(current) =
-            infra::current_mp4(&self.pool, job.workspace_id, job.recording_id, job.take_id)
-                .await?
+            infra::current_mp4(&self.pool, job.workspace_id, job.recording_id, job.take_id).await?
         else {
             return Err(GenerateSpriteError::NotReady);
         };
@@ -2310,16 +2308,16 @@ mod tests {
         };
         assert!(rungs >= 1, "the ladder is rebuilt");
 
-        let base = format!(
-            "ws/{}/rec/{}/edits/1",
-            seeded.workspace, seeded.recording
-        );
+        let base = format!("ws/{}/rec/{}/edits/1", seeded.workspace, seeded.recording);
         let after = renditions_of(&pool, &seeded).await;
         for (kind, variant, key) in &after {
             if kind == "source" {
                 assert!(key.contains("/takes/"), "the original source stays: {key}");
             } else {
-                assert!(key.starts_with(&format!("{base}/")), "{kind}/{variant} -> {key}");
+                assert!(
+                    key.starts_with(&format!("{base}/")),
+                    "{kind}/{variant} -> {key}"
+                );
                 assert!(store.bytes(key).is_some(), "{key} is stored");
             }
         }
@@ -2328,7 +2326,11 @@ mod tests {
             kinds.dedup();
             kinds
         };
-        assert_eq!(kinds(&after), kinds(&before), "every kind is replaced, none lost");
+        assert_eq!(
+            kinds(&after),
+            kinds(&before),
+            "every kind is replaced, none lost"
+        );
         let (state, duration, ..) = recording_row(&pool, &seeded).await;
         assert_eq!(state, "ready");
         assert_eq!(duration, Some(duration_ms as i32));
@@ -2380,10 +2382,7 @@ mod tests {
         assert_eq!(recording_row(&pool, &seeded).await, measured);
         assert_eq!(renditions_of(&pool, &seeded).await, before);
         assert_eq!(edit_status(&pool, submitted.edit_id).await, "failed");
-        let base = format!(
-            "ws/{}/rec/{}/edits/1/",
-            seeded.workspace, seeded.recording
-        );
+        let base = format!("ws/{}/rec/{}/edits/1/", seeded.workspace, seeded.recording);
         assert_eq!(store.keys_under(&base), Vec::<String>::new());
         assert!(events(&pool, "EditApplied").await.is_empty());
         // A duplicate job after giving up does nothing.
@@ -2436,10 +2435,7 @@ mod tests {
         );
         assert_eq!(edit_status(&pool, older.edit_id).await, "superseded");
         assert_eq!(recording_row(&pool, &seeded).await.0, "ready");
-        let v2 = format!(
-            "ws/{}/rec/{}/edits/2/",
-            seeded.workspace, seeded.recording
-        );
+        let v2 = format!("ws/{}/rec/{}/edits/2/", seeded.workspace, seeded.recording);
         let mp4 = renditions_of(&pool, &seeded)
             .await
             .into_iter()

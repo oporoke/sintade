@@ -66,7 +66,10 @@ pub fn recording_base(workspace_id: WorkspaceId, recording_id: RecordingId) -> S
 
 /// The base of an edit's version (see [`recording_base`]).
 pub fn edit_base(workspace_id: WorkspaceId, recording_id: RecordingId, version: u32) -> String {
-    format!("{}/edits/{version}", recording_base(workspace_id, recording_id))
+    format!(
+        "{}/edits/{version}",
+        recording_base(workspace_id, recording_id)
+    )
 }
 
 /// The base a version's MP4 key sits under; `None` for a key that isn't a version's MP4.

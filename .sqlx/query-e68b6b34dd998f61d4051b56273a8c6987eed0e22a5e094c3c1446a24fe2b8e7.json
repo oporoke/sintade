@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT r.take_id,\n               COALESCE(\n                   (SELECT e.source_duration_ms FROM edits e\n                    WHERE e.workspace_id = r.workspace_id AND e.recording_id = r.recording_id\n                    ORDER BY e.version LIMIT 1),\n                   (r.meta ->> 'duration_ms')::int\n               ) AS duration_ms\n        FROM renditions r\n        JOIN recordings rec ON rec.id = r.recording_id AND rec.workspace_id = r.workspace_id\n        WHERE r.workspace_id = $1 AND r.recording_id = $2\n          AND r.kind = 'mp4' AND r.variant = 'default'\n          AND rec.trashed_at IS NULL\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "take_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "renditions",
+            "name": "take_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "duration_ms",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "e68b6b34dd998f61d4051b56273a8c6987eed0e22a5e094c3c1446a24fe2b8e7"
+}

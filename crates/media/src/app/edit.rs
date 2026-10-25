@@ -244,7 +244,10 @@ impl MediaService {
             infra::mark_superseded(&mut *tx, edit.id, edit.workspace_id).await?;
             self.settle(&mut tx, edit).await?;
             tx.commit().await?;
-            tracing::info!(version = edit.version, "a newer edit is applied; superseded");
+            tracing::info!(
+                version = edit.version,
+                "a newer edit is applied; superseded"
+            );
             return Ok(false);
         }
         self.catalog
@@ -281,7 +284,10 @@ impl MediaService {
         infra::mark_failed(&mut *tx, edit.id, edit.workspace_id, reason).await?;
         self.settle(&mut tx, edit).await?;
         tx.commit().await?;
-        tracing::warn!(version = edit.version, "edit given up; the recording keeps its version");
+        tracing::warn!(
+            version = edit.version,
+            "edit given up; the recording keeps its version"
+        );
         // The trailing slash keeps version 1 from matching version 10.
         let prefix = format!(
             "{}/",
@@ -364,7 +370,10 @@ impl MediaService {
             infra::mark_superseded(&mut *tx, edit.id, edit.workspace_id).await?;
             self.settle(&mut tx, edit).await?;
             tx.commit().await?;
-            tracing::info!(version = edit.version, "a newer edit was applied first; superseded");
+            tracing::info!(
+                version = edit.version,
+                "a newer edit was applied first; superseded"
+            );
             return Ok(RenderOutcome::Superseded);
         }
         infra::delete_derived_renditions(

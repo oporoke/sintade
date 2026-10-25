@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE recordings SET state = 'processing', updated_at = now()\n        WHERE id = $1 AND workspace_id = $2 AND state = 'ready'\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "faf62b19ea63b4e1fd4f3d410e8a4eeb36ddf7f2b03ad93269e47e1d8a8db4ad"
+}

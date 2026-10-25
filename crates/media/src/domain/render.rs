@@ -150,15 +150,24 @@ mod tests {
         let (w, r) = (kernel::WorkspaceId::new_v7(), kernel::RecordingId::new_v7());
         let base = edit_base(w, r, 3);
         assert_eq!(base, format!("ws/{w}/rec/{r}/edits/3"));
-        assert_eq!(mp4_key_in(&base), format!("ws/{w}/rec/{r}/edits/3/mp4/default.mp4"));
+        assert_eq!(
+            mp4_key_in(&base),
+            format!("ws/{w}/rec/{r}/edits/3/mp4/default.mp4")
+        );
         assert_eq!(hls_prefix_in(&base), format!("ws/{w}/rec/{r}/edits/3/hls"));
         assert_eq!(img_prefix_in(&base), format!("ws/{w}/rec/{r}/edits/3/img"));
-        assert_eq!(poster_key_in(&base), format!("ws/{w}/rec/{r}/edits/3/img/poster.jpg"));
+        assert_eq!(
+            poster_key_in(&base),
+            format!("ws/{w}/rec/{r}/edits/3/img/poster.jpg")
+        );
         // The original keeps the layout it always had.
         assert_eq!(mp4_key(w, r), format!("ws/{w}/rec/{r}/mp4/default.mp4"));
         // Either MP4 leads back to its base; nothing else does.
         assert_eq!(base_of_mp4(&mp4_key_in(&base)), Some(base.as_str()));
-        assert_eq!(base_of_mp4(&mp4_key(w, r)), Some(recording_base(w, r).as_str()));
+        assert_eq!(
+            base_of_mp4(&mp4_key(w, r)),
+            Some(recording_base(w, r).as_str())
+        );
         assert_eq!(base_of_mp4(&format!("{base}/img/poster.jpg")), None);
     }
 }
