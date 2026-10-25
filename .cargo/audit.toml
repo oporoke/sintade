@@ -1,0 +1,6 @@
+# cargo audit configuration. Every ignore needs an ADR and a Deferred item to remove it.
+[advisories]
+ignore = [
+    # crypto-bigint 0.5.5 via aws-sigv4 (SigV4a only); no fixed aws-sigv4 yet. ADR-0037.
+    "RUSTSEC-2026-0387",
+]
