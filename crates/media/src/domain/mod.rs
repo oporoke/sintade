@@ -3,6 +3,7 @@
 pub mod edl;
 pub mod hls;
 pub mod probe;
+pub mod render;
 pub mod sprite;
 pub mod transcode;
 

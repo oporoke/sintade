@@ -904,6 +904,99 @@
         }
       }
     },
+    "/api/v1/recordings/{recording_id}/edits": {
+      "post": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "Saves an edit of the recording and queues its render (owner or admin). The original is never\nchanged; the edited MP4 is made as a new version.",
+        "operationId": "post_edit",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "description": "The recording",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EditBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Saved; the render is queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditAccepted"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing CSRF token, or not the owner and not an admin",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such recording in the caller's workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The recording has no MP4 yet (still processing, or failed)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Overlapping, too short, past-the-end, empty or too many ranges, or ranges that keep everything",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/recordings/{recording_id}/events": {
       "get": {
         "tags": [
@@ -2344,6 +2437,75 @@
             "description": "A signed URL that saves the MP4; open it (the browser downloads it)."
           }
         }
+      },
+      "EditAccepted": {
+        "type": "object",
+        "required": [
+          "id",
+          "version",
+          "kept_ms",
+          "source_duration_ms",
+          "status"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kept_ms": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How long the edited recording will be.",
+            "minimum": 0
+          },
+          "source_duration_ms": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The length of the original the ranges were checked against.",
+            "minimum": 0
+          },
+          "status": {
+            "type": "string",
+            "description": "`queued`: the render has been scheduled."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1 for the recording's first saved edit, then counting up.",
+            "minimum": 0
+          }
+        }
+      },
+      "EditBody": {
+        "type": "object",
+        "required": [
+          "ranges"
+        ],
+        "properties": {
+          "ranges": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            },
+            "description": "The ranges of the original to keep, as `[start_ms, end_ms]` pairs in any order. They must\nnot overlap, each is at least 100 ms, none ends after the recording, and there are at most\n100. Everything not listed is cut. Touching ranges are joined.",
+            "example": [
+              [
+                0,
+                12000
+              ],
+              [
+                15000,
+                60000
+              ]
+            ]
+          }
+        },
+        "additionalProperties": false
       },
       "FinalizeBody": {
         "type": "object",

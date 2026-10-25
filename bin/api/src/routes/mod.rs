@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod chapters;
+pub mod edits;
 pub mod events;
 pub mod links;
 pub mod me;
@@ -189,6 +190,12 @@ pub fn table() -> Vec<Route> {
             "/api/v1/recordings/{recording_id}/chapters",
             Workspace,
             chapters::put_chapters,
+        ),
+        Route::new(
+            Method::POST,
+            "/api/v1/recordings/{recording_id}/edits",
+            Workspace,
+            edits::post_edit,
         ),
         Route::new(
             Method::GET,

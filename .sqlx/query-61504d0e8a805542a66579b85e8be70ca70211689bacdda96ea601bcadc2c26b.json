@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE edits\n        SET status = 'rendered', output_key = $3, output_duration_ms = $4, output_bytes = $5,\n            rendered_at = now(), failure = NULL\n        WHERE id = $1 AND workspace_id = $2\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "61504d0e8a805542a66579b85e8be70ca70211689bacdda96ea601bcadc2c26b"
+}

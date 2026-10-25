@@ -201,14 +201,14 @@ impl<E: Into<ProcessError>> From<E> for StepError {
 }
 
 pub struct MediaService {
-    pool: PgPool,
-    store: Arc<dyn ObjectStore>,
-    catalog: Arc<CatalogService>,
-    billing: Arc<BillingService>,
-    clock: Arc<dyn Clock>,
-    outbox: Outbox,
-    scratch: ScratchSpace,
-    tools: MediaTools,
+    pub(super) pool: PgPool,
+    pub(super) store: Arc<dyn ObjectStore>,
+    pub(super) catalog: Arc<CatalogService>,
+    pub(super) billing: Arc<BillingService>,
+    pub(super) clock: Arc<dyn Clock>,
+    pub(super) outbox: Outbox,
+    pub(super) scratch: ScratchSpace,
+    pub(super) tools: MediaTools,
 }
 
 impl MediaService {
@@ -812,6 +812,7 @@ const GAVE_UP: &str = "processing failed after several attempts";
 mod tests {
     use super::*;
     use crate::app::RenditionReader;
+    use crate::app::edit::{EditService, RenderEdit, RenderOutcome, SubmitEditError};
     use crate::app::retry::{RetryError, RetryService};
     use crate::testing::MemoryStore;
 
@@ -1957,5 +1958,183 @@ mod tests {
             media.generate_sprite(other).await.expect("scoped"),
             SpriteOutcome::NotFound
         );
+    }
+
+    // ---- Day 90: edits ---------------------------------------------------------------------
+
+    async fn owner_of(pool: &PgPool, seeded: &Seeded) -> kernel::UserId {
+        let owner = sqlx::query_scalar!(
+            "SELECT owner_id FROM recordings WHERE id = $1",
+            seeded.recording.into_uuid()
+        )
+        .fetch_one(pool)
+        .await
+        .expect("owner");
+        kernel::UserId::from_uuid(owner)
+    }
+
+    /// The Check: a rendered edit is as long as the ranges it keeps. Two ranges of a processed
+    /// 10 s recording (with audio) come out as a 6 s MP4, stored under `edits/1/`.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_rendered_edit_is_as_long_as_the_kept_ranges(pool: PgPool) {
+        if !crate::testing::ffmpeg_available().await {
+            return;
+        }
+        let seeded = seed(&pool).await;
+        let (media, store) = service_with(&pool);
+        enqueue_fixture(&media, &store, &seeded, "real_chrome_vp9_opus_10s.webm").await;
+        assert_eq!(run(&media, &seeded).await, ProcessOutcome::Ran);
+        let user = owner_of(&pool, &seeded).await;
+        let edits = EditService::new(pool.clone());
+
+        let submitted = edits
+            .submit(
+                seeded.workspace,
+                seeded.recording,
+                user,
+                &[[6_000, 9_000], [1_000, 4_000]],
+            )
+            .await
+            .expect("submit");
+        assert_eq!((submitted.version, submitted.kept_ms), (1, 6_000));
+        let queued = sqlx::query_scalar!(
+            r#"SELECT payload FROM jobs WHERE kind = 'RenderEdit' AND done_at IS NULL"#
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("jobs");
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0]["edit_id"], submitted.edit_id.to_string());
+
+        let request = RenderEdit {
+            edit_id: submitted.edit_id,
+            workspace_id: seeded.workspace,
+        };
+        let RenderOutcome::Rendered { duration_ms, bytes } =
+            media.render_edit(request, false).await.expect("render")
+        else {
+            panic!("the edit renders");
+        };
+        assert!(
+            duration_ms.abs_diff(6_000) <= crate::domain::render::DURATION_TOLERANCE_MS,
+            "{duration_ms} ms for 6000 kept"
+        );
+        let key = format!(
+            "ws/{}/rec/{}/edits/1/default.mp4",
+            seeded.workspace, seeded.recording
+        );
+        assert_eq!(store.bytes(&key).map(|b| b.len() as u64), Some(bytes));
+        assert_eq!(store.content_type(&key).as_deref(), Some("video/mp4"));
+        let row = sqlx::query!(
+            "SELECT status, output_key, output_duration_ms FROM edits WHERE id = $1",
+            submitted.edit_id
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("edit");
+        assert_eq!(row.status, "rendered");
+        assert_eq!(row.output_key.as_deref(), Some(key.as_str()));
+        assert_eq!(row.output_duration_ms, Some(duration_ms as i32));
+        // The original and its MP4 are untouched.
+        assert!(
+            store
+                .bytes(&format!(
+                    "ws/{}/rec/{}/mp4/default.mp4",
+                    seeded.workspace, seeded.recording
+                ))
+                .is_some()
+        );
+
+        // A duplicate job renders nothing.
+        assert_eq!(
+            media.render_edit(request, false).await.expect("again"),
+            RenderOutcome::AlreadyRendered
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn submitting_checks_the_recording_and_the_ranges(pool: PgPool) {
+        if !crate::testing::ffmpeg_available().await {
+            return;
+        }
+        let seeded = seed(&pool).await;
+        let user = owner_of(&pool, &seeded).await;
+        let edits = EditService::new(pool.clone());
+        let ranges = [[1_000, 4_000]];
+
+        // Nothing to cut until the MP4 exists.
+        assert!(matches!(
+            edits
+                .submit(seeded.workspace, seeded.recording, user, &ranges)
+                .await,
+            Err(SubmitEditError::NotReady)
+        ));
+        let (media, store) = service_with(&pool);
+        enqueue_fixture(&media, &store, &seeded, "real_chrome_vp9_opus_10s.webm").await;
+        assert_eq!(run(&media, &seeded).await, ProcessOutcome::Ran);
+
+        // Another workspace's caller, and a recording that doesn't exist, look the same.
+        assert!(matches!(
+            edits
+                .submit(WorkspaceId::new_v7(), seeded.recording, user, &ranges)
+                .await,
+            Err(SubmitEditError::NotFound)
+        ));
+        assert!(matches!(
+            edits
+                .submit(seeded.workspace, RecordingId::new_v7(), user, &ranges)
+                .await,
+            Err(SubmitEditError::NotFound)
+        ));
+        // Bad ranges change nothing: no row, no job.
+        for (bad, check) in [
+            (vec![[0, 99_999_999]], "past the end"),
+            (vec![[1_000, 4_000], [3_000, 5_000]], "overlap"),
+            (vec![], "empty"),
+        ] {
+            assert!(
+                matches!(
+                    edits
+                        .submit(seeded.workspace, seeded.recording, user, &bad)
+                        .await,
+                    Err(SubmitEditError::Invalid(_))
+                ),
+                "{check}"
+            );
+        }
+        let full = sqlx::query_scalar!(
+            r#"SELECT (meta ->> 'duration_ms')::int AS "ms!" FROM renditions
+               WHERE recording_id = $1 AND kind = 'mp4'"#,
+            seeded.recording.into_uuid()
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("duration") as u32;
+        // Keeping the whole recording changes nothing, so nothing is saved.
+        assert!(matches!(
+            edits
+                .submit(seeded.workspace, seeded.recording, user, &[[0, full]])
+                .await,
+            Err(SubmitEditError::NoChange)
+        ));
+        let saved = sqlx::query_scalar!(
+            "SELECT count(*) FROM edits WHERE recording_id = $1",
+            seeded.recording.into_uuid()
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(saved, Some(0));
+
+        // Versions count up per recording.
+        let first = edits
+            .submit(seeded.workspace, seeded.recording, user, &ranges)
+            .await
+            .expect("first");
+        let second = edits
+            .submit(seeded.workspace, seeded.recording, user, &ranges)
+            .await
+            .expect("second");
+        assert_eq!((first.version, second.version), (1, 2));
     }
 }
