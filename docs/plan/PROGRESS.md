@@ -122,6 +122,7 @@ M11 — Editor (Days 89–97) (V1)
 
 ## Deferred items
 
+- (Day 90) Drop the `vite` override in `web/package.json` once `@angular/build` depends on `vite >= 8.3.3` (it pins 8.3.0 up to 22.2.4); clear the two moderate `@vitest/mocker` advisories in `web/`
 - (Day 90) Remove the `RUSTSEC-2026-0387` ignore from `.cargo/audit.toml` once an `aws-sigv4` release depends on `crypto-bigint >= 0.7.6` (ADR-0037)
 - (Day 90) Flaky tests seen in CI: `player-resume` e2e (hover tile not visible in time) and `delivery` `segment_urls_expire_with_the_token_and_the_bare_url_is_refused` (MinIO connection error); make them deterministic
 - (Day 87) The 1,000-viewer load (§18) and a run behind the production proxy/CDN on the 4-vCPU reference machine; cache effect vs. no cache; invalidating the playback cache on `RenditionReady` instead of the 30 s TTL (ADR-0034); SSE streams aren't capped per process (the Day 82 note) and were not part of this load.

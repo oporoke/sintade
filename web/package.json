@@ -41,6 +41,7 @@
   "overrides": {
     "openapi-typescript": {
       "typescript": "$typescript"
-    }
+    },
+    "vite": "8.3.5"
   }
 }
