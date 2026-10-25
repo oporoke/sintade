@@ -146,6 +146,77 @@ pub async fn mark_ready(
     }))
 }
 
+/// `ready` → `processing` while an edit is made into the version viewers get (docs/design.md §4,
+/// "edit applied"). `false` if the recording isn't `ready` in that workspace (it may already be
+/// `processing` for another edit, or be in the trash).
+pub async fn mark_reprocessing(
+    conn: &mut PgConnection,
+    id: RecordingId,
+    workspace_id: WorkspaceId,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        r#"
+        UPDATE recordings SET state = 'processing', updated_at = now()
+        WHERE id = $1 AND workspace_id = $2 AND state = 'ready'
+        "#,
+        id.into_uuid(),
+        workspace_id.into_uuid(),
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// What the recording's new version measures, whatever its state (an applied edit). `false` if
+/// there is no such recording in the workspace.
+#[allow(clippy::too_many_arguments)]
+pub async fn remeasure(
+    conn: &mut PgConnection,
+    id: RecordingId,
+    workspace_id: WorkspaceId,
+    duration_ms: i32,
+    width: i32,
+    height: i32,
+    size_bytes: i64,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        r#"
+        UPDATE recordings
+        SET duration_ms = $3, width = $4, height = $5, size_bytes = $6, updated_at = now()
+        WHERE id = $1 AND workspace_id = $2
+        "#,
+        id.into_uuid(),
+        workspace_id.into_uuid(),
+        duration_ms,
+        width,
+        height,
+        size_bytes,
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// `processing` → `ready`, measurements unchanged: the version viewers get is already made (an
+/// edit was applied, superseded or given up on). `false` if the recording isn't `processing`.
+pub async fn restore_ready(
+    conn: &mut PgConnection,
+    id: RecordingId,
+    workspace_id: WorkspaceId,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        r#"
+        UPDATE recordings SET state = 'ready', updated_at = now()
+        WHERE id = $1 AND workspace_id = $2 AND state = 'processing'
+        "#,
+        id.into_uuid(),
+        workspace_id.into_uuid(),
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
 /// `processing` → `failed`. `None` if the recording isn't `processing` in that workspace.
 pub async fn mark_failed(
     conn: &mut PgConnection,

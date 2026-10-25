@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE recordings\n        SET duration_ms = $3, width = $4, height = $5, size_bytes = $6, updated_at = now()\n        WHERE id = $1 AND workspace_id = $2\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Int4",
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "75fbb5b1fbb107209f8f1623dc79f1dbaa8d00800aac7ab76ad4d4fae10bd03a"
+}

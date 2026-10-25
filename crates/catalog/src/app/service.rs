@@ -105,6 +105,53 @@ impl CatalogService {
         .await
     }
 
+    /// `Ready → Processing` while an edit becomes the version viewers get (docs/design.md §4,
+    /// "edit applied"). Runs on media's transaction. `false`: the recording wasn't `ready`.
+    #[tracing::instrument(skip_all, fields(recording_id = %id, workspace_id = %workspace_id))]
+    pub async fn mark_reprocessing(
+        &self,
+        conn: &mut PgConnection,
+        id: RecordingId,
+        workspace_id: WorkspaceId,
+    ) -> Result<bool, sqlx::Error> {
+        infra::mark_reprocessing(conn, id, workspace_id).await
+    }
+
+    /// Records what the recording's new version measured (an applied edit), whatever its state.
+    /// Runs on media's transaction.
+    #[tracing::instrument(skip_all, fields(recording_id = %id, workspace_id = %workspace_id))]
+    pub async fn remeasure(
+        &self,
+        conn: &mut PgConnection,
+        id: RecordingId,
+        workspace_id: WorkspaceId,
+        measured: Measured,
+    ) -> Result<bool, sqlx::Error> {
+        infra::remeasure(
+            conn,
+            id,
+            workspace_id,
+            measured.duration_ms,
+            measured.width,
+            measured.height,
+            measured.size_bytes,
+        )
+        .await
+    }
+
+    /// `Processing → Ready` with the measurements it has: the edit that made it `processing` was
+    /// applied, superseded or given up on. Runs on media's transaction. `false`: it wasn't
+    /// `processing`.
+    #[tracing::instrument(skip_all, fields(recording_id = %id, workspace_id = %workspace_id))]
+    pub async fn restore_ready(
+        &self,
+        conn: &mut PgConnection,
+        id: RecordingId,
+        workspace_id: WorkspaceId,
+    ) -> Result<bool, sqlx::Error> {
+        infra::restore_ready(conn, id, workspace_id).await
+    }
+
     /// `Processing → Failed` (bad input, or processing gave up). Runs on media's transaction.
     #[tracing::instrument(skip_all, fields(recording_id = %id, workspace_id = %workspace_id))]
     pub async fn mark_failed(

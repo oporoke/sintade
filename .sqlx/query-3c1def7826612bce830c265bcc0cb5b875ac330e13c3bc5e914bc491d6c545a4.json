@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE edits SET status = 'superseded' WHERE id = $1 AND workspace_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3c1def7826612bce830c265bcc0cb5b875ac330e13c3bc5e914bc491d6c545a4"
+}

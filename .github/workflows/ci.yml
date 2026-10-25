@@ -230,7 +230,8 @@ jobs:
         # which playwright.config.ts's own webServer entry starts and polls via /healthz.
         run: |
           cargo build -p worker
-          ./target/debug/worker &
+          # Kept in a file: a background step's output isn't in the job log (Day 91).
+          ./target/debug/worker > worker.log 2>&1 &
       - uses: actions/setup-node@v4
         with:
           node-version-file: web/.nvmrc
@@ -255,6 +256,10 @@ jobs:
           npm ci
           npm run e2e
         working-directory: extension
+      - name: Show the worker's log of failed e2e tests
+        # Which jobs ran, failed or were still queued when a test gave up (e.g. the sprite).
+        if: failure()
+        run: tail -n 400 worker.log
       - name: Show page state of failed e2e tests
         if: failure()
         working-directory: web

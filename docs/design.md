@@ -729,7 +729,7 @@ ws/{workspace_id}/rec/{recording_id}/
     hls/{360p|720p|1080p}/index.m3u8, seg_{n}.m4s, init.mp4
     img/poster.jpg, preview.webp, sprite_{n}.jpg, sprite.vtt
     captions/{lang}.vtt
-    edits/{version}/...
+    edits/{version}/mp4/, hls/, img/          # an edit's version, same layout (ADR-0038)
 ```
 
 Deleting a recording = delete rows (cascade) + `delete_prefix(ws/{w}/rec/{r}/)` in a `PurgeRecording` job.
@@ -759,7 +759,7 @@ REST under `/api/v1`, JSON bodies, cookie session for the SPA, bearer API keys f
 | GET / PATCH / DELETE | `/recordings/{id}` | catalog | MVP | Read, rename, trash |
 | POST | `/recordings/{id}/restore` | catalog | V1 | Restore from trash |
 | GET | `/recordings/{id}/events` | media | V1 | SSE: processing status |
-| POST | `/recordings/{id}/edits` | media | V1 | Submit the kept ranges (EDL), saved as the next version; queues `RenderEdit`, which writes `edits/{version}/default.mp4` (ADR-0036) |
+| POST | `/recordings/{id}/edits` | media | V1 | Submit the kept ranges (EDL, in the original's time), saved as the next version; queues `RenderEdit`, which makes the version under `edits/{version}/` and then swaps it in for viewers (ADR-0036, ADR-0038) |
 | POST / PATCH / DELETE | `/recordings/{id}/links[/{link}]` | sharing | MVP | Manage share links |
 | GET | `/s/{slug}` | sharing + delivery | MVP | Public watch-page data (title, poster, access requirements) |
 | POST | `/s/{slug}/unlock` | sharing | V1 | Password check, sets unlock cookie |
@@ -806,6 +806,7 @@ Rules: chunk index is 0-based and contiguous; re-uploading an acked index with t
 | `TakeFinalized` | ingest | media |
 | `RecordingReady` | media | catalog, messaging, engagement |
 | `RenditionReady { kind, variants }` | media | delivery cache, SSE (ADR-0029: `variants` lists a ladder's rungs) |
+| `EditApplied { edit_id, version, duration_ms }` | media | SSE (ADR-0038: the edit replaced the recording's renditions; no second "ready" email) |
 | `AudioReady` | media | intelligence |
 | `ProcessingFailed { reason }` | media | catalog, messaging |
 | `TranscriptReady` | intelligence | catalog (search), messaging |
@@ -1108,7 +1109,7 @@ Rules: one row = one mergeable unit of work. `In progress` must name the branch 
 | MVP | Backups + production VPS deploy | 19 | In progress | Day 68 (`feat/day-068-backups`): Postgres WAL archiving + nightly base backups (PITR, 14 days), off-site mirror of backups and the media bucket to a versioned store, `deploy/backup/`, runbooks (`docs/runbooks/`), restore drill passing (`restore-drill.sh`, in CI); **no staging restore yet** (no staging). Day 69 (`feat/day-069-production`): production compose (Caddy TLS, nginx web, API, worker, Postgres with archiving, MinIO), `deploy.sh`, `deploy-production` job behind an approval, `api migrate`, Sentry, `OpsWatchdog` alerts, host runbooks (ADR-0023); proven locally by `just prod-smoke`; **no production host exists yet** |
 | V1 | Webcam bubble, quality presets, shortcuts, meters | 1, 2 | Done (locally) | M9, Days 71–78: compositor with draggable bubble and camera-only (ADR-0024), per-source volume/mute and meters, presets capped by the plan and mic processing toggles (ADR-0025), region crop and pointer option, restart/discard and shortcuts (ADR-0026), wake lock, storage warning and unload guard (ADR-0027), H.264 recording for CPU (ADR-0028). Demo `docs/demos/M09-capture-upgrades.md`; 1080p60 CPU budget awaits the owner |
 | V1 | HLS ladder, sprites, SSE status, full player | 5, 6 | In progress | M10: ladder, sprite and preview (Days 79–81), SSE status (Day 82, ADR-0029), adaptive player with quality selector and MP4 fallback (Day 83, ADR-0030), hover sprite, resume and shortcuts (Day 84, ADR-0031), chapters (Day 85, ADR-0032), signed manifest tokens (Day 86, ADR-0033), playback-path cache and 200-viewer load test (Day 87, ADR-0034); captions to come |
-| V1 | Trim/cut editor + EDL rendering | 7 | In progress | M11: `edits` table and the validated EDL type (Day 89, ADR-0035); `POST /recordings/{id}/edits` and the `RenderEdit` job (Day 90, ADR-0036) |
+| V1 | Trim/cut editor + EDL rendering | 7 | In progress | M11: `edits` table and the validated EDL type (Day 89, ADR-0035); `POST /recordings/{id}/edits` and the `RenderEdit` job (Day 90, ADR-0036); edit versioning: the whole version (MP4, poster, sprite, ladder) made under `edits/{version}/` and swapped in only after success, `ready → processing → ready` (Day 91, ADR-0038) |
 | V1 | Whisper transcription + transcript search | 8, 11 | Not started |  |
 | V1 | Workspaces, roles, invites, folders, trash restore | 11, 13 | Not started |  |
 | V1 | Password/expiry/invite links, oEmbed, Open Graph | 9 | Not started |  |

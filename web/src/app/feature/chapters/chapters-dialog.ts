@@ -19,7 +19,12 @@ import { formatChapterLines, parseChapterLines } from './chapters-text';
   selector: 'app-chapters-dialog',
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <dialog #dialog data-testid="chapters-dialog" aria-labelledby="chapters-title">
+    <dialog
+      #dialog
+      data-testid="chapters-dialog"
+      aria-labelledby="chapters-title"
+      (close)="loading.set(true)"
+    >
       <h2 id="chapters-title" i18n>Chapters</h2>
       @if (loading()) {
         <p role="status" i18n>Loading…</p>
@@ -50,7 +55,10 @@ export class ChaptersDialog {
   private readonly dialog = viewChild.required<ElementRef<HTMLDialogElement>>('dialog');
   private target: string | null = null;
 
-  protected readonly loading = signal(false);
+  /** True whenever the dialog's chapters aren't loaded, closed included: `showModal()` shows the
+   * dialog before the next render, so a textarea left in the DOM could be typed into and then
+   * reset by the load. */
+  protected readonly loading = signal(true);
   protected readonly text = signal('');
   protected readonly saved = signal(false);
   protected readonly error = signal<string | null>(null);
@@ -101,6 +109,7 @@ export class ChaptersDialog {
   }
 
   protected close(): void {
+    this.loading.set(true);
     const element = this.dialog().nativeElement;
     if (typeof element.close === 'function') {
       element.close();

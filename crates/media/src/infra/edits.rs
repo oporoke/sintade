@@ -4,14 +4,16 @@ use kernel::{RecordingId, TakeId, UserId, WorkspaceId};
 use sqlx::{PgConnection, PgExecutor};
 use uuid::Uuid;
 
-/// What an edit needs to be submitted: the MP4 it cuts and the length it was recorded at.
+/// What an edit needs to be submitted: the take whose MP4 it cuts and the original's length.
 pub struct SourceMp4 {
     pub take_id: TakeId,
     pub duration_ms: u32,
 }
 
-/// The recording's default MP4, if it is made. `None` also when the recording isn't in the
-/// workspace or is in the trash.
+/// The recording's default MP4, if it is made, with the **original's** length: once an edit is
+/// applied the MP4 row describes the edit, but ranges are always in original time, so the length
+/// comes from the first edit, which was checked against the original (ADR-0038). `None` also when
+/// the recording isn't in the workspace or is in the trash.
 pub async fn source_mp4(
     conn: &mut PgConnection,
     workspace_id: WorkspaceId,
@@ -19,7 +21,13 @@ pub async fn source_mp4(
 ) -> Result<Option<SourceMp4>, sqlx::Error> {
     let row = sqlx::query!(
         r#"
-        SELECT r.take_id, (r.meta ->> 'duration_ms')::int AS duration_ms
+        SELECT r.take_id,
+               COALESCE(
+                   (SELECT e.source_duration_ms FROM edits e
+                    WHERE e.workspace_id = r.workspace_id AND e.recording_id = r.recording_id
+                    ORDER BY e.version LIMIT 1),
+                   (r.meta ->> 'duration_ms')::int
+               ) AS duration_ms
         FROM renditions r
         JOIN recordings rec ON rec.id = r.recording_id AND rec.workspace_id = r.workspace_id
         WHERE r.workspace_id = $1 AND r.recording_id = $2
@@ -112,6 +120,9 @@ pub struct EditRow {
     pub version: u32,
     pub edl: serde_json::Value,
     pub source_duration_ms: u32,
+    pub status: String,
+    /// Where the rendered MP4 is, once it is.
+    pub output_key: Option<String>,
 }
 
 pub async fn find_edit(
@@ -122,7 +133,7 @@ pub async fn find_edit(
     let row = sqlx::query!(
         r#"
         SELECT id, workspace_id, recording_id, take_id AS "take_id!", version, edl,
-               source_duration_ms
+               source_duration_ms, status, output_key
         FROM edits
         WHERE id = $1 AND workspace_id = $2 AND take_id IS NOT NULL
         "#,
@@ -139,10 +150,12 @@ pub async fn find_edit(
         version: u32::try_from(row.version).unwrap_or(0),
         edl: row.edl,
         source_duration_ms: u32::try_from(row.source_duration_ms).unwrap_or(0),
+        status: row.status,
+        output_key: row.output_key,
     }))
 }
 
-/// `queued`/`rendering`/`failed` → `rendering`. `false` if it is already rendered (a duplicate
+/// `queued`/`rendering` → `rendering`. `false` once it is rendered or finished (a duplicate
 /// job), so nothing is rendered twice.
 pub async fn mark_rendering(
     executor: impl PgExecutor<'_>,
@@ -152,7 +165,7 @@ pub async fn mark_rendering(
     let result = sqlx::query!(
         r#"
         UPDATE edits SET status = 'rendering', failure = NULL
-        WHERE id = $1 AND workspace_id = $2 AND status <> 'rendered'
+        WHERE id = $1 AND workspace_id = $2 AND status IN ('queued', 'rendering')
         "#,
         id,
         workspace_id.into_uuid(),
@@ -203,4 +216,86 @@ pub async fn mark_failed(
     .execute(executor)
     .await?;
     Ok(())
+}
+
+/// `rendered` → `applied`: its renditions are what viewers get now.
+pub async fn mark_applied(
+    executor: impl PgExecutor<'_>,
+    id: Uuid,
+    workspace_id: WorkspaceId,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"
+        UPDATE edits SET status = 'applied', applied_at = now(), failure = NULL
+        WHERE id = $1 AND workspace_id = $2
+        "#,
+        id,
+        workspace_id.into_uuid(),
+    )
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// A newer edit was applied first: this one is kept, never shown.
+pub async fn mark_superseded(
+    executor: impl PgExecutor<'_>,
+    id: Uuid,
+    workspace_id: WorkspaceId,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE edits SET status = 'superseded' WHERE id = $1 AND workspace_id = $2",
+        id,
+        workspace_id.into_uuid(),
+    )
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Whether an edit of the recording newer than `version` is applied already.
+pub async fn newer_applied(
+    executor: impl PgExecutor<'_>,
+    workspace_id: WorkspaceId,
+    recording_id: RecordingId,
+    version: u32,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"
+        SELECT EXISTS (
+            SELECT 1 FROM edits
+            WHERE workspace_id = $1 AND recording_id = $2 AND version > $3
+              AND status = 'applied'
+        ) AS "newer!"
+        "#,
+        workspace_id.into_uuid(),
+        recording_id.into_uuid(),
+        i32::try_from(version).unwrap_or(i32::MAX),
+    )
+    .fetch_one(executor)
+    .await
+}
+
+/// Whether another edit of the recording is still on its way (queued, rendering or rendered but
+/// not applied): while one is, the recording stays `processing`.
+pub async fn others_pending(
+    executor: impl PgExecutor<'_>,
+    workspace_id: WorkspaceId,
+    recording_id: RecordingId,
+    id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"
+        SELECT EXISTS (
+            SELECT 1 FROM edits
+            WHERE workspace_id = $1 AND recording_id = $2 AND id <> $3
+              AND status IN ('queued', 'rendering', 'rendered')
+        ) AS "pending!"
+        "#,
+        workspace_id.into_uuid(),
+        recording_id.into_uuid(),
+        id,
+    )
+    .fetch_one(executor)
+    .await
 }

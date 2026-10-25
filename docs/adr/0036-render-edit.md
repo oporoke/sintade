@@ -3,7 +3,9 @@
 ## Status
 
 Accepted — 2026-10-08 (Day 90, M11). Builds on ADR-0035 (the EDL). Implements docs/design.md §9
-`POST /recordings/{id}/edits` and the `RenderEdit` job (§10).
+`POST /recordings/{id}/edits` and the `RenderEdit` job (§10). §4's key and §7 are amended by
+[ADR-0038](0038-edit-versioning.md) (Day 91): the MP4 is at `edits/{version}/mp4/default.mp4`, and
+the edit is made the version viewers get once all of it is stored.
 
 ## Decision
 
