@@ -222,7 +222,10 @@ impl MediaService {
         if !self.begin_edit(&edit).await? {
             return Ok(RenderOutcome::Superseded);
         }
-        let scratch = self.scratch.create(edit.take_id).await?;
+        let scratch = self
+            .scratch
+            .create(edit.take_id, &format!("edit-{}", edit.version))
+            .await?;
         let result = self.apply_in(&edit, &scratch).await;
         scratch.remove().await?;
         if let Err(error) = &result

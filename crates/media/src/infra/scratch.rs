@@ -20,10 +20,11 @@ impl ScratchSpace {
         &self.root
     }
 
-    /// A fresh, empty directory for processing `take_id`. A directory left by an earlier
-    /// attempt at the same take is replaced.
-    pub async fn create(&self, take_id: TakeId) -> io::Result<ScratchDir> {
-        let path = self.root.join(take_id.to_string());
+    /// A fresh, empty directory for the `job` (`"process"`, `"hls"`, …) on `take_id`. Different
+    /// jobs on one take run at the same time, so each has its own; a directory left by an earlier
+    /// attempt at the same job is replaced.
+    pub async fn create(&self, take_id: TakeId, job: &str) -> io::Result<ScratchDir> {
+        let path = self.root.join(format!("{take_id}.{job}"));
         match tokio::fs::remove_dir_all(&path).await {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -110,12 +111,12 @@ mod tests {
     async fn a_job_dir_is_created_empty_and_removed() {
         let space = ScratchSpace::new(temp_root());
         let take = TakeId::new_v7();
-        let dir = space.create(take).await.expect("create");
+        let dir = space.create(take, "process").await.expect("create");
         tokio::fs::write(dir.file("source.webm"), b"bytes")
             .await
             .expect("write");
         // A second attempt at the same take starts clean.
-        let again = space.create(take).await.expect("recreate");
+        let again = space.create(take, "process").await.expect("recreate");
         assert!(!again.file("source.webm").exists());
         let path = again.path().to_path_buf();
         again.remove().await.expect("remove");
@@ -146,7 +147,10 @@ mod tests {
     #[tokio::test]
     async fn dropping_a_job_dir_removes_it() {
         let space = ScratchSpace::new(temp_root());
-        let dir = space.create(TakeId::new_v7()).await.expect("create");
+        let dir = space
+            .create(TakeId::new_v7(), "process")
+            .await
+            .expect("create");
         let path = dir.path().to_path_buf();
         drop(dir);
         assert!(!path.exists());
@@ -156,7 +160,10 @@ mod tests {
     #[tokio::test]
     async fn leftovers_older_than_the_cutoff_are_swept() {
         let space = ScratchSpace::new(temp_root());
-        let dir = space.create(TakeId::new_v7()).await.expect("create");
+        let dir = space
+            .create(TakeId::new_v7(), "process")
+            .await
+            .expect("create");
         let path = dir.path().to_path_buf();
         std::mem::forget(dir); // as if the worker died mid-job
         assert_eq!(

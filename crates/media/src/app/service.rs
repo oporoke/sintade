@@ -339,7 +339,7 @@ impl MediaService {
         else {
             return Ok(HlsOutcome::NotFound);
         };
-        let scratch = self.scratch.create(job.take_id).await?;
+        let scratch = self.scratch.create(job.take_id, "hls").await?;
         let result = self.build_hls_in(&job, &scratch).await;
         scratch.remove().await?;
         result
@@ -472,7 +472,7 @@ impl MediaService {
         else {
             return Ok(SpriteOutcome::NotFound);
         };
-        let scratch = self.scratch.create(job.take_id).await?;
+        let scratch = self.scratch.create(job.take_id, "sprite").await?;
         let result = self.generate_sprite_in(&job, &scratch).await;
         scratch.remove().await?;
         result
@@ -603,7 +603,7 @@ impl MediaService {
         let count = u32::try_from(chunks.len()).unwrap_or(u32::MAX);
         let manifest = ChunkManifest::new(chunks, count).map_err(ProcessError::from)?;
 
-        let scratch = self.scratch.create(job.take_id).await?;
+        let scratch = self.scratch.create(job.take_id, "process").await?;
         tracing::info!(
             recording_id = %job.recording_id,
             attempt = job.attempts + 1,
