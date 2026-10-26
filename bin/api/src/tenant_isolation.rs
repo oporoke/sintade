@@ -203,6 +203,16 @@ fn tenant_table() -> Vec<(Method, &'static str, Probe)> {
         ),
         (
             Method::GET,
+            "/api/v1/recordings/{recording_id}/editor",
+            Probe::Owned(|pool, workspace_id| {
+                Box::pin(async move {
+                    let recording_id = editable_recording_in(&pool, workspace_id).await;
+                    get(&format!("/api/v1/recordings/{recording_id}/editor"))
+                })
+            }),
+        ),
+        (
+            Method::GET,
             "/api/v1/recordings",
             Probe::Listing {
                 request: || get("/api/v1/recordings"),

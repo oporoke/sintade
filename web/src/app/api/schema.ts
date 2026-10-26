@@ -263,6 +263,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/recordings/{recording_id}/editor": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What the editor works on (owner or admin): the original recording, its length and its
+         *     thumbnails, all in original time (ADR-0040).
+         */
+        get: operations["get_editor_source"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/recordings/{recording_id}/edits": {
         parameters: {
             query?: never;
@@ -745,6 +765,25 @@ export interface components {
              *     ]
              */
             ranges: number[][];
+        };
+        EditorSourceResponse: {
+            /**
+             * Format: int32
+             * @description The original's length; the timeline spans exactly this.
+             */
+            duration_ms: number;
+            /** Format: int64 */
+            expires_in_s: number;
+            /**
+             * @description The original's scrub-sprite cue file, each sheet signed (`sheet-url#xywh=x,y,w,h`), for
+             *     the timeline's thumbnails; `null` when the recording has no sprite.
+             */
+            sprite_vtt?: string | null;
+            /**
+             * @description A signed URL of the **original** MP4: the editor always works in the original's time,
+             *     whichever version viewers get.
+             */
+            video_url: string;
         };
         FinalizeBody: {
             /**
@@ -1760,6 +1799,65 @@ export interface operations {
                 };
             };
             /** @description The MP4 isn't ready yet */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_editor_source: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The recording */
+                recording_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The original, signed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EditorSourceResponse"];
+                };
+            };
+            /** @description No valid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not the owner and not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such recording in the caller's workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The recording has no MP4 yet (still processing, or failed) */
             409: {
                 headers: {
                     [name: string]: unknown;

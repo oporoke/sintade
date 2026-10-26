@@ -12,7 +12,7 @@ pub use edit::{
     SubmittedEdit,
 };
 pub use hls::{BuildHlsError, HlsError};
-pub use reader::{PlaybackKeys, RenditionReader, RequestLadderError, SourceKey};
+pub use reader::{OriginalKeys, PlaybackKeys, RenditionReader, RequestLadderError, SourceKey};
 pub use retry::{RetryError, RetryService};
 pub use service::{
     BUILD_HLS, BuildHls, EnqueueError, GENERATE_SPRITE, GenerateSprite, HlsOutcome, MediaService,

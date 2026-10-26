@@ -2356,6 +2356,76 @@ mod tests {
         assert_eq!(events(&pool, "RecordingReady").await.len(), 1);
     }
 
+    /// Day 93: the editor works on the original whichever version viewers get. After an edit is
+    /// applied, `original` still names the original's MP4 and sprite, both stored, with the
+    /// original's length, not the edit's.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn the_editor_gets_the_original_after_an_edit(pool: PgPool) {
+        if !crate::testing::ffmpeg_available().await {
+            return;
+        }
+        let (seeded, media, store, user) = processed(&pool).await;
+        let reader = crate::RenditionReader::new(pool.clone());
+        media
+            .generate_sprite(sprite_request(&seeded))
+            .await
+            .expect("sprite");
+        let before = reader
+            .original(seeded.workspace, seeded.recording)
+            .await
+            .expect("original")
+            .expect("processed");
+        assert!(store.bytes(&before.mp4).is_some(), "{}", before.mp4);
+        assert!(
+            store.bytes(&before.sprite_vtt).is_some(),
+            "{}",
+            before.sprite_vtt
+        );
+        assert!(
+            (9_000..=11_000).contains(&before.duration_ms),
+            "{}",
+            before.duration_ms
+        );
+
+        let submitted = EditService::new(pool.clone())
+            .submit(seeded.workspace, seeded.recording, user, &[[1_000, 4_000]])
+            .await
+            .expect("submit");
+        let outcome = media
+            .render_edit(
+                RenderEdit {
+                    edit_id: submitted.edit_id,
+                    workspace_id: seeded.workspace,
+                },
+                false,
+            )
+            .await
+            .expect("render");
+        assert!(
+            matches!(outcome, RenderOutcome::Applied { .. }),
+            "{outcome:?}"
+        );
+
+        let after = reader
+            .original(seeded.workspace, seeded.recording)
+            .await
+            .expect("original")
+            .expect("processed");
+        assert_eq!(
+            after, before,
+            "an edit doesn't move the editor off the original"
+        );
+        // Another workspace sees nothing.
+        let other = WorkspaceId::new_v7();
+        assert_eq!(
+            reader
+                .original(other, seeded.recording)
+                .await
+                .expect("other"),
+            None
+        );
+    }
+
     /// Day 91's Check, failure: an edit that fails keeps the recording `processing` with the old
     /// renditions while it is retried, and on its last attempt gives up, leaving the recording
     /// `ready` with exactly what it had and nothing of the edit stored.

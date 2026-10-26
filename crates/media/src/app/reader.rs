@@ -1,5 +1,6 @@
 use super::service::{BUILD_HLS, BuildHls};
 use super::waveform::{GENERATE_WAVEFORM, GenerateWaveform};
+use crate::domain::{mp4_key, original_sprite_vtt_key};
 use kernel::{RecordingId, TakeId, WorkspaceId};
 use platform::JobQueue;
 use sqlx::PgPool;
@@ -20,6 +21,18 @@ pub struct PlaybackKeys {
     /// The concatenated original, once it exists.
     pub source: Option<SourceKey>,
     pub poster: Option<String>,
+}
+
+/// The original recording, as the editor works on it: ranges, peaks and thumbnails are all in
+/// its time, whichever version viewers get (ADR-0038).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OriginalKeys {
+    /// The original's fast-start MP4; every edit is cut from it.
+    pub mp4: String,
+    /// The original's `sprite.vtt`. It may not exist: the sprite is made after processing.
+    pub sprite_vtt: String,
+    /// The original's length, what edit ranges are checked against.
+    pub duration_ms: u32,
 }
 
 /// Read-only lookups of a recording's renditions. Separate from `MediaService` for the same
@@ -144,6 +157,23 @@ impl RenditionReader {
         )
         .fetch_optional(&self.pool)
         .await
+    }
+
+    /// The original's MP4 and sprite keys and its length, once the recording is processed;
+    /// `None` before that, and for a recording in the trash or in another workspace.
+    #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
+    pub async fn original(
+        &self,
+        workspace_id: WorkspaceId,
+        recording_id: RecordingId,
+    ) -> Result<Option<OriginalKeys>, sqlx::Error> {
+        let mut conn = self.pool.acquire().await?;
+        let source = crate::infra::source_mp4(&mut conn, workspace_id, recording_id).await?;
+        Ok(source.map(|source| OriginalKeys {
+            mp4: mp4_key(workspace_id, recording_id),
+            sprite_vtt: original_sprite_vtt_key(workspace_id, recording_id),
+            duration_ms: source.duration_ms,
+        }))
     }
 
     /// The storage key of the recording's waveform peaks, once they are made (ADR-0039).
