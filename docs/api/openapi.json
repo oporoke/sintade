@@ -1410,6 +1410,79 @@
         }
       }
     },
+    "/api/v1/recordings/{recording_id}/waveform": {
+      "get": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "The waveform peaks of the original recording, for the editor's timeline (owner or admin).\nPeaks are made after processing; for a recording made before that existed, asking queues\nthem and answers `409` until they are ready.",
+        "operationId": "get_waveform",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "description": "The recording",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Signed URL of the peaks JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaveformResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not the owner and not an admin",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such recording in the caller's workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The peaks aren't made yet; try again shortly",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/s/{slug}": {
       "get": {
         "tags": [
@@ -3274,6 +3347,24 @@
           "ready",
           "failed"
         ]
+      },
+      "WaveformResponse": {
+        "type": "object",
+        "required": [
+          "url",
+          "expires_in_s"
+        ],
+        "properties": {
+          "expires_in_s": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "url": {
+            "type": "string",
+            "description": "A signed URL of the peaks JSON (ADR-0039): `{version, duration_ms, bucket_ms, has_audio,\npeaks}`, one peak (0–255) per `bucket_ms` of the original recording."
+          }
+        }
       }
     }
   }

@@ -356,6 +356,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/recordings/{recording_id}/waveform": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The waveform peaks of the original recording, for the editor's timeline (owner or admin).
+         *     Peaks are made after processing; for a recording made before that existed, asking queues
+         *     them and answers `409` until they are ready.
+         */
+        get: operations["get_waveform"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/s/{slug}": {
         parameters: {
             query?: never;
@@ -974,6 +995,15 @@ export interface components {
         };
         /** @enum {string} */
         WatchState: "processing" | "ready" | "failed";
+        WaveformResponse: {
+            /** Format: int64 */
+            expires_in_s: number;
+            /**
+             * @description A signed URL of the peaks JSON (ADR-0039): `{version, duration_ms, bucket_ms, has_audio,
+             *     peaks}`, one peak (0–255) per `bucket_ms` of the original recording.
+             */
+            url: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -2119,6 +2149,65 @@ export interface operations {
                 };
             };
             /** @description The recording isn't failed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_waveform: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The recording */
+                recording_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Signed URL of the peaks JSON */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveformResponse"];
+                };
+            };
+            /** @description No valid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not the owner and not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such recording in the caller's workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The peaks aren't made yet; try again shortly */
             409: {
                 headers: {
                     [name: string]: unknown;
