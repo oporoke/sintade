@@ -1,5 +1,6 @@
 pub mod build_hls;
 pub mod generate_sprite;
+pub mod generate_waveform;
 pub mod noop;
 pub mod ops_watchdog;
 pub mod process_take;

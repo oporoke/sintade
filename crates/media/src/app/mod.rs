@@ -4,6 +4,7 @@ mod retry;
 mod service;
 mod sprite;
 pub(crate) mod transcode;
+mod waveform;
 
 mod reader;
 pub use edit::{
@@ -20,3 +21,6 @@ pub use service::{
 };
 pub use sprite::{GenerateSpriteError, SpriteError};
 pub use transcode::{TranscodeError, TranscodeReport, transcode_file};
+pub use waveform::{
+    GENERATE_WAVEFORM, GenerateWaveform, GenerateWaveformError, WaveformError, WaveformOutcome,
+};

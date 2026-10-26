@@ -90,6 +90,57 @@ pub async fn post_edit(
     ))
 }
 
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct WaveformResponse {
+    /// A signed URL of the peaks JSON (ADR-0039): `{version, duration_ms, bucket_ms, has_audio,
+    /// peaks}`, one peak (0–255) per `bucket_ms` of the original recording.
+    pub url: String,
+    pub expires_in_s: u64,
+}
+
+/// The waveform peaks of the original recording, for the editor's timeline (owner or admin).
+/// Peaks are made after processing; for a recording made before that existed, asking queues
+/// them and answers `409` until they are ready.
+#[utoipa::path(
+    get,
+    path = "/api/v1/recordings/{recording_id}/waveform",
+    tag = "recordings",
+    params(("recording_id" = uuid::Uuid, Path, description = "The recording")),
+    responses(
+        (status = 200, description = "Signed URL of the peaks JSON", body = WaveformResponse),
+        (status = 401, description = "No valid session", body = Problem, content_type = "application/problem+json"),
+        (status = 403, description = "Not the owner and not an admin", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such recording in the caller's workspace", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "The peaks aren't made yet; try again shortly", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+#[tracing::instrument(skip_all, fields(workspace_id = %ctx.workspace_id))]
+pub async fn get_waveform(
+    State(state): State<AppState>,
+    ctx: WorkspaceContext,
+    Path(recording_id): Path<RecordingId>,
+) -> Result<axum::response::Response, ApiError> {
+    ctx.require(Permission::EditRecording)?;
+    require_owner_or_admin(&state, &ctx, recording_id).await?;
+    let grant = state
+        .delivery
+        .waveform(ctx.workspace_id, recording_id)
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "waveform failed");
+            ApiError::from(AppError::Internal("waveform unavailable".to_string()))
+        })?
+        .ok_or_else(|| {
+            ApiError::from(AppError::Conflict(
+                "the waveform is being made; try again shortly".to_string(),
+            ))
+        })?;
+    Ok(super::watch::no_store(Json(WaveformResponse {
+        url: grant.url,
+        expires_in_s: grant.expires_in_s,
+    })))
+}
+
 #[cfg(test)]
 mod tests {
     use axum::http::{Method, StatusCode};
@@ -210,6 +261,46 @@ mod tests {
         .await;
         assert_eq!(reply.status, StatusCode::CONFLICT);
         assert!(queued(&pool).await.is_empty());
+    }
+
+    fn waveform_uri(id: kernel::RecordingId) -> String {
+        format!("/api/v1/recordings/{id}/waveform")
+    }
+
+    async fn with_waveform(pool: &PgPool, id: kernel::RecordingId) {
+        sqlx::query!(
+            "INSERT INTO renditions (id, workspace_id, recording_id, take_id, kind, variant, storage_key)
+             SELECT $1, workspace_id, recording_id, take_id, 'waveform', 'peaks', 'ws/rec/img/waveform.json'
+             FROM renditions WHERE recording_id = $2 AND kind = 'mp4'",
+            uuid::Uuid::now_v7(),
+            id.into_uuid(),
+        )
+        .execute(pool)
+        .await
+        .expect("waveform");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn the_owner_gets_a_signed_url_of_the_peaks_once_they_are_made(pool: PgPool) {
+        let owner = caller(&pool).await;
+        let id = recording(&pool, &owner, "ready").await;
+        renditions(&pool, &owner, id).await;
+        let before = call(&pool, Some(&owner), Method::GET, &waveform_uri(id), None).await;
+        assert_eq!(before.status, StatusCode::CONFLICT, "{}", before.body);
+
+        with_waveform(&pool, id).await;
+        let reply = call(&pool, Some(&owner), Method::GET, &waveform_uri(id), None).await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        let url = reply.body["url"].as_str().expect("url");
+        assert!(url.contains("ws/rec/img/waveform.json"), "{url}");
+        assert_eq!(reply.body["expires_in_s"], 900);
+        assert_eq!(reply.cache_control.as_deref(), Some("no-store"));
+
+        let other = caller(&pool).await;
+        let stranger = call(&pool, Some(&other), Method::GET, &waveform_uri(id), None).await;
+        assert_eq!(stranger.status, StatusCode::NOT_FOUND);
+        let anon = call(&pool, None, Method::GET, &waveform_uri(id), None).await;
+        assert_eq!(anon.status, StatusCode::UNAUTHORIZED);
     }
 
     #[sqlx::test(migrations = "../../migrations")]

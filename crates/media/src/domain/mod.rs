@@ -6,6 +6,7 @@ pub mod probe;
 pub mod render;
 pub mod sprite;
 pub mod transcode;
+pub mod waveform;
 
 use kernel::{RecordingId, TakeId, WorkspaceId};
 use serde::{Deserialize, Serialize};
@@ -106,6 +107,15 @@ pub fn mp4_key(workspace_id: WorkspaceId, recording_id: RecordingId) -> String {
 /// Where the original's poster lives.
 pub fn poster_key(workspace_id: WorkspaceId, recording_id: RecordingId) -> String {
     poster_key_in(&recording_base(workspace_id, recording_id))
+}
+
+/// Where the waveform peaks live. Always the original's: the editor works in the original's
+/// time, so an edit never replaces them (ADR-0039).
+pub fn waveform_key(workspace_id: WorkspaceId, recording_id: RecordingId) -> String {
+    format!(
+        "{}/waveform.json",
+        img_prefix_in(&recording_base(workspace_id, recording_id))
+    )
 }
 
 /// Where a take's concatenated original lives (docs/design.md §8 storage layout).

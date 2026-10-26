@@ -15,6 +15,9 @@ pub use app::{
     SpriteError, SpriteOutcome, SubmitEditError, SubmittedEdit, TakeFinalizedData,
     TakeFinalizedMessage, TranscodeError, TranscodeReport, transcode_file,
 };
+pub use app::{
+    GENERATE_WAVEFORM, GenerateWaveform, GenerateWaveformError, WaveformError, WaveformOutcome,
+};
 pub use domain::edl::{
     Edl, EdlError, EdlJsonError, EdlRanges, KeptRange, MAX_RANGES, MIN_RANGE_MS,
 };

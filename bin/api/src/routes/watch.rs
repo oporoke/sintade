@@ -148,7 +148,7 @@ fn watch_state(state: &str) -> Option<WatchState> {
 }
 
 /// Watch links are per-viewer and carry signed URLs: never cached by browsers or proxies.
-fn no_store<T: IntoResponse>(body: T) -> Response {
+pub(crate) fn no_store<T: IntoResponse>(body: T) -> Response {
     let mut response = body.into_response();
     response
         .headers_mut()
