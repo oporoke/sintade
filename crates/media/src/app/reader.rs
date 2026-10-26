@@ -1,4 +1,5 @@
 use super::service::{BUILD_HLS, BuildHls};
+use super::waveform::{GENERATE_WAVEFORM, GenerateWaveform};
 use kernel::{RecordingId, TakeId, WorkspaceId};
 use platform::JobQueue;
 use sqlx::PgPool;
@@ -145,6 +146,27 @@ impl RenditionReader {
         .await
     }
 
+    /// The storage key of the recording's waveform peaks, once they are made (ADR-0039).
+    #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
+    pub async fn waveform_key(
+        &self,
+        workspace_id: WorkspaceId,
+        recording_id: RecordingId,
+    ) -> Result<Option<String>, sqlx::Error> {
+        sqlx::query_scalar!(
+            r#"
+            SELECT storage_key FROM renditions
+            WHERE workspace_id = $1 AND recording_id = $2
+              AND kind = 'waveform' AND variant = 'peaks'
+            ORDER BY created_at DESC LIMIT 1
+            "#,
+            workspace_id.into_uuid(),
+            recording_id.into_uuid(),
+        )
+        .fetch_optional(&self.pool)
+        .await
+    }
+
     /// Which renditions the recording has, as `(kind, variant)`: what live status reports.
     #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
     pub async fn available(
@@ -218,8 +240,49 @@ impl RenditionReader {
             .await?;
         Ok(queued.is_some())
     }
+
+    /// Recordings processed before the waveform job existed have no peaks: the editor asks for
+    /// them (ADR-0039). Enqueues `GenerateWaveform` for the recording's processed take unless it
+    /// has peaks already or the job is queued. Returns whether a job was enqueued.
+    #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
+    pub async fn request_waveform(
+        &self,
+        workspace_id: WorkspaceId,
+        recording_id: RecordingId,
+    ) -> Result<bool, RequestLadderError> {
+        let take = sqlx::query_scalar!(
+            r#"
+            SELECT take_id FROM media_jobs
+            WHERE workspace_id = $1 AND recording_id = $2 AND state = 'done'
+            ORDER BY created_at DESC LIMIT 1
+            "#,
+            workspace_id.into_uuid(),
+            recording_id.into_uuid(),
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(take) = take else {
+            return Ok(false);
+        };
+        if self
+            .waveform_key(workspace_id, recording_id)
+            .await?
+            .is_some()
+        {
+            return Ok(false);
+        }
+        let payload = serde_json::to_value(GenerateWaveform {
+            take_id: TakeId::from_uuid(take),
+            workspace_id,
+        })?;
+        let queued = JobQueue::new(self.pool.clone())
+            .enqueue_unless_identical_pending(GENERATE_WAVEFORM, payload)
+            .await?;
+        Ok(queued.is_some())
+    }
 }
 
+/// Why a job a viewer or the editor asks for (the ladder, the waveform) could not be queued.
 #[derive(Debug, thiserror::Error)]
 pub enum RequestLadderError {
     #[error("database error: {0}")]

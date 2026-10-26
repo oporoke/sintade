@@ -193,6 +193,16 @@ fn tenant_table() -> Vec<(Method, &'static str, Probe)> {
         ),
         (
             Method::GET,
+            "/api/v1/recordings/{recording_id}/waveform",
+            Probe::Owned(|pool, workspace_id| {
+                Box::pin(async move {
+                    let recording_id = waveform_recording_in(&pool, workspace_id).await;
+                    get(&format!("/api/v1/recordings/{recording_id}/waveform"))
+                })
+            }),
+        ),
+        (
+            Method::GET,
             "/api/v1/recordings",
             Probe::Listing {
                 request: || get("/api/v1/recordings"),
@@ -427,6 +437,22 @@ async fn editable_recording_in(pool: &PgPool, workspace_id: WorkspaceId) -> kern
     .execute(pool)
     .await
     .expect("mp4 length");
+    recording_id
+}
+
+/// A `ready` recording in `workspace_id` with an MP4 and its waveform peaks.
+async fn waveform_recording_in(pool: &PgPool, workspace_id: WorkspaceId) -> kernel::RecordingId {
+    let recording_id = downloadable_recording_in(pool, workspace_id).await;
+    sqlx::query!(
+        "INSERT INTO renditions (id, workspace_id, recording_id, take_id, kind, variant, storage_key)
+         SELECT $1, workspace_id, recording_id, take_id, 'waveform', 'peaks', 'ws/rec/img/waveform.json'
+         FROM renditions WHERE recording_id = $2 AND kind = 'mp4'",
+        uuid::Uuid::now_v7(),
+        recording_id.into_uuid(),
+    )
+    .execute(pool)
+    .await
+    .expect("waveform");
     recording_id
 }
 

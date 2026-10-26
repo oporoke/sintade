@@ -505,7 +505,7 @@ flowchart TD
 | --- | --- |
 | Job poller | `SELECT … FOR UPDATE SKIP LOCKED` with per-type concurrency limits |
 | Outbox relay | Reads `outbox_events`, dispatches to in-process subscribers, marks delivered |
-| Handlers | `ProcessTake`, `BuildHls`, `GenerateSprite`, `Transcribe`, `RenderEdit`, `SendEmail`, `DeliverWebhook`, `PurgeTrash`, `SweepStaleUploads` |
+| Handlers | `ProcessTake`, `BuildHls`, `GenerateSprite`, `GenerateWaveform`, `Transcribe`, `RenderEdit`, `SendEmail`, `DeliverWebhook`, `PurgeTrash`, `SweepStaleUploads` |
 | FFmpeg runner | Spawns `ffmpeg` with timeouts, parses progress from `-progress pipe:1`, streams stdout |
 | Scratch manager | Per-job temp dir on local NVMe, cleaned on completion or panic |
 
@@ -649,6 +649,7 @@ CREATE TABLE chunks (
 
 -- renditions
 CREATE TYPE rendition_kind AS ENUM ('mp4','hls','thumbnail','preview','sprite','captions','audio');
+-- later added: 'source' (the original, ADR-0016), 'waveform' (editor peaks, ADR-0039)
 CREATE TABLE renditions (
     id            uuid PRIMARY KEY,
     recording_id  uuid NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
@@ -728,6 +729,7 @@ ws/{workspace_id}/rec/{recording_id}/
     hls/master.m3u8
     hls/{360p|720p|1080p}/index.m3u8, seg_{n}.m4s, init.mp4
     img/poster.jpg, preview.webp, sprite_{n}.jpg, sprite.vtt
+    img/waveform.json                         # editor peaks of the original (ADR-0039)
     captions/{lang}.vtt
     edits/{version}/mp4/, hls/, img/          # an edit's version, same layout (ADR-0038)
 ```
@@ -760,6 +762,7 @@ REST under `/api/v1`, JSON bodies, cookie session for the SPA, bearer API keys f
 | POST | `/recordings/{id}/restore` | catalog | V1 | Restore from trash |
 | GET | `/recordings/{id}/events` | media | V1 | SSE: processing status |
 | POST | `/recordings/{id}/edits` | media | V1 | Submit the kept ranges (EDL, in the original's time), saved as the next version; queues `RenderEdit`, which makes the version under `edits/{version}/` and then swaps it in for viewers (ADR-0036, ADR-0038) |
+| GET | `/recordings/{id}/waveform` | media | V1 | Signed URL of the original's waveform peaks JSON for the editor (owner or admin); `409` while they are being made, queuing them for a recording processed before the job existed (ADR-0039) |
 | POST / PATCH / DELETE | `/recordings/{id}/links[/{link}]` | sharing | MVP | Manage share links |
 | GET | `/s/{slug}` | sharing + delivery | MVP | Public watch-page data (title, poster, access requirements) |
 | POST | `/s/{slug}/unlock` | sharing | V1 | Password check, sets unlock cookie |
@@ -869,7 +872,7 @@ rec.start(2000);
 3. `ffprobe` to validate container, codecs, duration; reject anything unexpected.
 4. Produce fast-start MP4; if source is already H.264/AAC (Safari), remux only.
 5. Poster at 1 s; mark recording `ready`; emit `RecordingReady`.
-6. Enqueue `BuildHls`, `GenerateSprite`, `Transcribe` as separate lower-priority jobs.
+6. Enqueue `BuildHls`, `GenerateSprite`, `GenerateWaveform`, `Transcribe` as separate lower-priority jobs.
 
 ```bash
 # 4: transcode VP9/Opus -> H.264/AAC, fast-start, fixes missing duration/cues
@@ -1109,7 +1112,7 @@ Rules: one row = one mergeable unit of work. `In progress` must name the branch 
 | MVP | Backups + production VPS deploy | 19 | In progress | Day 68 (`feat/day-068-backups`): Postgres WAL archiving + nightly base backups (PITR, 14 days), off-site mirror of backups and the media bucket to a versioned store, `deploy/backup/`, runbooks (`docs/runbooks/`), restore drill passing (`restore-drill.sh`, in CI); **no staging restore yet** (no staging). Day 69 (`feat/day-069-production`): production compose (Caddy TLS, nginx web, API, worker, Postgres with archiving, MinIO), `deploy.sh`, `deploy-production` job behind an approval, `api migrate`, Sentry, `OpsWatchdog` alerts, host runbooks (ADR-0023); proven locally by `just prod-smoke`; **no production host exists yet** |
 | V1 | Webcam bubble, quality presets, shortcuts, meters | 1, 2 | Done (locally) | M9, Days 71–78: compositor with draggable bubble and camera-only (ADR-0024), per-source volume/mute and meters, presets capped by the plan and mic processing toggles (ADR-0025), region crop and pointer option, restart/discard and shortcuts (ADR-0026), wake lock, storage warning and unload guard (ADR-0027), H.264 recording for CPU (ADR-0028). Demo `docs/demos/M09-capture-upgrades.md`; 1080p60 CPU budget awaits the owner |
 | V1 | HLS ladder, sprites, SSE status, full player | 5, 6 | In progress | M10: ladder, sprite and preview (Days 79–81), SSE status (Day 82, ADR-0029), adaptive player with quality selector and MP4 fallback (Day 83, ADR-0030), hover sprite, resume and shortcuts (Day 84, ADR-0031), chapters (Day 85, ADR-0032), signed manifest tokens (Day 86, ADR-0033), playback-path cache and 200-viewer load test (Day 87, ADR-0034); captions to come |
-| V1 | Trim/cut editor + EDL rendering | 7 | In progress | M11: `edits` table and the validated EDL type (Day 89, ADR-0035); `POST /recordings/{id}/edits` and the `RenderEdit` job (Day 90, ADR-0036); edit versioning: the whole version (MP4, poster, sprite, ladder) made under `edits/{version}/` and swapped in only after success, `ready → processing → ready` (Day 91, ADR-0038) |
+| V1 | Trim/cut editor + EDL rendering | 7 | In progress | M11: `edits` table and the validated EDL type (Day 89, ADR-0035); `POST /recordings/{id}/edits` and the `RenderEdit` job (Day 90, ADR-0036); edit versioning: the whole version (MP4, poster, sprite, ladder) made under `edits/{version}/` and swapped in only after success, `ready → processing → ready` (Day 91, ADR-0038); waveform peaks of the original for the timeline, `GenerateWaveform` and `GET /recordings/{id}/waveform` (Day 92, ADR-0039) |
 | V1 | Whisper transcription + transcript search | 8, 11 | Not started |  |
 | V1 | Workspaces, roles, invites, folders, trash restore | 11, 13 | Not started |  |
 | V1 | Password/expiry/invite links, oEmbed, Open Graph | 9 | Not started |  |

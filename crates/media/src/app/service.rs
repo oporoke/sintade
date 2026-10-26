@@ -741,12 +741,22 @@ impl MediaService {
         )
         .await?;
         infra::mark_done(&mut tx, job.take_id, job.workspace_id, self.clock.now()).await?;
-        // The scrub sprite and preview come after the MP4, at the queue's pace (§10 Process
-        // step 6). The ladder is not queued here: it waits for the first view (Day 80).
+        // The scrub sprite and preview, and the editor's waveform (ADR-0039), come after the
+        // MP4, at the queue's pace (§10 Process step 6). The ladder is not queued here: it waits
+        // for the first view (Day 80).
         JobQueue::enqueue_in(
             &mut tx,
             GENERATE_SPRITE,
             serde_json::to_value(GenerateSprite {
+                take_id: job.take_id,
+                workspace_id: job.workspace_id,
+            })?,
+        )
+        .await?;
+        JobQueue::enqueue_in(
+            &mut tx,
+            super::waveform::GENERATE_WAVEFORM,
+            serde_json::to_value(super::waveform::GenerateWaveform {
                 take_id: job.take_id,
                 workspace_id: job.workspace_id,
             })?,
@@ -2461,5 +2471,91 @@ mod tests {
             .await
             .expect("v3 is checked against the original");
         assert_eq!(third.source_duration_ms, older.source_duration_ms);
+    }
+
+    /// Day 92: the waveform job stores peaks of the original MP4 as `img/waveform.json` and
+    /// records them; the editor's request queues the job only while they are missing.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn the_waveform_job_stores_one_peak_per_bucket_of_the_original(pool: PgPool) {
+        if !crate::testing::ffmpeg_available().await {
+            return;
+        }
+        let (seeded, media, store, _user) = processed(&pool).await;
+        let queued = sqlx::query_scalar!(
+            r#"SELECT count(*) AS "n!" FROM jobs WHERE kind = 'GenerateWaveform' AND done_at IS NULL"#
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("jobs");
+        assert_eq!(queued, 1, "processing queues the waveform");
+
+        let request = crate::app::waveform::GenerateWaveform {
+            take_id: seeded.take,
+            workspace_id: seeded.workspace,
+        };
+        let outcome = media.generate_waveform(request).await.expect("waveform");
+        let key = crate::domain::waveform_key(seeded.workspace, seeded.recording);
+        let stored: crate::domain::waveform::Waveform =
+            serde_json::from_slice(&store.bytes(&key).expect("stored")).expect("json");
+        assert_eq!(
+            store.content_type(&key).as_deref(),
+            Some("application/json")
+        );
+        assert_eq!(stored.version, 1);
+        assert_eq!(
+            stored.peaks.len() as u32,
+            crate::domain::waveform::peak_count(stored.duration_ms, stored.bucket_ms)
+        );
+        assert_eq!(
+            outcome,
+            crate::app::waveform::WaveformOutcome::Built {
+                peaks: stored.peaks.len(),
+                has_audio: stored.has_audio,
+            }
+        );
+        // The fixture is 10 s: 200 peaks of 50 ms.
+        assert_eq!(stored.bucket_ms, 50);
+        assert!(
+            (195..=205).contains(&stored.peaks.len()),
+            "{}",
+            stored.peaks.len()
+        );
+
+        let reader = RenditionReader::new(pool.clone());
+        assert_eq!(
+            reader
+                .waveform_key(seeded.workspace, seeded.recording)
+                .await
+                .expect("key")
+                .as_deref(),
+            Some(key.as_str())
+        );
+        // Made: asking queues nothing. Missing (a recording from before Day 92): queued once.
+        assert!(
+            !reader
+                .request_waveform(seeded.workspace, seeded.recording)
+                .await
+                .expect("request")
+        );
+        sqlx::query!("DELETE FROM jobs WHERE kind = 'GenerateWaveform'")
+            .execute(&pool)
+            .await
+            .expect("clear");
+        sqlx::query!("DELETE FROM renditions WHERE kind = 'waveform'")
+            .execute(&pool)
+            .await
+            .expect("forget");
+        assert!(
+            reader
+                .request_waveform(seeded.workspace, seeded.recording)
+                .await
+                .expect("request")
+        );
+        assert!(
+            !reader
+                .request_waveform(seeded.workspace, seeded.recording)
+                .await
+                .expect("request")
+        );
     }
 }

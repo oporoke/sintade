@@ -10,6 +10,7 @@ use std::time::Duration;
 use handler::{HandlerRegistry, JobCtx, JobHandler};
 use handlers::build_hls::BuildHlsHandler;
 use handlers::generate_sprite::GenerateSpriteHandler;
+use handlers::generate_waveform::GenerateWaveformHandler;
 use handlers::noop::NoopHandler;
 use handlers::ops_watchdog::OpsWatchdogHandler;
 use handlers::process_take::ProcessTakeHandler;
@@ -218,6 +219,7 @@ async fn run_job_loop(
     registry.register(ProcessTakeHandler::new(media.clone()));
     registry.register(BuildHlsHandler::new(media.clone()));
     registry.register(GenerateSpriteHandler::new(media.clone()));
+    registry.register(GenerateWaveformHandler::new(media.clone()));
     registry.register(RenderEditHandler::new(media));
     registry.register(PurgeRecordingHandler::new(recordings));
     registry.register(watchdog);
@@ -230,6 +232,7 @@ async fn run_job_loop(
         )
         .limit(BuildHlsHandler::KIND, 1)
         .limit(GenerateSpriteHandler::KIND, 1)
+        .limit(GenerateWaveformHandler::KIND, 1)
         // A render is an encode of the whole edit: one at a time, like the ladder.
         .limit(RenderEditHandler::KIND, 1);
     tracing::info!(concurrency, process_take_concurrency, "job slots");

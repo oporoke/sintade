@@ -59,6 +59,13 @@ pub struct DownloadGrant {
     pub expires_in_s: u64,
 }
 
+/// A signed URL of a recording's waveform peaks JSON, for the editor (ADR-0039).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WaveformGrant {
+    pub url: String,
+    pub expires_in_s: u64,
+}
+
 /// What asking for a rung playlist can give.
 #[derive(Debug, PartialEq, Eq)]
 pub enum RungPlaylist {
@@ -175,6 +182,35 @@ impl DeliveryService {
         Ok(Some(DownloadGrant {
             url,
             filename,
+            expires_in_s: GRANT_TTL.as_secs(),
+        }))
+    }
+
+    /// A URL of the recording's waveform peaks, or `None` while they aren't made. A recording
+    /// processed before the waveform job existed gets the job queued here (ADR-0039).
+    #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
+    pub async fn waveform(
+        &self,
+        workspace_id: WorkspaceId,
+        recording_id: RecordingId,
+    ) -> Result<Option<WaveformGrant>, DeliveryError> {
+        let Some(key) = self
+            .renditions
+            .waveform_key(workspace_id, recording_id)
+            .await?
+        else {
+            if let Err(error) = self
+                .renditions
+                .request_waveform(workspace_id, recording_id)
+                .await
+            {
+                tracing::warn!(%error, "waveform: could not request the peaks");
+            }
+            return Ok(None);
+        };
+        let url = self.store.presign_get(&key, GRANT_TTL).await?.to_string();
+        Ok(Some(WaveformGrant {
+            url,
             expires_in_s: GRANT_TTL.as_secs(),
         }))
     }

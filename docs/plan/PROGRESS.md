@@ -2,7 +2,7 @@
 
 ## Current day
 
-**Day 92** — Waveform peaks job (JSON) (Check: peaks render in under 200 ms). *Owner actions still open:* production host and the launch (`docs/launch/go-no-go.md`)
+**Day 92** — Waveform peaks job (JSON) (Check: peaks render in under 200 ms). **In progress** on `feat/day-092-waveform-peaks`: built, waiting for the test run (`cargo sqlx prepare`, `just openapi`, tests). *Owner actions still open:* production host and the launch (`docs/launch/go-no-go.md`)
 
 ## Current milestone
 
@@ -123,6 +123,8 @@ M11 — Editor (Days 89–97) (V1)
 
 ## Deferred items
 
+- (Day 92) The editor's timeline thumbnails must come from the original's sprite: after an edit, the recording's sprite rows point at the edited version (ADR-0038), while the editor works in original time (Day 93)
+- (Day 92) Peaks are linear; a log (dB) scale for quiet speech if the editor needs it
 - (Day 91) Delete superseded and replaced edit versions' files after a grace period longer than the 30 s playback cache and the 15 min signed URLs; count edit versions in storage use for billing
 - (Day 91) Invalidate delivery's ladder-prefix cache on `EditApplied` (today a viewer may get the old ladder for up to 30 s after a swap; it still plays)
 - (Day 91) A status-stream event for `ready → processing` when an edit starts (the owner knows; viewers' pages only see the return to `ready`)
