@@ -135,6 +135,65 @@ describe('EditorPage', () => {
     expect(q(root, 'editor-waveform')?.getAttribute('data-state')).toBe('ready');
   });
 
+  // Day 94: the handles keep what is between them; moving one shows its frame at once.
+  it('moves the trim handles by keyboard and drag, showing the frame at each', async () => {
+    const { fixture, root } = await open({
+      source: vi.fn().mockResolvedValue(source()),
+      waveform: vi.fn().mockResolvedValue(peaks),
+    });
+    const video = q(root, 'editor-video') as HTMLVideoElement;
+    const start = q(root, 'editor-trim-start') as HTMLElement;
+    const end = q(root, 'editor-trim-end') as HTMLElement;
+    expect(start.getAttribute('aria-valuenow')).toBe('0');
+    expect(end.getAttribute('aria-valuenow')).toBe('12000');
+    expect(q(root, 'editor-trim-reset')).toBeNull();
+
+    start.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', shiftKey: true }));
+    start.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    fixture.detectChanges();
+    expect(start.getAttribute('aria-valuenow')).toBe('1100');
+    expect(video.currentTime).toBeCloseTo(1.1);
+    // The key moved the handle, not the timeline's playhead too.
+    expect(q(root, 'editor-time')?.textContent?.trim()).toBe('0:01');
+
+    const timeline = q(root, 'editor-timeline') as HTMLElement;
+    timeline.getBoundingClientRect = () => ({ left: 100, width: 400 }) as DOMRect;
+    end.dispatchEvent(
+      new PointerEvent('pointerdown', { clientX: 500, pointerId: 1, bubbles: true }),
+    );
+    end.dispatchEvent(new PointerEvent('pointermove', { clientX: 400, pointerId: 1 }));
+    end.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }));
+    end.dispatchEvent(new PointerEvent('pointermove', { clientX: 300, pointerId: 1 }));
+    fixture.detectChanges();
+    expect(end.getAttribute('aria-valuenow')).toBe('9000');
+    expect(video.currentTime).toBe(9);
+    expect(end.style.left).toBe('75%');
+    expect(q(root, 'editor-kept')?.getAttribute('data-kept-ms')).toBe('7900');
+    expect(q(root, 'editor-kept')?.textContent).toContain('0:01–0:09');
+
+    (q(root, 'editor-trim-reset') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    expect(end.getAttribute('aria-valuenow')).toBe('12000');
+    expect(start.getAttribute('aria-valuenow')).toBe('0');
+  });
+
+  it('previews from the start handle', async () => {
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
+    const { fixture, root } = await open({
+      source: vi.fn().mockResolvedValue(source()),
+      waveform: vi.fn().mockResolvedValue(peaks),
+    });
+    const start = q(root, 'editor-trim-start') as HTMLElement;
+    start.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', shiftKey: true }));
+    fixture.detectChanges();
+    const video = q(root, 'editor-video') as HTMLVideoElement;
+    video.currentTime = 7;
+    (q(root, 'editor-preview') as HTMLButtonElement).click();
+    expect(video.currentTime).toBe(1);
+    expect(play).toHaveBeenCalled();
+    play.mockRestore();
+  });
+
   it('works without thumbnails when the recording has no sprite', async () => {
     const { root } = await open({
       source: vi.fn().mockResolvedValue({ ...source(), sprite_vtt: null }),
