@@ -9,19 +9,25 @@ import {
   effect,
   inject,
   signal,
+  untracked,
   viewChild,
 } from '@angular/core';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 
 import { EditorApi, EditorHttpError, EditorSource } from '../../core/editor-api.service';
 import { formatClock } from '../chapters/chapters-text';
+import { formatDuration } from '../recorder/format';
 import { SpriteCue, parseSpriteVtt } from '../watch/sprite-preview';
 import { fractionToMs, msToFraction, thumbnailCount, thumbnailStrip } from './timeline';
+import { Trim, fullTrim, isTrimmed, moveEnd, moveStart } from './trim';
+import { TrimPreview } from './trim-preview';
 import { Waveform, drawWaveform } from './waveform';
 
 /** How tall the thumbnail strip and the waveform are, in CSS pixels. */
 export const THUMB_HEIGHT_PX = 54;
 export const WAVEFORM_HEIGHT_PX = 48;
+/** The row above the timeline that holds the trim handles' grips. */
+export const GRIP_HEIGHT_PX = 16;
 
 /** How often the peaks are asked for again while they are being made, and how many times. */
 export const WAVEFORM_RETRY_MS = 2000;
@@ -32,6 +38,12 @@ const FALLBACK_WIDTH_PX = 800;
 
 /** A step of the arrow keys on the timeline. */
 const KEY_STEP_MS = 1000;
+
+/** A step of the arrow keys on a trim handle, and with Shift held. */
+const HANDLE_STEP_MS = 100;
+const HANDLE_BIG_STEP_MS = 1000;
+
+type Handle = 'start' | 'end';
 
 type View =
   | { kind: 'loading' }
@@ -62,9 +74,15 @@ type View =
       background: #000;
       display: block;
     }
-    .timeline {
+    /* The handles' grips sit in a row above the timeline, so every point of the timeline,
+       its ends included, can still be clicked to seek. */
+    .track {
       position: relative;
       margin-top: var(--space-3);
+      padding-top: ${GRIP_HEIGHT_PX}px;
+    }
+    .timeline {
+      position: relative;
       cursor: pointer;
       user-select: none;
       touch-action: none;
@@ -105,6 +123,44 @@ type View =
       margin-left: -1px;
       background: var(--color-danger);
       pointer-events: none;
+    }
+    .cut,
+    .edge {
+      position: absolute;
+      top: ${GRIP_HEIGHT_PX}px;
+      bottom: 0;
+      background: rgb(0 0 0 / 55%);
+      pointer-events: none;
+    }
+    .edge {
+      width: 2px;
+      background: var(--color-primary);
+    }
+    .edge.end {
+      transform: translateX(-100%);
+    }
+    .handle {
+      position: absolute;
+      top: 0;
+      height: ${GRIP_HEIGHT_PX}px;
+      width: 14px;
+      cursor: ew-resize;
+      touch-action: none;
+      background: var(--color-primary);
+      border-radius: var(--radius-sm);
+    }
+    .handle.end {
+      transform: translateX(-100%);
+    }
+    .handle:focus-visible {
+      outline: 2px solid var(--color-text);
+      outline-offset: 1px;
+    }
+    .trim-bar {
+      display: flex;
+      gap: var(--space-2);
+      align-items: center;
+      margin-top: var(--space-2);
     }
     .times {
       display: flex;
@@ -149,53 +205,91 @@ type View =
           (timeupdate)="onTime()"
           (seeked)="onTime()"
         ></video>
-        <div
-          #timeline
-          class="timeline"
-          data-testid="editor-timeline"
-          role="slider"
-          tabindex="0"
-          aria-label="Timeline"
-          i18n-aria-label
-          aria-valuemin="0"
-          [attr.aria-valuemax]="durationMs()"
-          [attr.aria-valuenow]="currentMs()"
-          [attr.aria-valuetext]="clock(currentMs())"
-          [attr.data-duration-ms]="durationMs()"
-          (pointerdown)="onPointer($event)"
-          (pointermove)="onPointerMove($event)"
-          (keydown)="onKey($event)"
-        >
-          @if (strip().length > 0) {
-            <div class="thumbs" data-testid="editor-thumbs">
-              @for (thumb of strip(); track $index) {
-                <div
-                  class="thumb"
-                  data-testid="editor-thumb"
-                  [attr.data-start-ms]="round(thumb.startMs)"
-                  [attr.data-end-ms]="round(thumb.endMs)"
-                >
-                  <div
-                    [style.width.px]="thumb.cue.width"
-                    [style.height.px]="thumb.cue.height"
-                    [style.background-image]="sheet(thumb.cue)"
-                    [style.background-position]="-thumb.cue.x + 'px ' + -thumb.cue.y + 'px'"
-                    [style.transform]="thumbTransform(thumb.cue)"
-                  ></div>
-                </div>
-              }
-            </div>
-          }
-          <canvas
-            #waveform
-            data-testid="editor-waveform"
-            [attr.data-state]="waveformState()"
-            [attr.height]="waveformHeight"
-          ></canvas>
+        <div class="track">
           <div
-            class="playhead"
-            data-testid="editor-playhead"
-            [style.left.%]="playheadPercent()"
+            #timeline
+            class="timeline"
+            data-testid="editor-timeline"
+            role="slider"
+            tabindex="0"
+            aria-label="Timeline"
+            i18n-aria-label
+            aria-valuemin="0"
+            [attr.aria-valuemax]="durationMs()"
+            [attr.aria-valuenow]="currentMs()"
+            [attr.aria-valuetext]="clock(currentMs())"
+            [attr.data-duration-ms]="durationMs()"
+            (pointerdown)="onPointer($event)"
+            (pointermove)="onPointerMove($event)"
+            (keydown)="onKey($event)"
+          >
+            @if (strip().length > 0) {
+              <div class="thumbs" data-testid="editor-thumbs">
+                @for (thumb of strip(); track $index) {
+                  <div
+                    class="thumb"
+                    data-testid="editor-thumb"
+                    [attr.data-start-ms]="round(thumb.startMs)"
+                    [attr.data-end-ms]="round(thumb.endMs)"
+                  >
+                    <div
+                      [style.width.px]="thumb.cue.width"
+                      [style.height.px]="thumb.cue.height"
+                      [style.background-image]="sheet(thumb.cue)"
+                      [style.background-position]="-thumb.cue.x + 'px ' + -thumb.cue.y + 'px'"
+                      [style.transform]="thumbTransform(thumb.cue)"
+                    ></div>
+                  </div>
+                }
+              </div>
+            }
+            <canvas
+              #waveform
+              data-testid="editor-waveform"
+              [attr.data-state]="waveformState()"
+              [attr.height]="waveformHeight"
+            ></canvas>
+            <div
+              class="playhead"
+              data-testid="editor-playhead"
+              [style.left.%]="playheadPercent()"
+            ></div>
+          </div>
+          <div class="cut" [style.left.%]="0" [style.width.%]="startPercent()"></div>
+          <div class="cut" [style.left.%]="endPercent()" [style.right.%]="0"></div>
+          <div class="edge start" [style.left.%]="startPercent()"></div>
+          <div class="edge end" [style.left.%]="endPercent()"></div>
+          <div
+            class="handle start"
+            data-testid="editor-trim-start"
+            role="slider"
+            tabindex="0"
+            aria-label="Start of what is kept"
+            i18n-aria-label
+            aria-valuemin="0"
+            [attr.aria-valuemax]="trim().endMs"
+            [attr.aria-valuenow]="trim().startMs"
+            [attr.aria-valuetext]="clock(trim().startMs)"
+            [style.left.%]="startPercent()"
+            (pointerdown)="onHandle($event, 'start')"
+            (pointermove)="onHandleMove($event, 'start')"
+            (keydown)="onHandleKey($event, 'start')"
+          ></div>
+          <div
+            class="handle end"
+            data-testid="editor-trim-end"
+            role="slider"
+            tabindex="0"
+            aria-label="End of what is kept"
+            i18n-aria-label
+            [attr.aria-valuemin]="trim().startMs"
+            [attr.aria-valuemax]="durationMs()"
+            [attr.aria-valuenow]="trim().endMs"
+            [attr.aria-valuetext]="clock(trim().endMs)"
+            [style.left.%]="endPercent()"
+            (pointerdown)="onHandle($event, 'end')"
+            (pointermove)="onHandleMove($event, 'end')"
+            (keydown)="onHandleKey($event, 'end')"
           ></div>
         </div>
         <p class="times">
@@ -205,6 +299,27 @@ type View =
           }
           <span data-testid="editor-duration">{{ clock(durationMs()) }}</span>
         </p>
+        <div class="trim-bar">
+          <button type="button" data-testid="editor-preview" (click)="preview()" i18n>
+            Preview
+          </button>
+          <span data-testid="editor-kept" [attr.data-kept-ms]="keptMs()">
+            @if (trimmed()) {
+              <ng-container i18n
+                >Keeps {{ clock(trim().startMs) }}–{{ clock(trim().endMs) }} ({{
+                  length(keptMs())
+                }})</ng-container
+              >
+            } @else {
+              <ng-container i18n>Keeps the whole recording</ng-container>
+            }
+          </span>
+          @if (trimmed()) {
+            <button type="button" data-testid="editor-trim-reset" (click)="resetTrim()" i18n>
+              Keep everything
+            </button>
+          }
+        </div>
       }
     }
   `,
@@ -229,6 +344,11 @@ export class EditorPage implements OnInit {
   private recordingId = '';
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private dragging = false;
+  private draggingHandle: Handle | null = null;
+  private trimPreview: TrimPreview | null = null;
+
+  /** What is kept: from the start handle to the end handle, in the original's time. */
+  protected readonly trim = signal<Trim>(fullTrim(0));
 
   private readonly source = computed(() => {
     const view = this.view();
@@ -248,6 +368,14 @@ export class EditorPage implements OnInit {
       thumbnailCount(this.width(), THUMB_HEIGHT_PX, this.cues()[0]),
     ),
   );
+  protected readonly startPercent = computed(
+    () => msToFraction(this.trim().startMs, this.durationMs()) * 100,
+  );
+  protected readonly endPercent = computed(
+    () => msToFraction(this.trim().endMs, this.durationMs()) * 100,
+  );
+  protected readonly keptMs = computed(() => this.trim().endMs - this.trim().startMs);
+  protected readonly trimmed = computed(() => isTrimmed(this.trim(), this.durationMs()));
   protected readonly playheadPercent = computed(
     () => msToFraction(this.currentMs(), this.durationMs()) * 100,
   );
@@ -282,7 +410,20 @@ export class EditorPage implements OnInit {
         this.measure();
       }
     });
-    this.destroyRef.onDestroy(() => this.stopRetry());
+    // The preview follows the video element (there is one once the source is loaded) and the
+    // handles.
+    effect(() => {
+      const video = this.video()?.nativeElement;
+      if (video && this.trimPreview?.video !== video) {
+        this.trimPreview?.detach();
+        this.trimPreview = new TrimPreview(video, untracked(this.trim));
+      }
+    });
+    effect(() => this.trimPreview?.setTrim(this.trim()));
+    this.destroyRef.onDestroy(() => {
+      this.stopRetry();
+      this.trimPreview?.detach();
+    });
   }
 
   ngOnInit(): void {
@@ -294,6 +435,7 @@ export class EditorPage implements OnInit {
     this.view.set({ kind: 'loading' });
     try {
       const source = await this.api.source(this.recordingId);
+      this.trim.set(fullTrim(source.duration_ms));
       this.view.set({ kind: 'ready', source });
       void this.loadWaveform(0);
     } catch (error) {
@@ -394,6 +536,83 @@ export class EditorPage implements OnInit {
     if (video) {
       video.currentTime = ms / 1000;
     }
+  }
+
+  protected onHandle(event: PointerEvent, handle: Handle): void {
+    // The handle sits over the timeline: grabbing it must not also seek the timeline.
+    event.stopPropagation();
+    event.preventDefault();
+    const target = event.currentTarget as HTMLElement;
+    this.draggingHandle = handle;
+    this.video()?.nativeElement.pause();
+    try {
+      target.setPointerCapture(event.pointerId);
+    } catch {
+      // Not an active pointer (or no capture support): the press still moves the handle.
+    }
+    const release = () => {
+      this.draggingHandle = null;
+      target.removeEventListener('pointerup', release);
+      target.removeEventListener('pointercancel', release);
+    };
+    target.addEventListener('pointerup', release);
+    target.addEventListener('pointercancel', release);
+    target.focus();
+    // Grabbing a handle shows its frame.
+    this.seek(handle === 'start' ? this.trim().startMs : this.trim().endMs);
+  }
+
+  protected onHandleMove(event: PointerEvent, handle: Handle): void {
+    const box = this.timeline()?.nativeElement.getBoundingClientRect();
+    if (this.draggingHandle !== handle || !box || box.width <= 0) {
+      return;
+    }
+    this.moveHandle(
+      handle,
+      fractionToMs((event.clientX - box.left) / box.width, this.durationMs()),
+    );
+  }
+
+  protected onHandleKey(event: KeyboardEvent, handle: Handle): void {
+    const at = handle === 'start' ? this.trim().startMs : this.trim().endMs;
+    const step = event.shiftKey ? HANDLE_BIG_STEP_MS : HANDLE_STEP_MS;
+    const targets: Record<string, number> = {
+      ArrowLeft: at - step,
+      ArrowRight: at + step,
+      Home: 0,
+      End: this.durationMs(),
+    };
+    if (event.key in targets) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.moveHandle(handle, targets[event.key]);
+    }
+  }
+
+  /** Moves a handle and shows the frame at it at once: the instant preview of the trim. */
+  moveHandle(handle: Handle, ms: number): void {
+    const duration = this.durationMs();
+    const trim =
+      handle === 'start'
+        ? moveStart(this.trim(), ms, duration)
+        : moveEnd(this.trim(), ms, duration);
+    this.trim.set(trim);
+    this.trimPreview?.setTrim(trim);
+    this.seek(handle === 'start' ? trim.startMs : trim.endMs);
+  }
+
+  /** Plays what is kept, from the start handle to the end handle. */
+  protected preview(): void {
+    this.trimPreview?.setTrim(this.trim());
+    void this.trimPreview?.play().catch(() => undefined);
+  }
+
+  protected resetTrim(): void {
+    this.trim.set(fullTrim(this.durationMs()));
+  }
+
+  protected length(ms: number): string {
+    return formatDuration(ms);
   }
 
   protected sheet(cue: SpriteCue): string {
