@@ -19,7 +19,9 @@ has to happen in the browser, on the original MP4 the editor already plays.
    (`MIN_RANGE_MS`), so any trim the handles allow can be saved as an edit.
 2. **Instant preview of a handle.** Grabbing or moving a handle (drag, or the arrow keys: 100 ms,
    1 s with Shift) pauses the video and shows the frame at the handle. What is trimmed away is
-   shaded on the timeline.
+   shaded on the timeline. The handles' grips sit in a row above the timeline, and only a thin line
+   that lets clicks through marks them on it, so every point of the timeline, its two ends
+   included, can still be clicked to seek (ADR-0040).
 3. **The preview plays the original, kept inside the trim.** Preview seeks to the start handle and
    plays. While playing, the video is checked on every animation frame, and the frame that reaches
    the end handle pauses it and puts it exactly at the end handle. `timeupdate` (every ~250 ms) is

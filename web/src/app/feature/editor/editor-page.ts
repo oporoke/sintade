@@ -26,6 +26,8 @@ import { Waveform, drawWaveform } from './waveform';
 /** How tall the thumbnail strip and the waveform are, in CSS pixels. */
 export const THUMB_HEIGHT_PX = 54;
 export const WAVEFORM_HEIGHT_PX = 48;
+/** The row above the timeline that holds the trim handles' grips. */
+export const GRIP_HEIGHT_PX = 16;
 
 /** How often the peaks are asked for again while they are being made, and how many times. */
 export const WAVEFORM_RETRY_MS = 2000;
@@ -72,9 +74,12 @@ type View =
       background: #000;
       display: block;
     }
+    /* The handles' grips sit in a row above the timeline, so every point of the timeline,
+       its ends included, can still be clicked to seek. */
     .track {
       position: relative;
       margin-top: var(--space-3);
+      padding-top: ${GRIP_HEIGHT_PX}px;
     }
     .timeline {
       position: relative;
@@ -119,18 +124,26 @@ type View =
       background: var(--color-danger);
       pointer-events: none;
     }
-    .cut {
+    .cut,
+    .edge {
       position: absolute;
-      top: 0;
+      top: ${GRIP_HEIGHT_PX}px;
       bottom: 0;
       background: rgb(0 0 0 / 55%);
       pointer-events: none;
     }
+    .edge {
+      width: 2px;
+      background: var(--color-primary);
+    }
+    .edge.end {
+      transform: translateX(-100%);
+    }
     .handle {
       position: absolute;
       top: 0;
-      bottom: 0;
-      width: 12px;
+      height: ${GRIP_HEIGHT_PX}px;
+      width: 14px;
       cursor: ew-resize;
       touch-action: none;
       background: var(--color-primary);
@@ -244,6 +257,8 @@ type View =
           </div>
           <div class="cut" [style.left.%]="0" [style.width.%]="startPercent()"></div>
           <div class="cut" [style.left.%]="endPercent()" [style.right.%]="0"></div>
+          <div class="edge start" [style.left.%]="startPercent()"></div>
+          <div class="edge end" [style.left.%]="endPercent()"></div>
           <div
             class="handle start"
             data-testid="editor-trim-start"
