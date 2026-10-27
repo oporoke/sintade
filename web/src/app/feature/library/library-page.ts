@@ -152,6 +152,9 @@ import { ShareDialog } from '../share/share-dialog';
                 Share
               </button>
               @if (item.state === 'ready') {
+                <a [routerLink]="['/recordings', item.id, 'edit']" data-testid="library-edit" i18n>
+                  Edit
+                </a>
                 <button type="button" data-testid="library-chapters" (click)="chapters(item)" i18n>
                   Chapters
                 </button>

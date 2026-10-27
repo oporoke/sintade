@@ -205,6 +205,12 @@ pub fn table() -> Vec<Route> {
         ),
         Route::new(
             Method::GET,
+            "/api/v1/recordings/{recording_id}/editor",
+            Workspace,
+            edits::get_editor_source,
+        ),
+        Route::new(
+            Method::GET,
             "/api/v1/recordings",
             Workspace,
             recordings::list_recordings,

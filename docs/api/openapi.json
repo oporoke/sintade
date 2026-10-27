@@ -904,6 +904,79 @@
         }
       }
     },
+    "/api/v1/recordings/{recording_id}/editor": {
+      "get": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "What the editor works on (owner or admin): the original recording, its length and its\nthumbnails, all in original time (ADR-0040).",
+        "operationId": "get_editor_source",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "description": "The recording",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The original, signed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditorSourceResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not the owner and not an admin",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such recording in the caller's workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The recording has no MP4 yet (still processing, or failed)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/recordings/{recording_id}/edits": {
       "post": {
         "tags": [
@@ -2579,6 +2652,38 @@
           }
         },
         "additionalProperties": false
+      },
+      "EditorSourceResponse": {
+        "type": "object",
+        "required": [
+          "video_url",
+          "duration_ms",
+          "expires_in_s"
+        ],
+        "properties": {
+          "duration_ms": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The original's length; the timeline spans exactly this.",
+            "minimum": 0
+          },
+          "expires_in_s": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "sprite_vtt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The original's scrub-sprite cue file, each sheet signed (`sheet-url#xywh=x,y,w,h`), for\nthe timeline's thumbnails; `null` when the recording has no sprite."
+          },
+          "video_url": {
+            "type": "string",
+            "description": "A signed URL of the **original** MP4: the editor always works in the original's time,\nwhichever version viewers get."
+          }
+        }
       },
       "FinalizeBody": {
         "type": "object",

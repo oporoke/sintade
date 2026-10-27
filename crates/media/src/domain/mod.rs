@@ -109,6 +109,15 @@ pub fn poster_key(workspace_id: WorkspaceId, recording_id: RecordingId) -> Strin
     poster_key_in(&recording_base(workspace_id, recording_id))
 }
 
+/// Where the original's scrub sprite cue file lives. An edit's sprite is made under its own base,
+/// so this one stays the original's: the editor's thumbnails, in original time.
+pub fn original_sprite_vtt_key(workspace_id: WorkspaceId, recording_id: RecordingId) -> String {
+    format!(
+        "{}/sprite.vtt",
+        img_prefix_in(&recording_base(workspace_id, recording_id))
+    )
+}
+
 /// Where the waveform peaks live. Always the original's: the editor works in the original's
 /// time, so an edit never replaces them (ADR-0039).
 pub fn waveform_key(workspace_id: WorkspaceId, recording_id: RecordingId) -> String {

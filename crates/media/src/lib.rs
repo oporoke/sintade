@@ -9,10 +9,10 @@ mod testing;
 
 pub use app::{
     BUILD_HLS, BuildHls, BuildHlsError, EditService, EnqueueError, GENERATE_SPRITE, GenerateSprite,
-    GenerateSpriteError, HlsError, HlsOutcome, MediaService, PROCESS_TAKE, PlaybackKeys,
-    ProcessError, ProcessOutcome, ProcessTake, RENDER_EDIT, RenderEdit, RenderEditError,
-    RenderOutcome, RenditionReader, RequestLadderError, RetryError, RetryService, SourceKey,
-    SpriteError, SpriteOutcome, SubmitEditError, SubmittedEdit, TakeFinalizedData,
+    GenerateSpriteError, HlsError, HlsOutcome, MediaService, OriginalKeys, PROCESS_TAKE,
+    PlaybackKeys, ProcessError, ProcessOutcome, ProcessTake, RENDER_EDIT, RenderEdit,
+    RenderEditError, RenderOutcome, RenditionReader, RequestLadderError, RetryError, RetryService,
+    SourceKey, SpriteError, SpriteOutcome, SubmitEditError, SubmittedEdit, TakeFinalizedData,
     TakeFinalizedMessage, TranscodeError, TranscodeReport, transcode_file,
 };
 pub use app::{

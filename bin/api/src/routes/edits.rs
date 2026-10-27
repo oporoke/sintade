@@ -141,6 +141,63 @@ pub async fn get_waveform(
     })))
 }
 
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct EditorSourceResponse {
+    /// A signed URL of the **original** MP4: the editor always works in the original's time,
+    /// whichever version viewers get.
+    pub video_url: String,
+    /// The original's length; the timeline spans exactly this.
+    pub duration_ms: u32,
+    /// The original's scrub-sprite cue file, each sheet signed (`sheet-url#xywh=x,y,w,h`), for
+    /// the timeline's thumbnails; `null` when the recording has no sprite.
+    pub sprite_vtt: Option<String>,
+    pub expires_in_s: u64,
+}
+
+/// What the editor works on (owner or admin): the original recording, its length and its
+/// thumbnails, all in original time (ADR-0040).
+#[utoipa::path(
+    get,
+    path = "/api/v1/recordings/{recording_id}/editor",
+    tag = "recordings",
+    params(("recording_id" = uuid::Uuid, Path, description = "The recording")),
+    responses(
+        (status = 200, description = "The original, signed", body = EditorSourceResponse),
+        (status = 401, description = "No valid session", body = Problem, content_type = "application/problem+json"),
+        (status = 403, description = "Not the owner and not an admin", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such recording in the caller's workspace", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "The recording has no MP4 yet (still processing, or failed)", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+#[tracing::instrument(skip_all, fields(workspace_id = %ctx.workspace_id))]
+pub async fn get_editor_source(
+    State(state): State<AppState>,
+    ctx: WorkspaceContext,
+    Path(recording_id): Path<RecordingId>,
+) -> Result<axum::response::Response, ApiError> {
+    ctx.require(Permission::EditRecording)?;
+    require_owner_or_admin(&state, &ctx, recording_id).await?;
+    let source = state
+        .delivery
+        .editor_source(ctx.workspace_id, recording_id)
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "editor source failed");
+            ApiError::from(AppError::Internal("the editor is unavailable".to_string()))
+        })?
+        .ok_or_else(|| {
+            ApiError::from(AppError::Conflict(
+                "this recording is still being processed".to_string(),
+            ))
+        })?;
+    Ok(super::watch::no_store(Json(EditorSourceResponse {
+        video_url: source.video_url,
+        duration_ms: source.duration_ms,
+        sprite_vtt: source.sprite_vtt,
+        expires_in_s: source.expires_in_s,
+    })))
+}
+
 #[cfg(test)]
 mod tests {
     use axum::http::{Method, StatusCode};
@@ -300,6 +357,34 @@ mod tests {
         let stranger = call(&pool, Some(&other), Method::GET, &waveform_uri(id), None).await;
         assert_eq!(stranger.status, StatusCode::NOT_FOUND);
         let anon = call(&pool, None, Method::GET, &waveform_uri(id), None).await;
+        assert_eq!(anon.status, StatusCode::UNAUTHORIZED);
+    }
+
+    /// Day 93: the editor gets the original's MP4 and length, signed and not cached; nothing
+    /// before processing, and nothing for anyone outside the workspace.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn the_owner_gets_the_original_to_edit(pool: PgPool) {
+        let owner = caller(&pool).await;
+        let id = recording(&pool, &owner, "processing").await;
+        let uri = format!("/api/v1/recordings/{id}/editor");
+        let before = call(&pool, Some(&owner), Method::GET, &uri, None).await;
+        assert_eq!(before.status, StatusCode::CONFLICT, "{}", before.body);
+
+        renditions(&pool, &owner, id).await;
+        let reply = call(&pool, Some(&owner), Method::GET, &uri, None).await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        let url = reply.body["video_url"].as_str().expect("url");
+        let original = format!("ws/{}/rec/{id}/mp4/default.mp4", owner.workspace_id);
+        assert!(url.contains(&original), "{url}");
+        assert_eq!(reply.body["duration_ms"], 12000);
+        assert_eq!(reply.body["sprite_vtt"], serde_json::Value::Null);
+        assert_eq!(reply.body["expires_in_s"], 900);
+        assert_eq!(reply.cache_control.as_deref(), Some("no-store"));
+
+        let other = caller(&pool).await;
+        let stranger = call(&pool, Some(&other), Method::GET, &uri, None).await;
+        assert_eq!(stranger.status, StatusCode::NOT_FOUND);
+        let anon = call(&pool, None, Method::GET, &uri, None).await;
         assert_eq!(anon.status, StatusCode::UNAUTHORIZED);
     }
 

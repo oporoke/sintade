@@ -49,6 +49,11 @@ export const routes: Routes = [
     loadComponent: () => import('./feature/library/library-page').then((m) => m.LibraryPage),
   },
   {
+    path: 'recordings/:id/edit',
+    canActivate: [authGuard],
+    loadComponent: () => import('./feature/editor/editor-page').then((m) => m.EditorPage),
+  },
+  {
     path: 'record',
     canActivate: [authGuard],
     loadComponent: () => import('./feature/recorder/recorder-page').then((m) => m.RecorderPage),

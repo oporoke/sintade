@@ -66,6 +66,19 @@ pub struct WaveformGrant {
     pub expires_in_s: u64,
 }
 
+/// The original recording as the editor gets it (ADR-0040): ranges, peaks and thumbnails are all
+/// in its time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorSource {
+    /// A signed URL of the original's fast-start MP4.
+    pub video_url: String,
+    /// The original's length, what edit ranges are checked against.
+    pub duration_ms: u32,
+    /// The original's `sprite.vtt` with each sheet signed; `None` when it has no sprite.
+    pub sprite_vtt: Option<String>,
+    pub expires_in_s: u64,
+}
+
 /// What asking for a rung playlist can give.
 #[derive(Debug, PartialEq, Eq)]
 pub enum RungPlaylist {
@@ -343,7 +356,39 @@ impl DeliveryService {
         else {
             return Ok(None);
         };
-        let Some(vtt) = self.read_playlist(&key).await? else {
+        self.signed_sprite(&key).await
+    }
+
+    /// What the editor works on (ADR-0040): the **original** MP4, its length and its sprite, all
+    /// signed for 15 minutes, whichever version viewers get. `None` until the recording is
+    /// processed.
+    #[tracing::instrument(skip_all, fields(recording_id = %recording_id, workspace_id = %workspace_id))]
+    pub async fn editor_source(
+        &self,
+        workspace_id: WorkspaceId,
+        recording_id: RecordingId,
+    ) -> Result<Option<EditorSource>, DeliveryError> {
+        let Some(original) = self.renditions.original(workspace_id, recording_id).await? else {
+            return Ok(None);
+        };
+        let video_url = self
+            .store
+            .presign_get(&original.mp4, GRANT_TTL)
+            .await?
+            .to_string();
+        let sprite_vtt = self.signed_sprite(&original.sprite_vtt).await?;
+        Ok(Some(EditorSource {
+            video_url,
+            duration_ms: original.duration_ms,
+            sprite_vtt,
+            expires_in_s: GRANT_TTL.as_secs(),
+        }))
+    }
+
+    /// The `sprite.vtt` at `key` with each sheet it names signed for [`GRANT_TTL`]; `None` if it
+    /// isn't stored.
+    async fn signed_sprite(&self, key: &str) -> Result<Option<String>, DeliveryError> {
+        let Some(vtt) = self.read_playlist(key).await? else {
             return Ok(None);
         };
         let Some(files) = hls::sprite_files(&vtt) else {
@@ -768,6 +813,72 @@ mod tests {
             .await
             .expect("put");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Day 93: the editor gets the original's MP4 and its sprite with every sheet signed, and
+    /// nothing before the recording is processed or from another workspace.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn the_editor_gets_the_original_signed(pool: PgPool) {
+        let (workspace, recording) = seed(&pool, true).await;
+        sqlx::query!(
+            r#"UPDATE renditions SET meta = '{"duration_ms": 12000}' WHERE recording_id = $1 AND kind = 'mp4'"#,
+            recording.into_uuid(),
+        )
+        .execute(&pool)
+        .await
+        .expect("mp4 length");
+        let delivery = service(pool.clone());
+        let without_sprite = delivery
+            .editor_source(workspace, recording)
+            .await
+            .expect("source")
+            .expect("processed");
+        assert_eq!(without_sprite.sprite_vtt, None);
+
+        let img = format!("ws/{workspace}/rec/{recording}/img");
+        put(
+            &delivery.store,
+            &format!("{img}/sprite.vtt"),
+            b"WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nsprite_0.jpg#xywh=0,0,160,90\n",
+        )
+        .await;
+        let source = delivery
+            .editor_source(workspace, recording)
+            .await
+            .expect("source")
+            .expect("processed");
+        assert!(
+            source
+                .video_url
+                .contains(&format!("ws/{workspace}/rec/{recording}/mp4/default.mp4")),
+            "the original's MP4, not whatever the row points at"
+        );
+        assert_eq!(source.duration_ms, 12_000);
+        assert_eq!(source.expires_in_s, 900);
+        let vtt = source.sprite_vtt.expect("sprite");
+        let cue = vtt
+            .lines()
+            .find(|line| line.contains("#xywh="))
+            .expect("cue");
+        assert!(cue.contains(&format!("{img}/sprite_0.jpg")), "{cue}");
+        assert!(cue.contains("X-Amz-Signature"), "{cue}");
+        assert!(cue.ends_with("#xywh=0,0,160,90"), "{cue}");
+
+        assert_eq!(
+            delivery
+                .editor_source(WorkspaceId::new_v7(), recording)
+                .await
+                .expect("other"),
+            None
+        );
+        let (unprocessed_ws, unprocessed) = seed(&pool, false).await;
+        assert_eq!(
+            delivery
+                .editor_source(unprocessed_ws, unprocessed)
+                .await
+                .expect("unprocessed"),
+            None
+        );
     }
 
     /// A one-rung ladder (`720p`, one segment) in the bucket, with its master registered.
